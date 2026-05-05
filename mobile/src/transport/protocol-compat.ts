@@ -1,3 +1,8 @@
+// Why: this file mirrors src/shared/protocol-compat.ts (which is
+// covered by CI vitest). Metro can't resolve out of mobile/, so the
+// pure function is duplicated here. Keep the two files in sync — when
+// you change the evaluator's logic, update both. The src/shared/ copy
+// is the tested canonical version.
 import { MIN_COMPATIBLE_DESKTOP_VERSION, MOBILE_PROTOCOL_VERSION } from './protocol-version'
 
 export type CompatVerdict =
@@ -14,16 +19,9 @@ export function evaluateCompat(input: {
   desktopProtocolVersion: number | undefined
   desktopMinCompatibleMobileVersion: number | undefined
 }): CompatVerdict {
-  // Why: absent fields → 0 lets mobile keep talking to pre-PR desktops.
-  // Bumping MIN_COMPATIBLE_DESKTOP_VERSION above 0 will fence those
-  // older desktops alongside any explicitly-version-0 desktop, which
-  // is the intended kill-switch behavior.
   const desktopVersion = input.desktopProtocolVersion ?? 0
   const requiredMobile = input.desktopMinCompatibleMobileVersion ?? 0
 
-  // Why: mobile-too-old precedence — if desktop says "I refuse this
-  // mobile build" (kill switch), that wins over any local mobile
-  // judgment about desktop's age.
   if (MOBILE_PROTOCOL_VERSION < requiredMobile) {
     return {
       kind: 'blocked',
