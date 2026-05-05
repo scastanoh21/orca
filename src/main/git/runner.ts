@@ -188,23 +188,152 @@ export function gitSpawn(
 
 // ─── gh CLI runners ─────────────────────────────────────────────────
 
+// Why: non-repo-scoped gh calls (listAccessibleProjects, rate_limit, etc.)
+// have no meaningful cwd. Allow it to be omitted so the one WSL-aware wrapper
+// serves both repo-scoped and global callers and we stop having two spawn
+// sites (the other one — a plain execFileAsync in project-view.ts — bypasses
+// retry/backoff and any future quota tracker).
+type GhExecOptions = Omit<GitExecOptions, 'cwd'> & { cwd?: string }
+
+/**
+ * Extract stderr from an execFile rejection.
+ *
+ * Why: Node's execFile rejects with an Error that has `.stdout` and `.stderr`
+ * fields populated separately from `.message`. Reading `err.message` alone is
+ * unreliable — it can truncate stderr or omit it entirely depending on Node
+ * version and maxBuffer behavior. We prefer the explicit fields and fall
+ * back to `.message` only when neither is present.
+ */
+export function extractExecError(err: unknown): { stderr: string; stdout: string } {
+  if (err && typeof err === 'object') {
+    const e = err as { stderr?: unknown; stdout?: unknown; message?: unknown }
+    const stderr =
+      typeof e.stderr === 'string'
+        ? e.stderr
+        : Buffer.isBuffer(e.stderr)
+          ? e.stderr.toString('utf-8')
+          : ''
+    const stdout =
+      typeof e.stdout === 'string'
+        ? e.stdout
+        : Buffer.isBuffer(e.stdout)
+          ? e.stdout.toString('utf-8')
+          : ''
+    if (stderr || stdout) {
+      return { stderr, stdout }
+    }
+    if (typeof e.message === 'string') {
+      return { stderr: e.message, stdout: '' }
+    }
+  }
+  return { stderr: String(err), stdout: '' }
+}
+
+/**
+ * Detect a Retry-After hint in gh stderr and return the suggested delay in ms,
+ * or null when the response includes no Retry-After.
+ *
+ * Why: gh forwards response headers when verbose, and prints "Retry-After:
+ * <seconds>" in error output for primary rate-limit 429s. When present, the
+ * caller is better served by propagating the error so the UI can surface the
+ * real wait time — retrying on our own 250ms cadence just earns another 429
+ * and burns the retry budget. Also supports HTTP-date Retry-After values.
+ */
+export function parseRetryAfterMs(stderr: string): number | null {
+  const m = stderr.match(/retry-after:\s*([^\r\n]+)/i)
+  if (!m) {
+    return null
+  }
+  const raw = m[1].trim()
+  if (/^\d+$/.test(raw)) {
+    const seconds = Number(raw)
+    return Number.isFinite(seconds) ? seconds * 1000 : null
+  }
+  const ts = Date.parse(raw)
+  if (Number.isNaN(ts)) {
+    return null
+  }
+  return Math.max(0, ts - Date.now())
+}
+
+/**
+ * Classify whether a gh execFile rejection is worth retrying.
+ *
+ * Why: gh surfaces HTTP status in stderr as "HTTP 504", "HTTP 502", etc.
+ * Network resets and DNS hiccups also show up as stderr substrings. We retry
+ * those and 429 (rate-limited) — but only 429s without an explicit
+ * Retry-After (the caller is better off propagating so the UI can show the
+ * actual wait time). The primary-rate-limit 403 branch is NOT retried: those
+ * require the user to back off for minutes, which is not transient.
+ */
+export function isTransientGhError(stderr: string): boolean {
+  const s = stderr.toLowerCase()
+  if (
+    s.includes('http 500') ||
+    s.includes('http 502') ||
+    s.includes('http 503') ||
+    s.includes('http 504') ||
+    s.includes('econnreset') ||
+    s.includes('etimedout') ||
+    s.includes('socket hang up')
+  ) {
+    return true
+  }
+  // 429 without Retry-After: retry. With Retry-After: propagate.
+  if (s.includes('http 429')) {
+    return parseRetryAfterMs(stderr) === null
+  }
+  return false
+}
+
+// Why: total of 3 attempts (original + 2 retries) with 250ms → 1s backoff.
+// These are standard "transient 5xx" values. Longer waits push past user
+// patience for an interactive action; shorter waits would hammer the same
+// unhealthy upstream that just failed. The array length defines retry count;
+// total attempts = length + 1.
+const GH_RETRY_DELAYS_MS = [250, 1000] as const
+
+async function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
 /**
  * Async gh CLI execution. Drop-in replacement for
  * `execFileAsync('gh', args, { cwd, encoding, ... })`.
+ *
+ * Retries transient 5xx / 429 (without Retry-After) / network-reset failures
+ * with exponential backoff. Non-transient errors (auth, 404, rate-limit 403,
+ * validation, 429-with-Retry-After) fail fast on the first attempt.
  */
 export async function ghExecFileAsync(
   args: string[],
-  options: GitExecOptions
+  options: GhExecOptions = {}
 ): Promise<{ stdout: string; stderr: string }> {
   const resolved = resolveCommand('gh', args, options.cwd)
-  const { stdout, stderr } = await execFileAsync(resolved.binary, resolved.args, {
-    cwd: resolved.cwd,
-    encoding: (options.encoding ?? 'utf-8') as BufferEncoding,
-    maxBuffer: options.maxBuffer,
-    timeout: options.timeout,
-    env: options.env
-  })
-  return { stdout: stdout as string, stderr: stderr as string }
+  let lastError: unknown
+  for (let attempt = 0; attempt <= GH_RETRY_DELAYS_MS.length; attempt++) {
+    try {
+      const { stdout, stderr } = await execFileAsync(resolved.binary, resolved.args, {
+        cwd: resolved.cwd,
+        encoding: (options.encoding ?? 'utf-8') as BufferEncoding,
+        maxBuffer: options.maxBuffer,
+        timeout: options.timeout,
+        env: options.env
+      })
+      return { stdout: stdout as string, stderr: stderr as string }
+    } catch (err) {
+      lastError = err
+      const { stderr } = extractExecError(err)
+      const isLastAttempt = attempt >= GH_RETRY_DELAYS_MS.length
+      if (!isLastAttempt && isTransientGhError(stderr)) {
+        await sleep(GH_RETRY_DELAYS_MS[attempt])
+        continue
+      }
+      throw err
+    }
+  }
+  // Unreachable: the loop either returns or throws. Here for TS exhaustiveness.
+  throw lastError
 }
 
 // ─── Generic command runner (for rg, etc.) ──────────────────────────
