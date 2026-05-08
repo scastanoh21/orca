@@ -1285,14 +1285,14 @@ function SourceControlInner(): React.JSX.Element {
                         <button
                           type="button"
                           className="inline-flex size-6 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-                          aria-label="Send notes to agent"
+                          aria-label="Send notes to a new agent"
                         >
                           <Send className="size-3.5" />
                         </button>
                       </DropdownMenuTrigger>
                     </TooltipTrigger>
                     <TooltipContent side="bottom" sideOffset={6}>
-                      Send notes to agent
+                      Send notes to a new agent
                     </TooltipContent>
                   </Tooltip>
                 </TooltipProvider>
