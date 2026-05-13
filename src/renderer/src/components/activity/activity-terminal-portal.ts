@@ -1,42 +1,60 @@
 import { useLayoutEffect, useState } from 'react'
 
 export type ActivityTerminalPortalTarget = {
+  slotId: string
   target: HTMLElement
   worktreeId: string
   tabId: string
+  active: boolean
 }
 
-let currentTarget: HTMLElement | null = null
-const subscribers = new Set<(target: HTMLElement | null) => void>()
+let currentTargets: ActivityTerminalPortalTarget[] = []
+const subscribers = new Set<(targets: ActivityTerminalPortalTarget[]) => void>()
 
-// Why: replaces a body-wide MutationObserver. ActivityPrototypePage owns the
-// target div's lifecycle and publishes here on mount/unmount; Terminal
-// subscribes. Avoids global DOM observation while activity is open.
-export function setActivityTerminalPortalTarget(target: HTMLElement | null): void {
-  if (currentTarget === target) {
+// Why: the portal target is published with its {worktreeId, tabId} already
+// attached so consumers don't have to derive routing from the global
+// activeTabId/activeWorktreeId. The activity page knows which agent pane it
+// wants to display; deriving from global active state introduced a race where
+// repo/worktree updates landed before the matching setActiveTab, briefly
+// portaling a different terminal into the activity slot ("flash" of the wrong
+// terminal for a few ms).
+export function setActivityTerminalPortals(targets: ActivityTerminalPortalTarget[]): void {
+  if (currentTargets === targets) {
     return
   }
-  currentTarget = target
+  currentTargets = targets
   for (const subscriber of subscribers) {
-    subscriber(target)
+    subscriber(targets)
   }
 }
 
-export function useActivityTerminalPortalTarget(enabled: boolean): HTMLElement | null {
-  const [target, setTarget] = useState<HTMLElement | null>(enabled ? currentTarget : null)
+export function useActivityTerminalPortals(enabled: boolean): ActivityTerminalPortalTarget[] {
+  const [targets, setTargets] = useState<ActivityTerminalPortalTarget[]>(
+    enabled ? currentTargets : []
+  )
 
   useLayoutEffect(() => {
     if (!enabled) {
-      setTarget(null)
+      setTargets([])
       return
     }
-    setTarget(currentTarget)
-    const subscriber = (next: HTMLElement | null): void => setTarget(next)
+    setTargets(currentTargets)
+    const subscriber = (next: ActivityTerminalPortalTarget[]): void => setTargets(next)
     subscribers.add(subscriber)
     return () => {
       subscribers.delete(subscriber)
     }
   }, [enabled])
 
-  return target
+  return targets
+}
+
+export function findActivityTerminalPortal(
+  targets: ActivityTerminalPortalTarget[],
+  worktreeId: string,
+  tabId: string
+): ActivityTerminalPortalTarget | null {
+  return (
+    targets.find((target) => target.worktreeId === worktreeId && target.tabId === tabId) ?? null
+  )
 }

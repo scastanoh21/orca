@@ -55,7 +55,8 @@ import {
 import { appendUniqueOpenFileIds } from './terminal/unsaved-close-queue'
 import CodexRestartChip from './CodexRestartChip'
 import {
-  useActivityTerminalPortalTarget,
+  findActivityTerminalPortal,
+  useActivityTerminalPortals,
   type ActivityTerminalPortalTarget
 } from './activity/activity-terminal-portal'
 
@@ -106,24 +107,15 @@ function Terminal(): React.JSX.Element | null {
   const setTabBarOrder = useAppStore((s) => s.setTabBarOrder)
   const tabBarOrderByWorktree = useAppStore((s) => s.tabBarOrderByWorktree)
   const tabBarOrder = activeWorktreeId ? tabBarOrderByWorktree[activeWorktreeId] : undefined
-  const activityTerminalPortalTarget = useActivityTerminalPortalTarget(activeView === 'activity')
-  // Why: stable identity preserves WorktreeSplitSurface's React.memo bail-out across unrelated Terminal re-renders.
-  const activityTerminalPortal: ActivityTerminalPortalTarget | null = useMemo(() => {
-    if (
-      activeView !== 'activity' ||
-      activeTabType !== 'terminal' ||
-      !activeWorktreeId ||
-      !activeTabId ||
-      !activityTerminalPortalTarget
-    ) {
-      return null
-    }
-    return {
-      target: activityTerminalPortalTarget,
-      worktreeId: activeWorktreeId,
-      tabId: activeTabId
-    }
-  }, [activeView, activeTabType, activeWorktreeId, activeTabId, activityTerminalPortalTarget])
+  // Why (anchored to selected thread, not active tab): the activity page
+  // publishes the full {target, worktreeId, tabId} descriptor sourced from
+  // its selectedThread. Deriving worktreeId/tabId from activeWorktreeId/
+  // activeTabId here used to flash the wrong terminal — selectThread updates
+  // the store in multiple steps and intermediate renders briefly pointed the
+  // portal at the new worktree's stale last-active tab.
+  const activityTerminalPortals: ActivityTerminalPortalTarget[] = useActivityTerminalPortals(
+    activeView === 'activity'
+  )
 
   const tabs = useMemo(
     () => (activeWorktreeId ? (tabsByWorktree[activeWorktreeId] ?? []) : []),
@@ -1269,7 +1261,7 @@ function Terminal(): React.JSX.Element | null {
                   layout={layout}
                   focusedGroupId={activeGroupIdByWorktree[worktree.id]}
                   isVisible={isVisible}
-                  activityTerminalPortal={activityTerminalPortal}
+                  activityTerminalPortals={activityTerminalPortals}
                 />
               )
             })}
@@ -1323,9 +1315,12 @@ function Terminal(): React.JSX.Element | null {
                   >
                     <CodexRestartChip worktreeId={worktree.id} />
                     {(tabsByWorktree[worktree.id] ?? []).map((tab) => {
-                      const isActivityPortalTab =
-                        activityTerminalPortal?.worktreeId === worktree.id &&
-                        activityTerminalPortal.tabId === tab.id
+                      const activityTerminalPortal = findActivityTerminalPortal(
+                        activityTerminalPortals,
+                        worktree.id,
+                        tab.id
+                      )
+                      const isActivityPortalTab = activityTerminalPortal !== null
                       const isActiveTerminalTab =
                         isVisible && tab.id === activeTabId && activeTabType === 'terminal'
                       const terminalPane = (
@@ -1334,7 +1329,7 @@ function Terminal(): React.JSX.Element | null {
                           tabId={tab.id}
                           worktreeId={worktree.id}
                           cwd={worktree.path}
-                          isActive={isActiveTerminalTab || isActivityPortalTab}
+                          isActive={isActiveTerminalTab || activityTerminalPortal?.active === true}
                           // Why: the activity page hosts this existing pane via
                           // portal while the workspace surface remains hidden.
                           // Keeping `isVisible` true for the portaled tab lets
@@ -1344,7 +1339,7 @@ function Terminal(): React.JSX.Element | null {
                           onCloseTab={() => handleCloseTab(tab.id)}
                         />
                       )
-                      if (isActivityPortalTab && activityTerminalPortal) {
+                      if (activityTerminalPortal) {
                         return createPortal(
                           terminalPane,
                           activityTerminalPortal.target,
@@ -1512,13 +1507,13 @@ const WorktreeSplitSurface = React.memo(function WorktreeSplitSurface({
   layout,
   focusedGroupId,
   isVisible,
-  activityTerminalPortal
+  activityTerminalPortals
 }: {
   worktreeId: string
   layout: TabGroupLayoutNode
   focusedGroupId?: string
   isVisible: boolean
-  activityTerminalPortal: ActivityTerminalPortalTarget | null
+  activityTerminalPortals: ActivityTerminalPortalTarget[]
 }): React.JSX.Element {
   return (
     <div
@@ -1531,7 +1526,7 @@ const WorktreeSplitSurface = React.memo(function WorktreeSplitSurface({
         worktreeId={worktreeId}
         focusedGroupId={focusedGroupId}
         isWorktreeActive={isVisible}
-        activityTerminalPortal={activityTerminalPortal}
+        activityTerminalPortals={activityTerminalPortals}
       />
       <BrowserPaneOverlayLayer worktreeId={worktreeId} isWorktreeActive={isVisible} />
     </div>

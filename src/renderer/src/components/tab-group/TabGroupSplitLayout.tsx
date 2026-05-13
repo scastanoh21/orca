@@ -97,7 +97,7 @@ function SplitNode({
   activeDropGroupId,
   activeDropZone,
   hoveredTabInsertion,
-  activityTerminalPortal
+  activityTerminalPortals
 }: {
   node: TabGroupLayoutNode
   nodePath: string
@@ -112,7 +112,7 @@ function SplitNode({
   activeDropGroupId: string | null
   activeDropZone: TabDropZone | null
   hoveredTabInsertion: HoveredTabInsertion | null
-  activityTerminalPortal: ActivityTerminalPortalTarget | null
+  activityTerminalPortals: ActivityTerminalPortalTarget[]
 }): React.JSX.Element {
   const setTabGroupSplitRatio = useAppStore((state) => state.setTabGroupSplitRatio)
 
@@ -137,7 +137,7 @@ function SplitNode({
         hoveredTabInsertion={
           hoveredTabInsertion?.groupId === node.groupId ? hoveredTabInsertion : null
         }
-        activityTerminalPortal={activityTerminalPortal}
+        activityTerminalPortals={activityTerminalPortals}
       />
     )
   }
@@ -165,7 +165,7 @@ function SplitNode({
           activeDropGroupId={activeDropGroupId}
           activeDropZone={activeDropZone}
           hoveredTabInsertion={hoveredTabInsertion}
-          activityTerminalPortal={activityTerminalPortal}
+          activityTerminalPortals={activityTerminalPortals}
         />
       </div>
       <ResizeHandle
@@ -187,7 +187,7 @@ function SplitNode({
           activeDropGroupId={activeDropGroupId}
           activeDropZone={activeDropZone}
           hoveredTabInsertion={hoveredTabInsertion}
-          activityTerminalPortal={activityTerminalPortal}
+          activityTerminalPortals={activityTerminalPortals}
         />
       </div>
     </div>
@@ -199,13 +199,13 @@ export default function TabGroupSplitLayout({
   worktreeId,
   focusedGroupId,
   isWorktreeActive,
-  activityTerminalPortal = null
+  activityTerminalPortals = []
 }: {
   layout: TabGroupLayoutNode
   worktreeId: string
   focusedGroupId?: string
   isWorktreeActive: boolean
-  activityTerminalPortal?: ActivityTerminalPortalTarget | null
+  activityTerminalPortals?: ActivityTerminalPortalTarget[]
 }): React.JSX.Element {
   const dragSplit = useTabDragSplit({ worktreeId, enabled: isWorktreeActive })
   const hasSplits = layout.type === 'split'
@@ -262,7 +262,7 @@ export default function TabGroupSplitLayout({
             activeDropGroupId={dragSplit.hoveredDropTarget?.groupId ?? null}
             activeDropZone={dragSplit.hoveredDropTarget?.zone ?? null}
             hoveredTabInsertion={dragSplit.hoveredTabInsertion}
-            activityTerminalPortal={activityTerminalPortal}
+            activityTerminalPortals={activityTerminalPortals}
           />
         </div>
       </div>

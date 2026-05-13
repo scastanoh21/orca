@@ -638,7 +638,7 @@ function App(): React.JSX.Element {
         // Why: Back/Forward traverse mixed worktree + Tasks visits, so the
         // shortcut is active wherever the titlebar button cluster is (terminal
         // or tasks). Still suppressed in Settings to keep that view modal-ish.
-        if (activeView !== 'terminal' && activeView !== 'tasks' && activeView !== 'activity') {
+        if (activeView !== 'terminal' && activeView !== 'tasks') {
           return
         }
         e.preventDefault()
@@ -843,10 +843,11 @@ function App(): React.JSX.Element {
         )}
       </div>
       {/* Why: Back/Forward traverse mixed worktree + Tasks history, so the
-          cluster is shown wherever the history shortcut is live (terminal,
-          tasks, or activity — selecting an agent there records a worktree
-          visit). Hidden in Settings to keep that view modal-ish. */}
-      {(activeView === 'terminal' || activeView === 'tasks' || activeView === 'activity') && (
+          cluster is shown wherever the history shortcut is live (terminal or
+          tasks). Hidden in Settings to keep that view modal-ish, and in
+          Activity since that page owns its own back-out via the Close button
+          in ActivityTitlebarControls. */}
+      {(activeView === 'terminal' || activeView === 'tasks') && (
         <div className="ml-auto mr-3 flex items-center">
           <Tooltip>
             <TooltipTrigger asChild>

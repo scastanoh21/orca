@@ -1,7 +1,7 @@
 /* eslint-disable max-lines -- Why: this prototype keeps the real-data adapter
 and current visual skeleton together until the next refinement pass decides
 which pieces become production modules. */
-import React, { useEffect, useMemo, useState } from 'react'
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import {
   Bell,
@@ -35,7 +35,10 @@ import { Input } from '@/components/ui/input'
 import { Toggle } from '@/components/ui/toggle'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
-import { setActivityTerminalPortalTarget } from './activity-terminal-portal'
+import {
+  setActivityTerminalPortals,
+  type ActivityTerminalPortalTarget
+} from './activity-terminal-portal'
 import type { Repo, TerminalTab, Worktree } from '../../../../shared/types'
 import type {
   AgentStateHistoryEntry,
@@ -75,6 +78,21 @@ type AgentPaneThread = {
   unread: boolean
 }
 
+type ActivityTerminalPortalReadiness = {
+  target: HTMLElement | null
+  tabId: string | null
+  ready: boolean
+}
+
+type ActivityTerminalPortalDomStatus = {
+  hasSelectedRoot: boolean
+  ready: boolean
+}
+
+type ActivityTerminalPortalSlotId = 'primary' | 'secondary'
+
+const ACTIVITY_TERMINAL_LOADING_LABEL_DELAY_MS = 180
+
 const absoluteDateFormatter = new Intl.DateTimeFormat(undefined, {
   year: 'numeric',
   month: 'short',
@@ -108,6 +126,137 @@ function paneIdFromPaneKey(paneKey: string): number | null {
   const tail = colon > 0 ? paneKey.slice(colon + 1) : ''
   const parsed = /^\d+$/.test(tail) ? Number.parseInt(tail, 10) : NaN
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null
+}
+
+function getSelectedActivityTerminalPortalStatus(
+  target: HTMLElement,
+  tabId: string
+): ActivityTerminalPortalDomStatus {
+  let selectedRoot: HTMLElement | null = null
+  for (const candidate of target.querySelectorAll<HTMLElement>('[data-terminal-tab-id]')) {
+    if (candidate.dataset.terminalTabId === tabId) {
+      selectedRoot = candidate
+      break
+    }
+  }
+  if (!selectedRoot) {
+    return { hasSelectedRoot: false, ready: false }
+  }
+  const hasPtyBinding =
+    selectedRoot.hasAttribute('data-pty-id') ||
+    selectedRoot.querySelector<HTMLElement>('[data-pty-id]') !== null
+  const hasXtermScreen = selectedRoot.querySelector<HTMLElement>('.xterm-screen') !== null
+  return { hasSelectedRoot: true, ready: hasPtyBinding && hasXtermScreen }
+}
+
+function useActivityTerminalPortalReadiness(
+  target: HTMLElement | null,
+  tabId: string | null
+): boolean {
+  const [readiness, setReadiness] = useState<ActivityTerminalPortalReadiness>({
+    target: null,
+    tabId: null,
+    ready: false
+  })
+
+  useLayoutEffect(() => {
+    if (!target || !tabId) {
+      setReadiness((prev) =>
+        prev.target === null && prev.tabId === null && !prev.ready
+          ? prev
+          : { target: null, tabId: null, ready: false }
+      )
+      return
+    }
+
+    let disposed = false
+    let readyFrame: number | null = null
+    let sawUnreadySelectedRoot = false
+
+    const updateReadiness = (ready: boolean): void => {
+      setReadiness((prev) =>
+        prev.target === target && prev.tabId === tabId && prev.ready === ready
+          ? prev
+          : { target, tabId, ready }
+      )
+    }
+
+    const cancelReadyFrame = (): void => {
+      if (readyFrame !== null) {
+        cancelAnimationFrame(readyFrame)
+        readyFrame = null
+      }
+    }
+
+    const checkReadiness = (): void => {
+      const status = getSelectedActivityTerminalPortalStatus(target, tabId)
+      if (status.ready) {
+        if (!sawUnreadySelectedRoot) {
+          cancelReadyFrame()
+          updateReadiness(true)
+          return
+        }
+        if (readyFrame !== null) {
+          return
+        }
+        // Why: the PTY id can appear before xterm has painted replayed output.
+        // Waiting one frame keeps Activity's cover in place for the blank canvas
+        // frame without moving terminal lifecycle work into global layout effects.
+        readyFrame = requestAnimationFrame(() => {
+          readyFrame = null
+          if (!disposed && getSelectedActivityTerminalPortalStatus(target, tabId).ready) {
+            updateReadiness(true)
+          }
+        })
+        return
+      }
+      if (status.hasSelectedRoot) {
+        sawUnreadySelectedRoot = true
+      }
+      cancelReadyFrame()
+      updateReadiness(false)
+    }
+
+    updateReadiness(false)
+    checkReadiness()
+
+    const observer = new MutationObserver(checkReadiness)
+    observer.observe(target, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['data-terminal-tab-id', 'data-pty-id']
+    })
+
+    return () => {
+      disposed = true
+      cancelReadyFrame()
+      observer.disconnect()
+    }
+  }, [target, tabId])
+
+  return readiness.target === target && readiness.tabId === tabId && readiness.ready
+}
+
+function otherActivityTerminalSlot(
+  slotId: ActivityTerminalPortalSlotId
+): ActivityTerminalPortalSlotId {
+  return slotId === 'primary' ? 'secondary' : 'primary'
+}
+
+function useActivityTerminalLoadingLabel(loading: boolean): boolean {
+  const [visible, setVisible] = useState(false)
+
+  useEffect(() => {
+    if (!loading) {
+      setVisible(false)
+      return
+    }
+    const timer = setTimeout(() => setVisible(true), ACTIVITY_TERMINAL_LOADING_LABEL_DELAY_MS)
+    return () => clearTimeout(timer)
+  }, [loading])
+
+  return visible
 }
 
 function agentTitle(event: ActivityEvent): string {
@@ -528,6 +677,11 @@ export default function ActivityPrototypePage(): React.JSX.Element {
   const leftSidebarDensity: ActivityDensity = leftSidebarCompact ? 'compact' : 'comfortable'
   const [query, setQuery] = useState('')
   const [selectedPaneKey, setSelectedPaneKey] = useState<string | null>(null)
+  const [displayedPaneKey, setDisplayedPaneKey] = useState<string | null>(null)
+  const [activePortalSlotId, setActivePortalSlotId] =
+    useState<ActivityTerminalPortalSlotId>('primary')
+  const [primaryPortalTargetEl, setPrimaryPortalTargetEl] = useState<HTMLElement | null>(null)
+  const [secondaryPortalTargetEl, setSecondaryPortalTargetEl] = useState<HTMLElement | null>(null)
   const [threadListWidth, setThreadListWidth] = useState(340)
   const {
     containerRef: threadListRef,
@@ -587,6 +741,149 @@ export default function ActivityPrototypePage(): React.JSX.Element {
   const selectedThread = selectedPaneKey
     ? (allThreads.find((thread) => thread.paneKey === selectedPaneKey) ?? null)
     : null
+  const selectedTabId = selectedThread?.latestEvent.tab.id ?? null
+  const selectedHasLiveTab =
+    selectedThread && selectedTabId
+      ? (storeData.tabsByWorktree[selectedThread.worktree.id] ?? []).some(
+          (tab) => tab.id === selectedTabId
+        )
+      : false
+  const displayedThread = displayedPaneKey
+    ? (allThreads.find((thread) => thread.paneKey === displayedPaneKey) ?? null)
+    : null
+  const displayedTabId = displayedThread?.latestEvent.tab.id ?? null
+  const displayedHasLiveTab =
+    displayedThread && displayedTabId
+      ? (storeData.tabsByWorktree[displayedThread.worktree.id] ?? []).some(
+          (tab) => tab.id === displayedTabId
+        )
+      : false
+  const displayedIsSelectedTerminal =
+    selectedThread &&
+    displayedThread &&
+    displayedThread.worktree.id === selectedThread.worktree.id &&
+    displayedThread.latestEvent.tab.id === selectedThread.latestEvent.tab.id
+  const visibleThread =
+    selectedThread && selectedHasLiveTab
+      ? displayedThread && displayedHasLiveTab && displayedThread.paneKey !== selectedThread.paneKey
+        ? displayedIsSelectedTerminal
+          ? selectedThread
+          : displayedThread
+        : selectedThread
+      : null
+  const stagedThread =
+    selectedThread &&
+    selectedHasLiveTab &&
+    visibleThread &&
+    visibleThread.paneKey !== selectedThread.paneKey &&
+    !displayedIsSelectedTerminal
+      ? selectedThread
+      : null
+  const inactivePortalSlotId = otherActivityTerminalSlot(activePortalSlotId)
+  const portalTargetBySlot = {
+    primary: primaryPortalTargetEl,
+    secondary: secondaryPortalTargetEl
+  } satisfies Record<ActivityTerminalPortalSlotId, HTMLElement | null>
+  const activePortalTargetEl = portalTargetBySlot[activePortalSlotId]
+  const inactivePortalTargetEl = portalTargetBySlot[inactivePortalSlotId]
+  const visibleTabId = visibleThread?.latestEvent.tab.id ?? null
+  const stagedTabId = stagedThread?.latestEvent.tab.id ?? null
+  const visiblePortalReady = useActivityTerminalPortalReadiness(activePortalTargetEl, visibleTabId)
+  const stagedPortalReady = useActivityTerminalPortalReadiness(inactivePortalTargetEl, stagedTabId)
+  const showTerminalLoadingLabel = useActivityTerminalLoadingLabel(
+    Boolean(visibleThread && !stagedThread && !visiblePortalReady)
+  )
+
+  const setPrimaryPortalTarget = useCallback((target: HTMLElement | null): void => {
+    setPrimaryPortalTargetEl(target)
+  }, [])
+
+  const setSecondaryPortalTarget = useCallback((target: HTMLElement | null): void => {
+    setSecondaryPortalTargetEl(target)
+  }, [])
+
+  // Why (no flash on selection): publish the portal descriptor with the
+  // selected thread's worktreeId+tabId directly, instead of letting Terminal
+  // derive it from activeWorktreeId/activeTabId. selectThread updates the
+  // store in multiple steps (setActiveRepo → setActiveWorktree →
+  // setActiveTabType → setActiveTab) and React commits in between can
+  // briefly reflect the new worktree's stale "last active tab" — that's the
+  // wrong-terminal flash. Anchoring the portal to the selected thread
+  // sidesteps the race entirely.
+  // Why useMemo: keep a stable descriptor identity across unrelated re-renders
+  // so subscribers (Terminal → WorktreeSplitSurface) keep their React.memo
+  // bail-outs. The inactive descriptor is a same-size staging slot: the old
+  // terminal stays visible while the next terminal mounts underneath it.
+  const portalDescriptors = useMemo(() => {
+    const descriptors: ActivityTerminalPortalTarget[] = []
+    if (visibleThread && activePortalTargetEl) {
+      descriptors.push({
+        slotId: activePortalSlotId,
+        target: activePortalTargetEl,
+        worktreeId: visibleThread.worktree.id,
+        tabId: visibleThread.latestEvent.tab.id,
+        active: true
+      })
+    }
+    if (stagedThread && inactivePortalTargetEl) {
+      descriptors.push({
+        slotId: inactivePortalSlotId,
+        target: inactivePortalTargetEl,
+        worktreeId: stagedThread.worktree.id,
+        tabId: stagedThread.latestEvent.tab.id,
+        active: false
+      })
+    }
+    return descriptors
+  }, [
+    activePortalSlotId,
+    activePortalTargetEl,
+    inactivePortalSlotId,
+    inactivePortalTargetEl,
+    stagedThread,
+    visibleThread
+  ])
+
+  useLayoutEffect(() => {
+    if (!selectedThread || !selectedHasLiveTab) {
+      setDisplayedPaneKey(null)
+      return
+    }
+    if (stagedThread && stagedPortalReady) {
+      setActivePortalSlotId(inactivePortalSlotId)
+      setDisplayedPaneKey(stagedThread.paneKey)
+      return
+    }
+    if (!stagedThread && visibleThread?.paneKey === selectedThread.paneKey && visiblePortalReady) {
+      setDisplayedPaneKey(selectedThread.paneKey)
+    }
+  }, [
+    inactivePortalSlotId,
+    selectedHasLiveTab,
+    selectedThread,
+    stagedPortalReady,
+    stagedThread,
+    visiblePortalReady,
+    visibleThread
+  ])
+
+  // Why useLayoutEffect (not useEffect): publish must happen before paint so
+  // Terminal's portal subscriber rerenders in the same commit. With useEffect
+  // the publish runs after paint, so the user briefly sees Terminal's stale
+  // portal target on screen — the "wrong terminal flash" symptom.
+  // Why no cleanup-to-null on every change: clearing on dependency change
+  // forces the portal through a null state on every thread switch (cleanup →
+  // effect within one commit) which can flash the workspace pane behind the
+  // activity slot. We only null on unmount, via a separate effect below.
+  useLayoutEffect(() => {
+    setActivityTerminalPortals(portalDescriptors)
+  }, [portalDescriptors])
+
+  useLayoutEffect(() => {
+    return () => {
+      setActivityTerminalPortals([])
+    }
+  }, [])
 
   const markThreadRead = (thread: AgentPaneThread): void => {
     storeData.acknowledgeAgents([thread.paneKey])
@@ -782,9 +1079,7 @@ export default function ActivityPrototypePage(): React.JSX.Element {
                   move here instead of creating a second PTY/xterm owner. */}
               {(() => {
                 // Why: retained threads can outlive their tab; portal needs a live TerminalPane to render into.
-                const liveTabs = storeData.tabsByWorktree[selectedThread.worktree.id] ?? []
-                const hasLiveTab = liveTabs.some((t) => t.id === selectedThread.latestEvent.tab.id)
-                if (!hasLiveTab) {
+                if (!selectedHasLiveTab) {
                   return (
                     <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 p-4 text-sm text-muted-foreground">
                       <TerminalSquare className="size-7" />
@@ -793,11 +1088,43 @@ export default function ActivityPrototypePage(): React.JSX.Element {
                   )
                 }
                 return (
-                  <div
-                    ref={setActivityTerminalPortalTarget}
-                    className="relative min-h-0 flex-1 overflow-hidden bg-editor-surface"
-                    data-activity-terminal-tab-id={selectedThread.latestEvent.tab.id}
-                  />
+                  <div className="relative min-h-0 flex-1 overflow-hidden bg-editor-surface">
+                    <div
+                      ref={setPrimaryPortalTarget}
+                      className={cn(
+                        'absolute inset-0 min-h-0 min-w-0',
+                        activePortalSlotId === 'primary'
+                          ? 'z-10 opacity-100'
+                          : 'pointer-events-none z-0 opacity-0'
+                      )}
+                      aria-hidden={activePortalSlotId !== 'primary'}
+                      data-activity-terminal-slot-id="primary"
+                    />
+                    <div
+                      ref={setSecondaryPortalTarget}
+                      className={cn(
+                        'absolute inset-0 min-h-0 min-w-0',
+                        activePortalSlotId === 'secondary'
+                          ? 'z-10 opacity-100'
+                          : 'pointer-events-none z-0 opacity-0'
+                      )}
+                      aria-hidden={activePortalSlotId !== 'secondary'}
+                      data-activity-terminal-slot-id="secondary"
+                    />
+                    {visibleThread && !stagedThread && !visiblePortalReady ? (
+                      <div
+                        className="pointer-events-none absolute inset-0 z-20 bg-editor-surface"
+                        aria-hidden="true"
+                      >
+                        {showTerminalLoadingLabel ? (
+                          <div className="ml-3 mt-3 inline-flex items-center gap-2 rounded-md border border-border bg-background/85 px-2 py-1 text-xs text-muted-foreground shadow-xs">
+                            <span className="h-3 w-1.5 animate-pulse rounded-sm bg-muted-foreground/70" />
+                            <span>Connecting terminal...</span>
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : null}
+                  </div>
                 )
               })()}
             </div>

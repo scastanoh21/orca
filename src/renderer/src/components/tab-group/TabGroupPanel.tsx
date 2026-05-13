@@ -21,7 +21,10 @@ import {
   type HoveredTabInsertion,
   type TabDropZone
 } from './useTabDragSplit'
-import type { ActivityTerminalPortalTarget } from '../activity/activity-terminal-portal'
+import {
+  findActivityTerminalPortal,
+  type ActivityTerminalPortalTarget
+} from '../activity/activity-terminal-portal'
 
 const EditorPanel = lazy(() => import('../editor/EditorPanel'))
 
@@ -38,7 +41,7 @@ export default function TabGroupPanel({
   isTabDragActive = false,
   activeDropZone = null,
   hoveredTabInsertion = null,
-  activityTerminalPortal = null
+  activityTerminalPortals = []
 }: {
   groupId: string
   worktreeId: string
@@ -52,7 +55,7 @@ export default function TabGroupPanel({
   isTabDragActive?: boolean
   activeDropZone?: TabDropZone | null
   hoveredTabInsertion?: HoveredTabInsertion | null
-  activityTerminalPortal?: ActivityTerminalPortalTarget | null
+  activityTerminalPortals?: ActivityTerminalPortalTarget[]
 }): React.JSX.Element {
   const rightSidebarOpen = useAppStore((state) => state.rightSidebarOpen)
   const sidebarOpen = useAppStore((state) => state.sidebarOpen)
@@ -356,9 +359,12 @@ export default function TabGroupPanel({
         {model.groupTabs
           .filter((item) => item.contentType === 'terminal')
           .map((item) => {
-            const isActivityPortalTab =
-              activityTerminalPortal?.worktreeId === worktreeId &&
-              activityTerminalPortal.tabId === item.entityId
+            const activityTerminalPortal = findActivityTerminalPortal(
+              activityTerminalPortals,
+              worktreeId,
+              item.entityId
+            )
+            const isActivityPortalTab = activityTerminalPortal !== null
             const isActiveTerminalTab =
               isFocused && activeTab?.id === item.id && activeTab.contentType === 'terminal'
             const isVisibleTerminalTab =
@@ -369,7 +375,7 @@ export default function TabGroupPanel({
                 tabId={item.entityId}
                 worktreeId={worktreeId}
                 cwd={worktreePath}
-                isActive={isActiveTerminalTab || isActivityPortalTab}
+                isActive={isActiveTerminalTab || activityTerminalPortal?.active === true}
                 // Why: the Activity page shows the selected agent's existing
                 // terminal while the workspace group stays hidden. The portaled
                 // tab must still be visible so xterm fits against the activity
@@ -384,7 +390,7 @@ export default function TabGroupPanel({
                 onCloseTab={() => commands.closeItem(item.id)}
               />
             )
-            if (isActivityPortalTab && activityTerminalPortal) {
+            if (activityTerminalPortal) {
               return createPortal(
                 terminalPane,
                 activityTerminalPortal.target,
