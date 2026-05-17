@@ -698,6 +698,7 @@ function SourceControlInner(): React.JSX.Element {
     let stale = false
     void getHostedReviewCreationEligibility({
       repoPath: activeRepo.path,
+      ...(worktreePath ? { worktreePath } : {}),
       branch: branchName,
       base: effectiveBaseRef ?? null,
       hasUncommittedChanges: hasUncommittedEntries,
@@ -733,7 +734,8 @@ function SourceControlInner(): React.JSX.Element {
     linkedGitLabMR,
     remoteStatus?.ahead,
     remoteStatus?.behind,
-    remoteStatus?.hasUpstream
+    remoteStatus?.hasUpstream,
+    worktreePath
   ])
 
   const grouped = useMemo(() => {
@@ -1304,7 +1306,9 @@ function SourceControlInner(): React.JSX.Element {
         prState: hostedReview?.state ?? null,
         isPRStateLoading: isHostedReviewStateLoading,
         inFlightRemoteOpKind,
-        hostedReviewCreation
+        hostedReviewCreation,
+        branchCommitsAhead:
+          branchSummary?.status === 'ready' ? (branchSummary.commitsAhead ?? 0) : undefined
       }),
     [
       commitMessage,
@@ -1317,6 +1321,8 @@ function SourceControlInner(): React.JSX.Element {
       hostedReviewCreation,
       isHostedReviewStateLoading,
       hostedReview?.state,
+      branchSummary?.commitsAhead,
+      branchSummary?.status,
       remoteStatus,
       unresolvedConflicts.length
     ]
@@ -1336,7 +1342,9 @@ function SourceControlInner(): React.JSX.Element {
         prState: hostedReview?.state ?? null,
         isPRStateLoading: isHostedReviewStateLoading,
         inFlightRemoteOpKind,
-        hostedReviewCreation
+        hostedReviewCreation,
+        branchCommitsAhead:
+          branchSummary?.status === 'ready' ? (branchSummary.commitsAhead ?? 0) : undefined
       }),
     [
       commitMessage,
@@ -1349,6 +1357,8 @@ function SourceControlInner(): React.JSX.Element {
       hostedReviewCreation,
       isHostedReviewStateLoading,
       hostedReview?.state,
+      branchSummary?.commitsAhead,
+      branchSummary?.status,
       remoteStatus,
       unresolvedConflicts.length
     ]
@@ -2393,6 +2403,8 @@ function SourceControlInner(): React.JSX.Element {
         open={createPrDialogOpen}
         repoId={activeRepo.id}
         repoPath={activeRepo.path}
+        worktreeId={currentWorktreeId}
+        worktreePath={activeWorktree.path}
         branch={branchName}
         eligibility={hostedReviewCreation}
         pushBeforeCreate={createPrPushFirst}
