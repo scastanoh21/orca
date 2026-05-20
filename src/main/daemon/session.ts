@@ -54,7 +54,7 @@ export class Session {
   private attachedClients: AttachedClient[] = []
   private preReadyStdinQueue: string[] = []
   private markerBuffer = ''
-  private unacknowledgedChars = 0
+  private unacknowledgedCharsByClient = new Map<symbol, number>()
   private subprocessPaused = false
   private shellReadyTimer: ReturnType<typeof setTimeout> | null = null
   private killTimer: ReturnType<typeof setTimeout> | null = null
@@ -140,21 +140,21 @@ export class Session {
     this.subprocess.resize(cols, rows)
   }
 
-  acknowledgeDataEvent(charCount: number): void {
+  acknowledgeDataEvent(clientToken: symbol, charCount: number): void {
     if (charCount <= 0) {
       return
     }
-    this.unacknowledgedChars = Math.max(0, this.unacknowledgedChars - charCount)
-    if (
-      this.subprocessPaused &&
-      this.unacknowledgedChars < FLOW_CONTROL_LOW_WATERMARK_CHARS &&
-      !this._disposed &&
-      this._state !== 'exited' &&
-      this.subprocess.resume
-    ) {
-      this.subprocess.resume()
-      this.subprocessPaused = false
+    const current = this.unacknowledgedCharsByClient.get(clientToken)
+    if (current === undefined) {
+      return
     }
+    const next = Math.max(0, current - charCount)
+    if (next === 0) {
+      this.unacknowledgedCharsByClient.delete(clientToken)
+    } else {
+      this.unacknowledgedCharsByClient.set(clientToken, next)
+    }
+    this.resumeIfFlowBelowWatermark()
   }
 
   kill(): void {
@@ -190,8 +190,11 @@ export class Session {
     if (idx !== -1) {
       this.attachedClients.splice(idx, 1)
     }
+    this.unacknowledgedCharsByClient.delete(token)
     if (this.attachedClients.length === 0) {
       this.clearFlowControlState()
+    } else {
+      this.resumeIfFlowBelowWatermark()
     }
   }
 
@@ -247,7 +250,7 @@ export class Session {
 
     this.attachedClients = []
     this.preReadyStdinQueue = []
-    this.unacknowledgedChars = 0
+    this.unacknowledgedCharsByClient.clear()
     this.subprocessPaused = false
     this.postReadyFlushGate.clear()
     this.emulator.dispose()
@@ -328,11 +331,10 @@ export class Session {
       return
     }
 
+    const clients = this.attachedClients.slice()
+
     // Feed data to headless emulator for state tracking
     this.emulator.write(data)
-    if (this.attachedClients.length > 0) {
-      this.observeUnacknowledgedData(data.length)
-    }
 
     if (this._shellState === 'pending') {
       this.scanForShellMarker(data)
@@ -341,19 +343,26 @@ export class Session {
     }
 
     // Broadcast to attached clients
-    for (const client of this.attachedClients) {
+    for (const client of clients) {
+      if (!this.isClientAttached(client.token)) {
+        continue
+      }
+      this.observeUnacknowledgedData(client.token, data.length)
       client.onData(data)
     }
   }
 
-  private observeUnacknowledgedData(charCount: number): void {
+  private observeUnacknowledgedData(clientToken: symbol, charCount: number): void {
     if (charCount <= 0) {
       return
     }
-    this.unacknowledgedChars += charCount
+    this.unacknowledgedCharsByClient.set(
+      clientToken,
+      (this.unacknowledgedCharsByClient.get(clientToken) ?? 0) + charCount
+    )
     if (
       !this.subprocessPaused &&
-      this.unacknowledgedChars > FLOW_CONTROL_HIGH_WATERMARK_CHARS &&
+      this.maxUnacknowledgedChars() > FLOW_CONTROL_HIGH_WATERMARK_CHARS &&
       this.subprocess.pause
     ) {
       // Why: renderer ACKs arrive after xterm parses output. Pausing here
@@ -363,16 +372,34 @@ export class Session {
     }
   }
 
-  private clearFlowControlState(): void {
-    this.unacknowledgedChars = 0
+  private isClientAttached(clientToken: symbol): boolean {
+    return this.attachedClients.some((client) => client.token === clientToken)
+  }
+
+  private maxUnacknowledgedChars(): number {
+    let max = 0
+    for (const count of this.unacknowledgedCharsByClient.values()) {
+      max = Math.max(max, count)
+    }
+    return max
+  }
+
+  private resumeIfFlowBelowWatermark(): void {
     if (
       this.subprocessPaused &&
+      this.maxUnacknowledgedChars() < FLOW_CONTROL_LOW_WATERMARK_CHARS &&
       !this._disposed &&
       this._state !== 'exited' &&
       this.subprocess.resume
     ) {
       this.subprocess.resume()
+      this.subprocessPaused = false
     }
+  }
+
+  private clearFlowControlState(): void {
+    this.unacknowledgedCharsByClient.clear()
+    this.resumeIfFlowBelowWatermark()
     this.subprocessPaused = false
   }
 
@@ -393,7 +420,7 @@ export class Session {
       this.shellReadyTimer = null
     }
     this.postReadyFlushGate.clear()
-    this.unacknowledgedChars = 0
+    this.unacknowledgedCharsByClient.clear()
     this.subprocessPaused = false
 
     // Why: release the ptmx fd on the natural-exit path. Without this, the
@@ -485,7 +512,7 @@ export class Session {
     const clients = this.attachedClients
     this.attachedClients = []
     this.preReadyStdinQueue = []
-    this.unacknowledgedChars = 0
+    this.unacknowledgedCharsByClient.clear()
     this.subprocessPaused = false
     this.postReadyFlushGate.clear()
     this.emulator.dispose()

@@ -141,7 +141,7 @@ export class RelayDispatcher {
   }
 
   private feedForClient(client: RelayClient, data: Buffer): void {
-    if (this.disposed) {
+    if (this.disposed || client.closed) {
       return
     }
     try {
@@ -205,6 +205,10 @@ export class RelayDispatcher {
   }
 
   private handleFrame(client: RelayClient, frame: DecodedFrame): void {
+    if (this.disposed || client.closed) {
+      return
+    }
+
     if (frame.id > client.highestReceivedSeq) {
       client.highestReceivedSeq = frame.id
     }
@@ -257,7 +261,10 @@ export class RelayDispatcher {
     const context: RequestContext = {
       clientId: client.id,
       isStale: () =>
-        client.generation !== gen || !this.clients.has(client.id) || abortController.signal.aborted,
+        client.closed ||
+        client.generation !== gen ||
+        !this.clients.has(client.id) ||
+        abortController.signal.aborted,
       signal: abortController.signal
     }
     try {
@@ -290,7 +297,7 @@ export class RelayDispatcher {
       const gen = client.generation
       handler(notif.params ?? {}, {
         clientId: client.id,
-        isStale: () => client.generation !== gen || !this.clients.has(client.id)
+        isStale: () => client.closed || client.generation !== gen || !this.clients.has(client.id)
       })
     }
   }
@@ -346,6 +353,7 @@ export class RelayDispatcher {
       client.write(frame)
       return true
     } catch (err) {
+      this.requestAborts.abortClient(client.id)
       client.closed = true
       client.generation++
       if (client !== this.primaryClient) {

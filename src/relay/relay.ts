@@ -406,8 +406,14 @@ async function main(): Promise<void> {
     ptyHandler.cancelGraceTimer()
 
     const clientId = dispatcher.attachClient((data) => {
-      if (!sock.destroyed) {
+      try {
+        if (sock.destroyed || !sock.writable) {
+          throw new Error('socket is not writable')
+        }
         sock.write(data)
+      } catch (err) {
+        sock.destroy()
+        throw err
       }
     })
     socketClients.set(sock, clientId)

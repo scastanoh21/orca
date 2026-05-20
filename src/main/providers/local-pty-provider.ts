@@ -488,11 +488,9 @@ export class LocalPtyProvider implements IPtyProvider {
     if (!proc) {
       return
     }
-    // Why: disposePtyListeners removes the onExit callback, so the natural
-    // exit cleanup path from node-pty won't fire. Cleanup and notification
-    // must happen unconditionally after the try/catch.
-    // Note: clearPtyState calls disposePtyListeners internally, so we only
-    // need to call it once via clearPtyState after killing the process.
+    // Why: dispose listeners before kill because node-pty/test doubles may
+    // fire exit synchronously. clearPtyState later also clears flow-control
+    // debt so late ACKs cannot resume a killed PTY object.
     disposePtyListeners(id)
     try {
       proc.kill()
@@ -500,9 +498,7 @@ export class LocalPtyProvider implements IPtyProvider {
       /* Process may already be dead */
     }
     destroyPtyProcess(proc)
-    ptyProcesses.delete(id)
-    ptyShellName.delete(id)
-    ptyLoadGeneration.delete(id)
+    clearPtyState(id)
     this.opts.onExit?.(id, -1)
     for (const cb of exitListeners) {
       cb({ id, code: -1 })

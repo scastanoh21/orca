@@ -15,7 +15,8 @@ import {
   ptyExitHandlers,
   ptyTeardownHandlers,
   ensurePtyDispatcher,
-  getEagerPtyBufferHandle
+  getEagerPtyBufferHandle,
+  ptyHandlerKey
 } from './pty-dispatcher'
 import type { PtyTransport, IpcPtyTransportOptions, PtyConnectResult } from './pty-dispatcher'
 import { createBellDetector } from './bell-detector'
@@ -28,6 +29,7 @@ export {
   getEagerPtyBufferHandle,
   registerEagerPtyBuffer,
   subscribeToPtyExit,
+  unregisterScopedPtyDataHandlers,
   unregisterPtyDataHandlers
 } from './pty-dispatcher'
 export type {
@@ -250,16 +252,50 @@ export function createIpcPtyTransport(opts: IpcPtyTransportOptions = {}): PtyTra
   })
   let storedCallbacks: Parameters<PtyTransport['connect']>[0]['callbacks'] = {}
 
+  function writePty(id: string, data: string): void {
+    if (connectionId) {
+      window.api.pty.write(id, data, connectionId)
+    } else {
+      window.api.pty.write(id, data)
+    }
+  }
+
+  function resizePty(id: string, cols: number, rows: number): void {
+    if (connectionId) {
+      window.api.pty.resize(id, cols, rows, connectionId)
+    } else {
+      window.api.pty.resize(id, cols, rows)
+    }
+  }
+
+  function killPty(id: string): void {
+    if (connectionId) {
+      void window.api.pty.kill(id, { connectionId })
+    } else {
+      void window.api.pty.kill(id)
+    }
+  }
+
+  function ackPtyData(id: string, charCount: number): void {
+    if (connectionId) {
+      window.api.pty.ackData(id, charCount, connectionId)
+    } else {
+      window.api.pty.ackData(id, charCount)
+    }
+  }
+
   function unregisterPtyHandlers(id: string): void {
-    ptyDataHandlers.delete(id)
-    ptyReplayHandlers.delete(id)
-    ptyExitHandlers.delete(id)
-    ptyTeardownHandlers.delete(id)
+    const key = ptyHandlerKey(id, connectionId)
+    ptyDataHandlers.delete(key)
+    ptyReplayHandlers.delete(key)
+    ptyExitHandlers.delete(key)
+    ptyTeardownHandlers.delete(key)
   }
 
   function unregisterPtyDataAndStatusHandlers(id: string): void {
-    ptyDataHandlers.delete(id)
-    ptyReplayHandlers.delete(id)
+    const key = ptyHandlerKey(id, connectionId)
+    ptyDataHandlers.delete(key)
+    ptyReplayHandlers.delete(key)
   }
 
   // Why: true while we're replaying buffered/attach-time bytes into the
@@ -271,17 +307,18 @@ export function createIpcPtyTransport(opts: IpcPtyTransportOptions = {}): PtyTra
   // Why: shared by connect() and attach() to avoid duplicating title/bell/exit
   // logic across the two code paths that register a PTY.
   function registerPtyDataHandler(id: string): void {
+    const key = ptyHandlerKey(id, connectionId)
     // Why: relay pty.attach sends replay data via a dedicated pty:replay IPC
     // channel. Route it through onReplayData so the renderer engages the
     // replay guard and xterm auto-replies do not leak into the shell.
-    ptyReplayHandlers.set(id, (data) => {
+    ptyReplayHandlers.set(key, (data) => {
       if (storedCallbacks.onReplayData) {
         storedCallbacks.onReplayData(data)
       } else {
         storedCallbacks.onData?.(data, 0)
       }
     })
-    ptyDataHandlers.set(id, (data, sourceCharCount) => {
+    ptyDataHandlers.set(key, (data, sourceCharCount) => {
       outputProcessor.processData(data, storedCallbacks, {
         replayingBufferedData,
         suppressAttentionEvents,
@@ -295,7 +332,8 @@ export function createIpcPtyTransport(opts: IpcPtyTransportOptions = {}): PtyTra
   }
 
   function registerPtyExitHandler(id: string): void {
-    ptyExitHandlers.set(id, (code) => {
+    const key = ptyHandlerKey(id, connectionId)
+    ptyExitHandlers.set(key, (code) => {
       clearAccumulatedState()
       connected = false
       ptyId = null
@@ -310,7 +348,7 @@ export function createIpcPtyTransport(opts: IpcPtyTransportOptions = {}): PtyTra
     // accumulated closure state (staleTitleTimer, agent tracker) that
     // would otherwise fire stale notifications after the data handler
     // is removed but before the exit event arrives.
-    ptyTeardownHandlers.set(id, clearAccumulatedState)
+    ptyTeardownHandlers.set(key, clearAccumulatedState)
   }
 
   return {
@@ -341,7 +379,7 @@ export function createIpcPtyTransport(opts: IpcPtyTransportOptions = {}): PtyTra
 
         // If destroyed while spawn was in flight, kill the new pty and bail
         if (destroyed) {
-          window.api.pty.kill(spawnResult.id)
+          killPty(spawnResult.id)
           return
         }
 
@@ -431,7 +469,7 @@ export function createIpcPtyTransport(opts: IpcPtyTransportOptions = {}): PtyTra
       // Why: replay buffered data through the real handler so title/bell/agent
       // tracking (including OSC 9999 agent status) processes the output —
       // otherwise restored tabs keep a default title.
-      const bufferHandle = getEagerPtyBufferHandle(id)
+      const bufferHandle = getEagerPtyBufferHandle(id, connectionId)
       if (bufferHandle) {
         const buffered = bufferHandle.flush()
         if (buffered) {
@@ -491,7 +529,7 @@ export function createIpcPtyTransport(opts: IpcPtyTransportOptions = {}): PtyTra
       }
 
       if (options.cols && options.rows) {
-        window.api.pty.resize(id, options.cols, options.rows)
+        resizePty(id, options.cols, options.rows)
       }
 
       storedCallbacks.onConnect?.()
@@ -502,7 +540,7 @@ export function createIpcPtyTransport(opts: IpcPtyTransportOptions = {}): PtyTra
       clearAccumulatedState()
       if (ptyId) {
         const id = ptyId
-        window.api.pty.kill(id)
+        killPty(id)
         connected = false
         ptyId = null
         unregisterPtyHandlers(id)
@@ -529,7 +567,7 @@ export function createIpcPtyTransport(opts: IpcPtyTransportOptions = {}): PtyTra
       if (!connected || !ptyId) {
         return false
       }
-      window.api.pty.write(ptyId, data)
+      writePty(ptyId, data)
       return true
     },
 
@@ -537,14 +575,14 @@ export function createIpcPtyTransport(opts: IpcPtyTransportOptions = {}): PtyTra
       if (!connected || !ptyId || charCount <= 0) {
         return
       }
-      window.api.pty.ackData(ptyId, charCount)
+      ackPtyData(ptyId, charCount)
     },
 
     resize(cols: number, rows: number): boolean {
       if (!connected || !ptyId) {
         return false
       }
-      window.api.pty.resize(ptyId, cols, rows)
+      resizePty(ptyId, cols, rows)
       return true
     },
 

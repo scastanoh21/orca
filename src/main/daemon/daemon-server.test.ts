@@ -1,3 +1,5 @@
+/* oxlint-disable max-lines -- Why: daemon RPC routing and stream lifecycle
+tests share socket/client setup that is easiest to audit in one harness. */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { connect, type Socket } from 'net'
 import { tmpdir } from 'os'
@@ -68,11 +70,13 @@ describe('DaemonServer', () => {
     rmSync(dir, { recursive: true, force: true })
   })
 
-  async function startServer(): Promise<void> {
+  async function startServer(
+    spawnSubprocess = (): MockSubprocess => createMockSubprocess()
+  ): Promise<void> {
     server = new DaemonServer({
       socketPath,
       tokenPath,
-      spawnSubprocess: () => createMockSubprocess()
+      spawnSubprocess
     })
     await server.start()
   }
@@ -166,6 +170,161 @@ describe('DaemonServer', () => {
       await new Promise((resolve) => setTimeout(resolve, 20))
 
       expect(subprocess.resume).toHaveBeenCalledTimes(1)
+    })
+
+    it('keeps daemon flow-control ACK debt per connected client', async () => {
+      await startServer()
+      const firstClient = new DaemonClient({ socketPath, tokenPath })
+      const secondClient = new DaemonClient({ socketPath, tokenPath })
+      try {
+        await firstClient.ensureConnected()
+        await secondClient.ensureConnected()
+
+        await firstClient.request('createOrAttach', {
+          sessionId: 'test-session',
+          cols: 80,
+          rows: 24
+        })
+        await secondClient.request('createOrAttach', {
+          sessionId: 'test-session',
+          cols: 80,
+          rows: 24
+        })
+
+        const subprocess = spawnedSubprocesses[0]
+        subprocess.simulateData('x'.repeat(100_001))
+        expect(subprocess.pause).toHaveBeenCalledTimes(1)
+
+        expect(
+          firstClient.notify('acknowledgeDataEvent', {
+            sessionId: 'test-session',
+            charCount: 100_001
+          })
+        ).toBe(true)
+        await new Promise((resolve) => setTimeout(resolve, 20))
+        expect(subprocess.resume).not.toHaveBeenCalled()
+
+        expect(
+          secondClient.notify('acknowledgeDataEvent', {
+            sessionId: 'test-session',
+            charCount: 100_001
+          })
+        ).toBe(true)
+        await new Promise((resolve) => setTimeout(resolve, 20))
+        expect(subprocess.resume).toHaveBeenCalledTimes(1)
+      } finally {
+        firstClient.disconnect()
+        secondClient.disconnect()
+      }
+    })
+
+    it('detaches sessions when the stream socket closes but control remains open', async () => {
+      await startServer()
+      const c = await connectClient()
+
+      await c.request('createOrAttach', {
+        sessionId: 'test-session',
+        cols: 80,
+        rows: 24
+      })
+
+      const streamSocket = (c as unknown as { streamSocket: Socket | null }).streamSocket
+      streamSocket?.destroy()
+      await new Promise((resolve) => setTimeout(resolve, 20))
+
+      const subprocess = spawnedSubprocesses[0]
+      subprocess.simulateData('x'.repeat(100_001))
+
+      expect(subprocess.pause).not.toHaveBeenCalled()
+    })
+
+    it('detaches a session if the stream socket closes during createOrAttach', async () => {
+      await startServer(() => {
+        const clientRecord = (
+          server as unknown as {
+            clients: Map<string, { streamSocket: Socket | null }>
+          }
+        ).clients.get('stale-during-attach')
+        clientRecord?.streamSocket?.destroy()
+        return createMockSubprocess()
+      })
+      const control = await connectRawSocket('control', 'stale-during-attach')
+      const stream = await connectRawSocket('stream', 'stale-during-attach')
+      try {
+        control.write(
+          encodeNdjson({
+            id: 'req-attach',
+            type: 'createOrAttach',
+            payload: { sessionId: 'test-session', cols: 80, rows: 24 }
+          })
+        )
+
+        await expect(readSocketLine(control)).resolves.toContain('Client stream disconnected')
+
+        const subprocess = spawnedSubprocesses[0]
+        subprocess.simulateData('x'.repeat(100_001))
+        expect(subprocess.pause).not.toHaveBeenCalled()
+      } finally {
+        stream.destroy()
+        control.destroy()
+      }
+    })
+
+    it('disconnects a client and resumes paused PTYs when stream writes throw', async () => {
+      await startServer()
+      const c = await connectClient()
+      const clientId = (c as unknown as { clientId: string }).clientId
+
+      await c.request('createOrAttach', {
+        sessionId: 'test-session',
+        cols: 80,
+        rows: 24
+      })
+
+      const clientRecord = (
+        server as unknown as {
+          clients: Map<
+            string,
+            { streamSocket: (Socket & { write: ReturnType<typeof vi.fn> }) | null }
+          >
+        }
+      ).clients.get(clientId)
+      if (!clientRecord?.streamSocket) {
+        throw new Error('missing daemon stream socket')
+      }
+      vi.spyOn(clientRecord.streamSocket, 'write').mockImplementation(() => {
+        throw new Error('stream write failed')
+      })
+
+      const subprocess = spawnedSubprocesses[0]
+      subprocess.simulateData('x'.repeat(100_001))
+      expect(subprocess.pause).toHaveBeenCalledTimes(1)
+
+      await new Promise((resolve) => setTimeout(resolve, 20))
+
+      expect(subprocess.resume).toHaveBeenCalledTimes(1)
+      expect((server as unknown as { clients: Map<string, unknown> }).clients.has(clientId)).toBe(
+        false
+      )
+    })
+
+    it('rejects session attachment when the client has no stream socket', async () => {
+      await startServer()
+      const control = await connectRawSocket('control', 'raw-client-without-stream')
+      try {
+        control.write(
+          encodeNdjson({
+            id: 'req-attach',
+            type: 'createOrAttach',
+            payload: { sessionId: 'test-session', cols: 80, rows: 24 }
+          })
+        )
+
+        await expect(readSocketLine(control)).resolves.toContain('Stream socket is not connected')
+        expect(spawnedSubprocesses).toHaveLength(0)
+      } finally {
+        control.destroy()
+      }
     })
 
     it('handles listSessions', async () => {

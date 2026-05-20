@@ -100,6 +100,7 @@ export async function launchAgentBackgroundSession(
     ORCA_WORKTREE_ID: worktreeId
   }
   const runtimeTarget = getActiveRuntimeTarget(store.settings)
+  const connectionId = repo?.connectionId ?? null
   let ptyId: string
   try {
     if (runtimeTarget.kind === 'environment') {
@@ -127,7 +128,7 @@ export async function launchAgentBackgroundSession(
         cwd: worktree.path,
         command: startupPlan.launchCommand,
         env: paneEnv,
-        connectionId: repo?.connectionId ?? null,
+        connectionId,
         worktreeId,
         tabId: tab.id,
         leafId,
@@ -187,12 +188,19 @@ export async function launchAgentBackgroundSession(
       .then((result) => handleExit(ptyId, result.wait.exitCode ?? 0))
       .catch(() => {})
   } else {
-    registerEagerPtyBuffer(ptyId, handleExit)
-    unsubscribeData = subscribeToPtyData(ptyId, handleData)
+    if (connectionId) {
+      registerEagerPtyBuffer(ptyId, handleExit, connectionId)
+      unsubscribeData = subscribeToPtyData(ptyId, handleData, connectionId)
+    } else {
+      registerEagerPtyBuffer(ptyId, handleExit)
+      unsubscribeData = subscribeToPtyData(ptyId, handleData)
+    }
     // Why: opening the workspace attaches a real terminal transport and disposes
     // the eager exit handler. This sidecar keeps automation completion tracking
     // alive regardless of whether the tab is hidden or mounted.
-    unsubscribeExit = subscribeToPtyExit(ptyId, (code) => handleExit(ptyId, code))
+    unsubscribeExit = connectionId
+      ? subscribeToPtyExit(ptyId, (code) => handleExit(ptyId, code), connectionId)
+      : subscribeToPtyExit(ptyId, (code) => handleExit(ptyId, code))
   }
 
   if (pasteDraftAfterLaunch !== null) {

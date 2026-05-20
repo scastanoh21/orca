@@ -34,7 +34,7 @@ const MAX_TOMBSTONES = 1000
 const MAX_PENDING_DAEMON_NOTIFICATIONS = 512
 
 type PendingDaemonNotification = {
-  type: 'write' | 'resize' | 'acknowledgeDataEvent'
+  type: 'write' | 'resize'
   payload: unknown
 }
 
@@ -320,7 +320,18 @@ export class DaemonPtyAdapter implements IPtyProvider {
   }
 
   acknowledgeDataEvent(id: string, charCount: number): void {
-    this.sendNotification('acknowledgeDataEvent', { sessionId: id, charCount })
+    if (charCount <= 0 || this.recoveryPromise) {
+      return
+    }
+    if (this.client.notify('acknowledgeDataEvent', { sessionId: id, charCount })) {
+      return
+    }
+    // Why: ACKs describe bytes parsed by the currently attached stream. After
+    // a stream failure/recovery they are stale, so trigger recovery but never
+    // queue/replay them like durable write/resize notifications.
+    void this.recoverActiveSessionsAfterDisconnect().catch((err) =>
+      console.warn('[daemon] reconnect after acknowledgement failure failed:', err)
+    )
   }
 
   async hasChildProcesses(_id: string): Promise<boolean> {

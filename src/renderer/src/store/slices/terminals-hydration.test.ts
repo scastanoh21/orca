@@ -6,7 +6,8 @@ vi.mock('@/runtime/sync-runtime-graph', () => ({
 }))
 vi.mock('@/components/terminal-pane/pty-transport', () => ({
   registerEagerPtyBuffer: vi.fn(),
-  ensurePtyDispatcher: vi.fn()
+  ensurePtyDispatcher: vi.fn(),
+  unregisterScopedPtyDataHandlers: vi.fn()
 }))
 
 const mockApi = {

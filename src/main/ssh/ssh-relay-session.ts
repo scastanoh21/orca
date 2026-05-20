@@ -741,7 +741,9 @@ export class SshRelaySession {
       const win = getWin()
       if (win && !win.isDestroyed()) {
         try {
-          win.webContents.send('pty:data', payload)
+          // Why: non-owning Orca clients can receive relay broadcasts during
+          // SSH reconnection. Tag the source so drop ACKs route to this relay.
+          win.webContents.send('pty:data', { ...payload, connectionId: this.targetId })
           return
         } catch {
           // Fall through and ACK below; the renderer cannot parse bytes that
@@ -756,7 +758,7 @@ export class SshRelaySession {
     ptyProvider.onReplay((payload) => {
       const win = getWin()
       if (win && !win.isDestroyed()) {
-        win.webContents.send('pty:replay', payload)
+        win.webContents.send('pty:replay', { ...payload, connectionId: this.targetId })
       }
     })
     ptyProvider.onExit((payload) => {
@@ -766,7 +768,7 @@ export class SshRelaySession {
       this.runtime?.onPtyExit(payload.id, payload.code)
       const win = getWin()
       if (win && !win.isDestroyed()) {
-        win.webContents.send('pty:exit', payload)
+        win.webContents.send('pty:exit', { ...payload, connectionId: this.targetId })
       }
     })
   }
@@ -811,7 +813,7 @@ export class SshRelaySession {
         // instead of keeping a cursor-only terminal.
         const win = this.getMainWindow()
         if (win && !win.isDestroyed()) {
-          win.webContents.send('pty:exit', { id: ptyId, code: -1 })
+          win.webContents.send('pty:exit', { id: ptyId, code: -1, connectionId: this.targetId })
         }
       }
     }

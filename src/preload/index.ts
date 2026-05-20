@@ -602,16 +602,16 @@ const api = {
       coldRestore?: { scrollback: string; cwd: string }
     }> => ipcRenderer.invoke('pty:spawn', opts),
 
-    write: (id: string, data: string): void => {
-      ipcRenderer.send('pty:write', { id, data })
+    write: (id: string, data: string, connectionId?: string): void => {
+      ipcRenderer.send('pty:write', { id, data, connectionId })
     },
 
-    ackData: (id: string, charCount: number): void => {
-      ipcRenderer.send('pty:ackData', { id, charCount })
+    ackData: (id: string, charCount: number, connectionId?: string): void => {
+      ipcRenderer.send('pty:ackData', { id, charCount, connectionId })
     },
 
-    resize: (id: string, cols: number, rows: number): void => {
-      ipcRenderer.send('pty:resize', { id, cols, rows })
+    resize: (id: string, cols: number, rows: number, connectionId?: string): void => {
+      ipcRenderer.send('pty:resize', { id, cols, rows, connectionId })
     },
 
     /** Why: measurement-only sibling of resize. Fires when a desktop pane
@@ -623,16 +623,20 @@ const api = {
       ipcRenderer.send('pty:reportGeometry', { id, cols, rows })
     },
 
-    signal: (id: string, signal: string): void => {
-      ipcRenderer.send('pty:signal', { id, signal })
+    signal: (id: string, signal: string, connectionId?: string): void => {
+      ipcRenderer.send('pty:signal', { id, signal, connectionId })
     },
 
     ackColdRestore: (id: string): void => {
       ipcRenderer.send('pty:ackColdRestore', { id })
     },
 
-    kill: (id: string, opts?: { keepHistory?: boolean }): Promise<void> =>
-      ipcRenderer.invoke('pty:kill', { id, keepHistory: opts?.keepHistory ?? false }),
+    kill: (id: string, opts?: { keepHistory?: boolean; connectionId?: string }): Promise<void> =>
+      ipcRenderer.invoke('pty:kill', {
+        id,
+        keepHistory: opts?.keepHistory ?? false,
+        connectionId: opts?.connectionId
+      }),
 
     listSessions: (): Promise<{ id: string; cwd: string; title: string }[]> =>
       ipcRenderer.invoke('pty:listSessions'),
@@ -650,23 +654,35 @@ const api = {
      *  Returns `''` when the id is unknown or the platform cannot resolve one. */
     getCwd: (id: string): Promise<string> => ipcRenderer.invoke('pty:getCwd', { id }),
 
-    onData: (callback: (data: { id: string; data: string }) => void): (() => void) => {
-      const listener = (_event: Electron.IpcRendererEvent, data: { id: string; data: string }) =>
-        callback(data)
+    onData: (
+      callback: (data: { id: string; data: string; connectionId?: string }) => void
+    ): (() => void) => {
+      const listener = (
+        _event: Electron.IpcRendererEvent,
+        data: { id: string; data: string; connectionId?: string }
+      ) => callback(data)
       ipcRenderer.on('pty:data', listener)
       return () => ipcRenderer.removeListener('pty:data', listener)
     },
 
-    onReplay: (callback: (data: { id: string; data: string }) => void): (() => void) => {
-      const listener = (_event: Electron.IpcRendererEvent, data: { id: string; data: string }) =>
-        callback(data)
+    onReplay: (
+      callback: (data: { id: string; data: string; connectionId?: string }) => void
+    ): (() => void) => {
+      const listener = (
+        _event: Electron.IpcRendererEvent,
+        data: { id: string; data: string; connectionId?: string }
+      ) => callback(data)
       ipcRenderer.on('pty:replay', listener)
       return () => ipcRenderer.removeListener('pty:replay', listener)
     },
 
-    onExit: (callback: (data: { id: string; code: number }) => void): (() => void) => {
-      const listener = (_event: Electron.IpcRendererEvent, data: { id: string; code: number }) =>
-        callback(data)
+    onExit: (
+      callback: (data: { id: string; code: number; connectionId?: string }) => void
+    ): (() => void) => {
+      const listener = (
+        _event: Electron.IpcRendererEvent,
+        data: { id: string; code: number; connectionId?: string }
+      ) => callback(data)
       ipcRenderer.on('pty:exit', listener)
       return () => ipcRenderer.removeListener('pty:exit', listener)
     },

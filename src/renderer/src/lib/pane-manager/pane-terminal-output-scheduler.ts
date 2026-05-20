@@ -209,6 +209,14 @@ function pumpTerminalWriteQueue(
 
   state.writing = true
   state.current = next
+  if (next.data.length === 0) {
+    try {
+      invokeWriteCallback(next)
+    } finally {
+      finishTerminalWrite(terminal, state)
+    }
+    return
+  }
   let settled = false
   const finish = (): void => {
     if (settled) {

@@ -71,7 +71,8 @@ export async function inspectRuntimeTerminalProcess(
 export function sendRuntimePtyInput(
   settings: Pick<GlobalSettings, 'activeRuntimeEnvironmentId'> | null | undefined,
   ptyId: string,
-  data: string
+  data: string,
+  connectionId?: string
 ): boolean {
   const ownerEnvironmentId = getRemoteRuntimePtyEnvironmentId(ptyId)
   const target = ownerEnvironmentId
@@ -79,7 +80,11 @@ export function sendRuntimePtyInput(
     : getActiveRuntimeTarget(settings)
   const terminal = getRemoteRuntimeTerminalHandle(ptyId)
   if (target.kind !== 'environment' || !terminal) {
-    window.api.pty.write(ptyId, data)
+    if (connectionId) {
+      window.api.pty.write(ptyId, data, connectionId)
+    } else {
+      window.api.pty.write(ptyId, data)
+    }
     return true
   }
 

@@ -6,6 +6,7 @@ import {
 } from '@/runtime/runtime-terminal-inspection'
 import type { AgentStartupPlan } from '@/lib/tui-agent-startup'
 import { isShellProcess } from '@/lib/tui-agent-startup'
+import { getConnectionId } from '@/lib/connection-context'
 import type { OrcaHooks, TaskViewPresetId } from '../../../shared/types'
 import { normalizeHookCommandSourcePolicy } from '../../../shared/hook-command-source-policy'
 
@@ -267,7 +268,13 @@ export async function ensureAgentStartupInTerminal(args: {
   // session and submitted. Wait until the agent owns the PTY before writing.
   if (startup.followupPrompt) {
     await waitForAgentForeground(ptyId, startup.expectedProcess)
-    sendRuntimePtyInput(useAppStore.getState().settings, ptyId, `${startup.followupPrompt}\r`)
+    const connectionId = getConnectionId(worktreeId) ?? undefined
+    sendRuntimePtyInput(
+      useAppStore.getState().settings,
+      ptyId,
+      `${startup.followupPrompt}\r`,
+      connectionId
+    )
   }
 
   // Why: draftPrompt uses bracketed-paste so the URL lands atomically in the

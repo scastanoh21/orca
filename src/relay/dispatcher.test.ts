@@ -1,3 +1,5 @@
+/* oxlint-disable max-lines -- Why: dispatcher protocol, reconnect, and
+request-lifetime tests share one frame decoder harness. */
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 import { RelayDispatcher } from './dispatcher'
 import {
@@ -333,6 +335,73 @@ describe('RelayDispatcher', () => {
     expect(observedSignal?.aborted).toBe(true)
     resolveHandler()
     await vi.advanceTimersByTimeAsync(0)
+  })
+
+  it('aborts in-flight request contexts after write failure detaches the client', async () => {
+    const failingDispatcher = new RelayDispatcher(() => {
+      throw new Error('stdout closed')
+    })
+    let observedSignal: AbortSignal | undefined
+    let resolveHandler!: () => void
+    failingDispatcher.onRequest(
+      'slow.method',
+      (_params, context) =>
+        new Promise((resolve) => {
+          observedSignal = context.signal
+          resolveHandler = () => resolve(null)
+        })
+    )
+
+    const req: JsonRpcRequest = { jsonrpc: '2.0', id: 101, method: 'slow.method' }
+    failingDispatcher.feed(encodeJsonRpcFrame(req, 1, 0))
+    await vi.advanceTimersByTimeAsync(0)
+    failingDispatcher.notify('pty.data', { id: 'pty-1', data: 'x' })
+
+    expect(observedSignal?.aborted).toBe(true)
+    resolveHandler()
+    await vi.advanceTimersByTimeAsync(0)
+    failingDispatcher.dispose()
+  })
+
+  it('ignores inbound frames after a primary client write failure closes it', async () => {
+    const failingDispatcher = new RelayDispatcher(() => {
+      throw new Error('stdout closed')
+    })
+    const handler = vi.fn().mockResolvedValue(null)
+    failingDispatcher.onRequest('mutate.after-close', handler)
+
+    failingDispatcher.notify('pty.data', { id: 'pty-1', data: 'x' })
+    failingDispatcher.feed(
+      encodeJsonRpcFrame({ jsonrpc: '2.0', id: 102, method: 'mutate.after-close' }, 1, 0)
+    )
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(handler).not.toHaveBeenCalled()
+    failingDispatcher.dispose()
+  })
+
+  it('stops processing buffered frames after a write failure closes the client', async () => {
+    const failingDispatcher = new RelayDispatcher(() => {
+      throw new Error('stdout closed')
+    })
+    const handler = vi.fn().mockResolvedValue(null)
+    failingDispatcher.onRequest('mutate.after-close', handler)
+
+    const firstFrame = encodeJsonRpcFrame(
+      { jsonrpc: '2.0', id: 103, method: 'missing.method' },
+      1,
+      0
+    )
+    const secondFrame = encodeJsonRpcFrame(
+      { jsonrpc: '2.0', id: 104, method: 'mutate.after-close' },
+      2,
+      0
+    )
+    failingDispatcher.feed(Buffer.concat([firstFrame, secondFrame]))
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(handler).not.toHaveBeenCalled()
+    failingDispatcher.dispose()
   })
 
   it('notifies listeners when the primary client is invalidated', () => {

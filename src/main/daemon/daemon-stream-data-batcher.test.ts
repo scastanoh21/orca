@@ -172,6 +172,33 @@ describe('DaemonStreamDataBatcher', () => {
     expect(fake.write.mock.calls[1]?.[0]).toContain('second')
   })
 
+  it('fails the stream when socket write throws synchronously', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const fake = createFakeSocket([true])
+      const writeError = new Error('socket is not writable')
+      fake.write.mockImplementation(() => {
+        throw writeError
+      })
+      const onStreamFailure = vi.fn()
+      const batcher = new DaemonStreamDataBatcher(() => ({ streamSocket: fake.socket }), {
+        onStreamFailure
+      })
+
+      batcher.enqueue('client-1', 'session-a', 'first')
+      batcher.flush('client-1')
+
+      expect(onStreamFailure).toHaveBeenCalledWith('client-1')
+      expect(warn).toHaveBeenCalledWith(
+        '[daemon] PTY stream socket write failed',
+        expect.objectContaining({ clientId: 'client-1', error: writeError.message })
+      )
+      expect(fake.write).toHaveBeenCalledTimes(1)
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
   it('queues additional output while waiting for drain', () => {
     const fake = createFakeSocket([false, true])
     const batcher = new DaemonStreamDataBatcher(() => ({ streamSocket: fake.socket }))

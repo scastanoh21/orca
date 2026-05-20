@@ -12,7 +12,9 @@ import { createTerminalSessionStateSaveFailureMessage } from '../../../../shared
 
 describe('createIpcPtyTransport', () => {
   const originalWindow = (globalThis as { window?: typeof window }).window
-  let onData: ((payload: { id: string; data: string; synthetic?: boolean }) => void) | null = null
+  let onData:
+    | ((payload: { id: string; data: string; synthetic?: boolean; connectionId?: string }) => void)
+    | null = null
   let onExit: ((payload: { id: string; code: number }) => void) | null = null
 
   beforeEach(() => {
@@ -32,7 +34,14 @@ describe('createIpcPtyTransport', () => {
           ackData: vi.fn(),
           kill: vi.fn(),
           onData: vi.fn(
-            (callback: (payload: { id: string; data: string; synthetic?: boolean }) => void) => {
+            (
+              callback: (payload: {
+                id: string
+                data: string
+                synthetic?: boolean
+                connectionId?: string
+              }) => void
+            ) => {
               onData = callback
               return () => {}
             }
@@ -192,6 +201,41 @@ describe('createIpcPtyTransport', () => {
     expect(window.api.pty.ackData).toHaveBeenCalledTimes(2)
   })
 
+  it('routes eager-buffer ACKs back to the source SSH connection', async () => {
+    const { registerEagerPtyBuffer } = await import('./pty-transport')
+    const data = 'ssh output before pane mount'
+
+    registerEagerPtyBuffer('pty-restored', vi.fn(), 'ssh-1')
+    onData?.({ id: 'pty-restored', data, connectionId: 'ssh-1' })
+
+    expect(window.api.pty.ackData).toHaveBeenCalledWith('pty-restored', data.length, 'ssh-1')
+  })
+
+  it('keeps eager buffers with identical remote PTY ids isolated by SSH connection', async () => {
+    const { registerEagerPtyBuffer } = await import('./pty-transport')
+
+    const handleA = registerEagerPtyBuffer('pty-1', vi.fn(), 'ssh-a')
+    const handleB = registerEagerPtyBuffer('pty-1', vi.fn(), 'ssh-b')
+    onData?.({ id: 'pty-1', data: 'from-a', connectionId: 'ssh-a' })
+    onData?.({ id: 'pty-1', data: 'from-b', connectionId: 'ssh-b' })
+
+    expect(handleA.flush()).toBe('from-a')
+    expect(handleB.flush()).toBe('from-b')
+    expect(window.api.pty.ackData).toHaveBeenCalledWith('pty-1', 'from-a'.length, 'ssh-a')
+    expect(window.api.pty.ackData).toHaveBeenCalledWith('pty-1', 'from-b'.length, 'ssh-b')
+  })
+
+  it('buffers synthetic eager data without acknowledging provider-owned bytes', async () => {
+    const { registerEagerPtyBuffer } = await import('./pty-transport')
+    const synthetic = '\x1b]0;⠋ Cursor Agent\x07'
+
+    const handle = registerEagerPtyBuffer('pty-restored', vi.fn())
+    onData?.({ id: 'pty-restored', data: synthetic, synthetic: true })
+
+    expect(handle.flush()).toBe(synthetic)
+    expect(window.api.pty.ackData).not.toHaveBeenCalled()
+  })
+
   it('acknowledges PTY bytes dropped during detach/remount gaps', async () => {
     const { ensurePtyDispatcher } = await import('./pty-transport')
     ensurePtyDispatcher()
@@ -200,6 +244,84 @@ describe('createIpcPtyTransport', () => {
 
     expect(window.api.pty.ackData).toHaveBeenCalledWith('pty-detached', 'lost output'.length)
     expect(window.api.pty.ackData).toHaveBeenCalledTimes(1)
+  })
+
+  it('routes dropped SSH relay bytes back to the source connection', async () => {
+    const { ensurePtyDispatcher } = await import('./pty-transport')
+    ensurePtyDispatcher()
+
+    onData?.({ id: 'pty-detached', data: 'lost output', connectionId: 'ssh-1' })
+
+    expect(window.api.pty.ackData).toHaveBeenCalledWith(
+      'pty-detached',
+      'lost output'.length,
+      'ssh-1'
+    )
+  })
+
+  it('routes active transport ACKs through the configured SSH connection', async () => {
+    const { createIpcPtyTransport } = await import('./pty-transport')
+    const transport = createIpcPtyTransport({ connectionId: 'ssh-1' })
+
+    await transport.connect({ url: '', callbacks: {} })
+    transport.acknowledgeDataEvent(42)
+
+    expect(window.api.pty.ackData).toHaveBeenCalledWith('pty-1', 42, 'ssh-1')
+  })
+
+  it('routes active transport input, resize, and kill through the configured SSH connection', async () => {
+    const { createIpcPtyTransport } = await import('./pty-transport')
+    const transport = createIpcPtyTransport({ connectionId: 'ssh-1' })
+
+    await transport.connect({ url: '', callbacks: {} })
+    expect(transport.sendInput('ls\r')).toBe(true)
+    expect(transport.resize(100, 30)).toBe(true)
+    transport.disconnect()
+
+    expect(window.api.pty.write).toHaveBeenCalledWith('pty-1', 'ls\r', 'ssh-1')
+    expect(window.api.pty.resize).toHaveBeenCalledWith('pty-1', 100, 30, 'ssh-1')
+    expect(window.api.pty.kill).toHaveBeenCalledWith('pty-1', { connectionId: 'ssh-1' })
+  })
+
+  it('keeps identical remote PTY ids isolated by SSH connection', async () => {
+    const { createIpcPtyTransport } = await import('./pty-transport')
+    const onDataA = vi.fn()
+    const onDataB = vi.fn()
+    const transportA = createIpcPtyTransport({ connectionId: 'ssh-a' })
+    const transportB = createIpcPtyTransport({ connectionId: 'ssh-b' })
+
+    await transportA.connect({ url: '', callbacks: { onData: onDataA } })
+    await transportB.connect({ url: '', callbacks: { onData: onDataB } })
+
+    onData?.({ id: 'pty-1', data: 'from-a', connectionId: 'ssh-a' })
+    onData?.({ id: 'pty-1', data: 'from-b', connectionId: 'ssh-b' })
+    onData?.({ id: 'pty-1', data: 'from-c', connectionId: 'ssh-c' })
+
+    expect(onDataA).toHaveBeenCalledWith('from-a', 'from-a'.length)
+    expect(onDataB).toHaveBeenCalledWith('from-b', 'from-b'.length)
+    expect(onDataA).not.toHaveBeenCalledWith('from-b', 'from-b'.length)
+    expect(onDataB).not.toHaveBeenCalledWith('from-a', 'from-a'.length)
+    expect(window.api.pty.ackData).toHaveBeenCalledWith('pty-1', 'from-c'.length, 'ssh-c')
+  })
+
+  it('unregisters only the matching SSH-scoped PTY data handler', async () => {
+    const { createIpcPtyTransport, unregisterScopedPtyDataHandlers } =
+      await import('./pty-transport')
+    const onDataA = vi.fn()
+    const onDataB = vi.fn()
+    const transportA = createIpcPtyTransport({ connectionId: 'ssh-a' })
+    const transportB = createIpcPtyTransport({ connectionId: 'ssh-b' })
+
+    await transportA.connect({ url: '', callbacks: { onData: onDataA } })
+    await transportB.connect({ url: '', callbacks: { onData: onDataB } })
+
+    unregisterScopedPtyDataHandlers([{ ptyId: 'pty-1', connectionId: 'ssh-a' }])
+    onData?.({ id: 'pty-1', data: 'from-a', connectionId: 'ssh-a' })
+    onData?.({ id: 'pty-1', data: 'from-b', connectionId: 'ssh-b' })
+
+    expect(onDataA).not.toHaveBeenCalled()
+    expect(onDataB).toHaveBeenCalledWith('from-b', 'from-b'.length)
+    expect(window.api.pty.ackData).toHaveBeenCalledWith('pty-1', 'from-a'.length, 'ssh-a')
   })
 
   it('does not acknowledge synthetic title bytes during detach/remount gaps', async () => {
@@ -408,6 +530,32 @@ describe('createIpcPtyTransport', () => {
     expect(killMock).toHaveBeenCalledWith('pty-late')
     expect(onPtySpawn).not.toHaveBeenCalled()
     expect(transport.getPtyId()).toBeNull()
+  })
+
+  it('kills a late SSH spawn through the configured connection after destroy', async () => {
+    const { createIpcPtyTransport } = await import('./pty-transport')
+    const spawnControls: { resolve: ((value: { id: string }) => void) | null } = { resolve: null }
+    window.api.pty.spawn = vi.fn(
+      () =>
+        new Promise<{ id: string }>((resolve) => {
+          spawnControls.resolve = resolve
+        })
+    )
+
+    const transport = createIpcPtyTransport({ connectionId: 'ssh-1' })
+    const connectPromise = transport.connect({
+      url: '',
+      callbacks: {}
+    })
+
+    transport.destroy?.()
+    if (!spawnControls.resolve) {
+      throw new Error('Expected spawn resolver to be captured')
+    }
+    spawnControls.resolve({ id: 'pty-late' })
+    await connectPromise
+
+    expect(window.api.pty.kill).toHaveBeenCalledWith('pty-late', { connectionId: 'ssh-1' })
   })
 
   it('unregisterPtyDataHandlers prevents final data burst from triggering notifications', async () => {

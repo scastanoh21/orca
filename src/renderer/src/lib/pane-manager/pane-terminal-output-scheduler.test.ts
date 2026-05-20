@@ -236,6 +236,20 @@ describe('pane terminal output scheduler', () => {
     expect(terminal.write.mock.calls.map(([data]) => data)).toEqual(['stuck', 'after'])
   })
 
+  it('does not send empty parse barriers to xterm writes', async () => {
+    vi.useFakeTimers()
+    const { waitForTerminalOutputParsed, writeTerminalOutput } = await loadScheduler()
+    const terminal = createTerminal()
+
+    const parsed = waitForTerminalOutputParsed(terminal)
+    writeTerminalOutput(terminal, 'after', { foreground: true })
+
+    await parsed
+
+    expect(terminal.write.mock.calls.map(([data]) => data)).toEqual(['after'])
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
   it('survives a write to a disposed terminal during background drain', async () => {
     vi.useFakeTimers()
     const { writeTerminalOutput } = await loadScheduler()

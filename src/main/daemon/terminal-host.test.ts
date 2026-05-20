@@ -99,6 +99,28 @@ describe('TerminalHost', () => {
       expect(spawnFn).toHaveBeenCalledOnce()
     })
 
+    it('keeps existing attached clients when another client attaches', async () => {
+      const firstOnData = vi.fn()
+      const secondOnData = vi.fn()
+      await host.createOrAttach({
+        sessionId: 'session-1',
+        cols: 80,
+        rows: 24,
+        streamClient: { onData: firstOnData, onExit: vi.fn() }
+      })
+      await host.createOrAttach({
+        sessionId: 'session-1',
+        cols: 80,
+        rows: 24,
+        streamClient: { onData: secondOnData, onExit: vi.fn() }
+      })
+
+      lastSubprocess._onDataCb?.('broadcast')
+
+      expect(firstOnData).toHaveBeenCalledWith('broadcast')
+      expect(secondOnData).toHaveBeenCalledWith('broadcast')
+    })
+
     it('returns snapshot when attaching to existing session', async () => {
       await host.createOrAttach({
         sessionId: 'session-1',

@@ -266,6 +266,8 @@ describe('registerPtyHandlers', () => {
 
   afterEach(() => {
     unregisterSshPtyProvider('ssh-1')
+    unregisterSshPtyProvider('ssh-a')
+    unregisterSshPtyProvider('ssh-b')
     setLocalPtyProvider(new LocalPtyProvider())
     if (savedOpenCodeConfigDir !== undefined) {
       process.env.OPENCODE_CONFIG_DIR = savedOpenCodeConfigDir
@@ -1687,6 +1689,111 @@ describe('registerPtyHandlers', () => {
 
     await expect(handlers.get('pty:kill')!(null, { id: 'remote-pty' })).resolves.toBeUndefined()
     expect(store.markSshRemotePtyLease).toHaveBeenCalledWith('ssh-1', 'remote-pty', 'terminated')
+  })
+
+  it('routes source-tagged PTY ACKs to the SSH provider even without local ownership', () => {
+    const provider = {
+      spawn: vi.fn(),
+      write: vi.fn(),
+      resize: vi.fn(),
+      shutdown: vi.fn(),
+      sendSignal: vi.fn(),
+      getCwd: vi.fn(),
+      getInitialCwd: vi.fn(),
+      clearBuffer: vi.fn(),
+      acknowledgeDataEvent: vi.fn(),
+      onData: vi.fn(() => () => {}),
+      onReplay: vi.fn(() => () => {}),
+      onExit: vi.fn(() => () => {}),
+      listProcesses: vi.fn(),
+      hasChildProcesses: vi.fn(),
+      getForegroundProcess: vi.fn(),
+      serialize: vi.fn(),
+      revive: vi.fn(),
+      getDefaultShell: vi.fn(),
+      getProfiles: vi.fn()
+    }
+    registerSshPtyProvider('ssh-1', provider as never)
+    try {
+      registerPtyHandlers(mainWindow as never)
+      const call = onMock.mock.calls.find((entry: unknown[]) => entry[0] === 'pty:ackData')
+      if (!call) {
+        throw new Error('missing pty:ackData listener')
+      }
+      const ackListener = call[1] as (
+        event: unknown,
+        args: { id: string; charCount: number; connectionId?: string }
+      ) => void
+
+      ackListener(null, { id: 'remote-pty', charCount: 42, connectionId: 'ssh-1' })
+
+      expect(provider.acknowledgeDataEvent).toHaveBeenCalledWith('remote-pty', 42)
+    } finally {
+      unregisterSshPtyProvider('ssh-1')
+    }
+  })
+
+  it('routes source-tagged PTY input, resize, and kill to the requested SSH provider', async () => {
+    const providerA = createForwardingProvider().provider
+    const providerB = createForwardingProvider().provider
+    registerSshPtyProvider('ssh-a', providerA as never)
+    registerSshPtyProvider('ssh-b', providerB as never)
+    registerPtyHandlers(mainWindow as never, undefined, undefined, undefined, undefined, {
+      markSshRemotePtyLease: vi.fn()
+    } as never)
+
+    const listenerFor = (channel: string): ((event: unknown, args: unknown) => void) => {
+      const call = onMock.mock.calls.find((entry: unknown[]) => entry[0] === channel)
+      if (!call) {
+        throw new Error(`missing ${channel} listener`)
+      }
+      return call[1] as (event: unknown, args: unknown) => void
+    }
+
+    listenerFor('pty:write')(null, { id: 'pty-1', data: 'x', connectionId: 'ssh-b' })
+    listenerFor('pty:resize')(null, { id: 'pty-1', cols: 100, rows: 30, connectionId: 'ssh-b' })
+    listenerFor('pty:signal')(null, { id: 'pty-1', signal: 'SIGWINCH', connectionId: 'ssh-b' })
+    await handlers.get('pty:kill')!(null, {
+      id: 'pty-1',
+      keepHistory: false,
+      connectionId: 'ssh-b'
+    })
+
+    expect(providerA.write).not.toHaveBeenCalled()
+    expect(providerA.resize).not.toHaveBeenCalled()
+    expect(providerA.sendSignal).not.toHaveBeenCalled()
+    expect(providerA.shutdown).not.toHaveBeenCalled()
+    expect(providerB.write).toHaveBeenCalledWith('pty-1', 'x')
+    expect(providerB.resize).toHaveBeenCalledWith('pty-1', 100, 30)
+    expect(providerB.sendSignal).toHaveBeenCalledWith('pty-1', 'SIGWINCH')
+    expect(providerB.shutdown).toHaveBeenCalledWith('pty-1', {
+      immediate: true,
+      keepHistory: false
+    })
+  })
+
+  it('does not fall back to pty ownership when a source-tagged ACK has no provider', () => {
+    const { provider } = createForwardingProvider()
+    setLocalPtyProvider(provider as never)
+    setPtyOwnership('remote-pty', null)
+
+    try {
+      registerPtyHandlers(mainWindow as never)
+      const call = onMock.mock.calls.find((entry: unknown[]) => entry[0] === 'pty:ackData')
+      if (!call) {
+        throw new Error('missing pty:ackData listener')
+      }
+      const ackListener = call[1] as (
+        event: unknown,
+        args: { id: string; charCount: number; connectionId?: string }
+      ) => void
+
+      ackListener(null, { id: 'remote-pty', charCount: 42, connectionId: 'missing-ssh' })
+
+      expect(provider.acknowledgeDataEvent).not.toHaveBeenCalled()
+    } finally {
+      deletePtyOwnership('remote-pty')
+    }
   })
 
   it('injects ORCA_TERMINAL_HANDLE for non-local PTY providers', async () => {

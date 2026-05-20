@@ -2182,7 +2182,7 @@ describe('connectPanePty', () => {
       POST_REPLAY_FOCUS_REPORTING_RESET,
       expect.any(Function)
     )
-    expect(api.pty.signal).toHaveBeenCalledWith('leaf-session', 'SIGWINCH')
+    expect(api.pty.signal).toHaveBeenCalledWith('leaf-session', 'SIGWINCH', 'conn-1')
   })
 
   it('does not auto-reconnect after a user cancels deferred SSH passphrase auth', async () => {

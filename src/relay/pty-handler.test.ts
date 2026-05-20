@@ -345,6 +345,26 @@ describe('PtyHandler', () => {
     expect(mockPause).not.toHaveBeenCalled()
   })
 
+  it('does not pause when relay output is delivered to no clients after write failure', async () => {
+    let dataCallback: ((data: string) => void) | undefined
+    const mockPause = vi.fn()
+    mockPtySpawn.mockReturnValue({
+      ...mockPtyInstance,
+      pause: mockPause,
+      onData: vi.fn((cb: (data: string) => void) => {
+        dataCallback = cb
+      }),
+      onExit: vi.fn()
+    })
+
+    dispatcher._setHasOpenClient(true)
+    dispatcher._setDeliveredClientIds([])
+    await dispatcher.callRequest('pty.spawn', {})
+    dataCallback!('x'.repeat(120 * 1024))
+
+    expect(mockPause).not.toHaveBeenCalled()
+  })
+
   it('clears paused flow-control state when the last relay client detaches', async () => {
     let dataCallback: ((data: string) => void) | undefined
     const mockPause = vi.fn()
@@ -385,15 +405,34 @@ describe('PtyHandler', () => {
 
     dispatcher._setDeliveredClientIds([1, 2])
     await dispatcher.callRequest('pty.spawn', {})
-    dataCallback!('x'.repeat(60_000))
+    dataCallback!('x'.repeat(100_001))
 
     expect(mockPause).toHaveBeenCalledTimes(1)
 
-    dispatcher.callNotification('pty.ackData', { id: 'pty-1', charCount: 60_000 }, 1)
+    dispatcher.callNotification('pty.ackData', { id: 'pty-1', charCount: 100_001 }, 1)
     expect(mockResume).not.toHaveBeenCalled()
 
-    dispatcher.callNotification('pty.ackData', { id: 'pty-1', charCount: 56_000 }, 2)
+    dispatcher.callNotification('pty.ackData', { id: 'pty-1', charCount: 100_001 }, 2)
     expect(mockResume).toHaveBeenCalledTimes(1)
+  })
+
+  it('uses per-client watermarks so healthy relay clients do not lower the pause threshold', async () => {
+    let dataCallback: ((data: string) => void) | undefined
+    const mockPause = vi.fn()
+    mockPtySpawn.mockReturnValue({
+      ...mockPtyInstance,
+      pause: mockPause,
+      onData: vi.fn((cb: (data: string) => void) => {
+        dataCallback = cb
+      }),
+      onExit: vi.fn()
+    })
+
+    dispatcher._setDeliveredClientIds([1, 2])
+    await dispatcher.callRequest('pty.spawn', {})
+    dataCallback!('x'.repeat(60_000))
+
+    expect(mockPause).not.toHaveBeenCalled()
   })
 
   it('does not let a detached relay client block another client from resuming output', async () => {

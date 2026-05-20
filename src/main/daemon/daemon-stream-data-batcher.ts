@@ -159,7 +159,17 @@ export class DaemonStreamDataBatcher {
               sessionId: entry.sessionId,
               payload: { code: entry.code }
             }
-      const ok = streamSocket.write(encodeNdjson(payload))
+      let ok: boolean
+      try {
+        ok = streamSocket.write(encodeNdjson(payload))
+      } catch (err) {
+        console.warn('[daemon] PTY stream socket write failed', {
+          clientId,
+          error: err instanceof Error ? err.message : String(err)
+        })
+        this.failStream(clientId)
+        return
+      }
       if (!ok) {
         batch.waitingForDrain = true
         this.compactQueue(batch)

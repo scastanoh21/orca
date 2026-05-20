@@ -4,6 +4,7 @@ import { useAppStore } from '@/store'
 import { subscribeToPtyData } from '@/components/terminal-pane/pty-dispatcher'
 import { isRemoteRuntimePtyId, sendRuntimePtyInput } from '@/runtime/runtime-terminal-inspection'
 import { subscribeToRuntimeTerminalData } from '@/runtime/runtime-terminal-stream'
+import { getRepoIdFromWorktreeId } from '../../../shared/worktree-id'
 
 // Why: bracketed paste markers let modern TUIs (Claude Code / Codex / Pi /
 // OpenCode / Gemini / cursor-agent / copilot) treat the inserted text as a
@@ -87,18 +88,37 @@ export async function pasteDraftWhenAgentReady(args: {
     return false
   }
 
-  const ready = await waitForInputBoxReady(ptyId, budget, readySignal)
+  const connectionId = getConnectionIdForTab(tabId)
+  const ready = await waitForInputBoxReady(ptyId, budget, readySignal, connectionId)
   if (!ready) {
     onTimeout?.()
     return false
   }
 
-  sendRuntimePtyInput(
-    useAppStore.getState().settings,
-    ptyId,
-    `${BRACKETED_PASTE_BEGIN}${content}${BRACKETED_PASTE_END}${submit ? '\r' : ''}`
-  )
+  const paste = `${BRACKETED_PASTE_BEGIN}${content}${BRACKETED_PASTE_END}${submit ? '\r' : ''}`
+  if (connectionId) {
+    sendRuntimePtyInput(useAppStore.getState().settings, ptyId, paste, connectionId)
+  } else {
+    sendRuntimePtyInput(useAppStore.getState().settings, ptyId, paste)
+  }
   return true
+}
+
+function getConnectionIdForTab(tabId: string): string | null {
+  const state = useAppStore.getState()
+  const tabEntry = Object.entries(state.tabsByWorktree ?? {}).find(([, tabs]) =>
+    tabs.some((tab) => tab.id === tabId)
+  )
+  const worktreeId = tabEntry?.[0]
+  if (!worktreeId) {
+    return null
+  }
+  const worktree = Object.values(state.worktreesByRepo ?? {})
+    .flat()
+    .find((entry) => entry.id === worktreeId)
+  const repoId = worktree?.repoId ?? getRepoIdFromWorktreeId(worktreeId)
+  const repo = state.repos?.find((entry) => entry.id === repoId)
+  return repo?.connectionId ?? null
 }
 
 /**
@@ -118,7 +138,8 @@ export async function pasteDraftWhenAgentReady(args: {
 function waitForInputBoxReady(
   ptyId: string,
   timeoutMs: number,
-  readySignal: DraftPasteReadySignal
+  readySignal: DraftPasteReadySignal,
+  connectionId: string | null
 ): Promise<boolean> {
   return new Promise<boolean>((resolve) => {
     let settled = false
@@ -213,7 +234,7 @@ function waitForInputBoxReady(
         })
         .catch(() => finish(false))
     } else {
-      unsubscribe = subscribeToPtyData(ptyId, observeData)
+      unsubscribe = subscribeToPtyData(ptyId, observeData, connectionId)
     }
 
     if (!settled) {

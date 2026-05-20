@@ -142,6 +142,44 @@ describe('DaemonPtyAdapter (IPtyProvider)', () => {
     })
   })
 
+  describe('acknowledgeDataEvent', () => {
+    it('drops ACKs during recovery while still queueing durable writes', async () => {
+      const { id } = await adapter.spawn({ cols: 80, rows: 24 })
+      const never = new Promise<void>(() => {})
+      const internals = adapter as unknown as {
+        recoveryPromise: Promise<void> | null
+        pendingNotifications: unknown[]
+      }
+
+      internals.recoveryPromise = never
+      adapter.acknowledgeDataEvent(id, 123)
+      adapter.write(id, 'durable\n')
+
+      expect(internals.pendingNotifications).toEqual([
+        { type: 'write', payload: { sessionId: id, data: 'durable\n' } }
+      ])
+      internals.recoveryPromise = null
+    })
+
+    it('does not queue ACKs when notification delivery fails', async () => {
+      const { id } = await adapter.spawn({ cols: 80, rows: 24 })
+      const internals = adapter as unknown as {
+        client: { notify: (type: string, payload: unknown) => boolean }
+        pendingNotifications: unknown[]
+      }
+      const notifySpy = vi.spyOn(internals.client, 'notify').mockReturnValue(false)
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+      try {
+        adapter.acknowledgeDataEvent(id, 123)
+
+        expect(internals.pendingNotifications).toEqual([])
+      } finally {
+        notifySpy.mockRestore()
+        warn.mockRestore()
+      }
+    })
+  })
+
   describe('shutdown', () => {
     it('kills the session', async () => {
       const { id } = await adapter.spawn({ cols: 80, rows: 24 })

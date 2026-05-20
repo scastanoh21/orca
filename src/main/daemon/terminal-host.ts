@@ -69,7 +69,6 @@ export class TerminalHost {
     // finally exits. Treat terminating sessions the same as fully-exited ones.
     if (existing && existing.isAlive && !existing.isTerminating) {
       const snapshot = existing.getSnapshot()
-      existing.detachAllClients()
       const token = existing.attachClient(opts.streamClient)
       return {
         isNew: false,
@@ -144,8 +143,8 @@ export class TerminalHost {
     this.getAliveSession(sessionId).resize(cols, rows)
   }
 
-  acknowledgeDataEvent(sessionId: string, charCount: number): void {
-    this.getAliveSession(sessionId).acknowledgeDataEvent(charCount)
+  acknowledgeDataEvent(sessionId: string, clientToken: symbol, charCount: number): void {
+    this.getAliveSession(sessionId).acknowledgeDataEvent(clientToken, charCount)
   }
 
   kill(sessionId: string): void {

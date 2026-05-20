@@ -189,6 +189,16 @@ function tryGetProviderForPty(ptyId: string): IPtyProvider | undefined {
   }
 }
 
+function tryGetProviderForPtyRequest(
+  ptyId: string,
+  connectionId: string | undefined
+): IPtyProvider | undefined {
+  if (connectionId) {
+    return sshProviders.get(connectionId)
+  }
+  return ptyOwnership.has(ptyId) ? tryGetProviderForPty(ptyId) : undefined
+}
+
 function normalizeNodePtySpawnError(err: unknown): Error {
   const rawMessage = err instanceof Error ? err.message : String(err)
   const hintedMessage = addNodePtyRecoveryHint(rawMessage)
@@ -1641,7 +1651,7 @@ export function registerPtyHandlers(
     }
   )
 
-  ipcMain.on('pty:write', (_event, args: { id: string; data: string }) => {
+  ipcMain.on('pty:write', (_event, args: { id: string; data: string; connectionId?: string }) => {
     // Why: defense-in-depth for the mobile-presence lock. The renderer's
     // xterm.onData guard already drops desktop keystrokes when mobile is
     // driving, but a stale view between the main-side state flip and the
@@ -1651,7 +1661,7 @@ export function registerPtyHandlers(
     if (runtime?.getDriver(args.id).kind === 'mobile') {
       return
     }
-    const provider = ptyOwnership.has(args.id) ? tryGetProviderForPty(args.id) : undefined
+    const provider = tryGetProviderForPtyRequest(args.id, args.connectionId)
     if (!provider) {
       return
     }
@@ -1660,41 +1670,51 @@ export function registerPtyHandlers(
   })
 
   ipcMain.removeAllListeners('pty:ackData')
-  ipcMain.on('pty:ackData', (_event, args: { id: string; charCount: number }) => {
-    const charCount = Math.max(0, Math.floor(Number(args.charCount) || 0))
-    if (charCount <= 0) {
-      return
+  ipcMain.on(
+    'pty:ackData',
+    (_event, args: { id: string; charCount: number; connectionId?: string }) => {
+      const charCount = Math.max(0, Math.floor(Number(args.charCount) || 0))
+      if (charCount <= 0) {
+        return
+      }
+      const ackProvider =
+        typeof args.connectionId === 'string'
+          ? sshProviders.get(args.connectionId)
+          : tryGetProviderForPty(args.id)
+      ackProvider?.acknowledgeDataEvent(args.id, charCount)
     }
-    tryGetProviderForPty(args.id)?.acknowledgeDataEvent(args.id, charCount)
-  })
+  )
 
   // Why: resize is fire-and-forget — the renderer doesn't need a reply.
   // Using ipcMain.on (not .handle) halves IPC traffic by avoiding the
   // empty acknowledgement message back to the renderer.
   ipcMain.removeAllListeners('pty:resize')
-  ipcMain.on('pty:resize', (_event, args: { id: string; cols: number; rows: number }) => {
-    // Why: after a desktop-fit override change, the desktop renderer's
-    // re-render cascade runs safeFit on ALL panes (not just the affected
-    // one). Background-tab panes get measured at full-width (214) instead
-    // of their correct split width. Suppressing ALL pty:resize during
-    // this window prevents the cascade from corrupting PTY dimensions.
-    if (runtime?.isResizeSuppressed()) {
-      return
+  ipcMain.on(
+    'pty:resize',
+    (_event, args: { id: string; cols: number; rows: number; connectionId?: string }) => {
+      // Why: after a desktop-fit override change, the desktop renderer's
+      // re-render cascade runs safeFit on ALL panes (not just the affected
+      // one). Background-tab panes get measured at full-width (214) instead
+      // of their correct split width. Suppressing ALL pty:resize during
+      // this window prevents the cascade from corrupting PTY dimensions.
+      if (runtime?.isResizeSuppressed()) {
+        return
+      }
+      // Why: presence-lock defense-in-depth. While mobile is driving,
+      // desktop-side resizes (auto-fit on window resize, split drag) must
+      // not reach the PTY. The renderer guard checks the driver state too,
+      // but this is the load-bearing layer because the renderer mirror lags
+      // by one IPC hop. Note: BOTH guards apply — isResizeSuppressed handles
+      // the safeFit cascade after take-back; this driver check handles the
+      // ongoing locked state. See docs/mobile-presence-lock.md.
+      if (runtime?.getDriver(args.id).kind === 'mobile') {
+        return
+      }
+      ptySizes.set(args.id, { cols: args.cols, rows: args.rows })
+      tryGetProviderForPtyRequest(args.id, args.connectionId)?.resize(args.id, args.cols, args.rows)
+      runtime?.onExternalPtyResize(args.id, args.cols, args.rows)
     }
-    // Why: presence-lock defense-in-depth. While mobile is driving,
-    // desktop-side resizes (auto-fit on window resize, split drag) must
-    // not reach the PTY. The renderer guard checks the driver state too,
-    // but this is the load-bearing layer because the renderer mirror lags
-    // by one IPC hop. Note: BOTH guards apply — isResizeSuppressed handles
-    // the safeFit cascade after take-back; this driver check handles the
-    // ongoing locked state. See docs/mobile-presence-lock.md.
-    if (runtime?.getDriver(args.id).kind === 'mobile') {
-      return
-    }
-    ptySizes.set(args.id, { cols: args.cols, rows: args.rows })
-    tryGetProviderForPty(args.id)?.resize(args.id, args.cols, args.rows)
-    runtime?.onExternalPtyResize(args.id, args.cols, args.rows)
-  })
+  )
 
   // Why: pty:reportGeometry is a measurement-only sibling of pty:resize.
   // pty:resize means "I want the PTY at this size" (a write/intent — gated
@@ -1723,41 +1743,52 @@ export function registerPtyHandlers(
   })
 
   ipcMain.removeAllListeners('pty:signal')
-  ipcMain.on('pty:signal', (_event, args: { id: string; signal: string }) => {
-    tryGetProviderForPty(args.id)
-      ?.sendSignal(args.id, args.signal)
-      .catch(() => {})
-  })
+  ipcMain.on(
+    'pty:signal',
+    (_event, args: { id: string; signal: string; connectionId?: string }) => {
+      tryGetProviderForPtyRequest(args.id, args.connectionId)
+        ?.sendSignal(args.id, args.signal)
+        .catch(() => {})
+    }
+  )
 
-  ipcMain.handle('pty:kill', async (_event, args: { id: string; keepHistory?: boolean }) => {
-    const connectionId = ptyOwnership.get(args.id)
-    const provider = tryGetProviderForPty(args.id)
-    if (!provider && connectionId) {
-      // Why: detached SSH PTYs intentionally keep ownership after their
-      // provider is unregistered. If the user closes the pane while detached,
-      // make the lease non-restorable instead of reviving it on reconnect.
-      finishPtyShutdown(args.id, connectionId, store)
-      return
-    }
-    try {
-      await (provider ?? getProviderForPty(args.id)).shutdown(args.id, {
-        immediate: true,
-        keepHistory: args.keepHistory ?? false
-      })
-    } catch (err) {
-      if (!isPtyAlreadyGoneError(err)) {
-        // Why: a failed SSH shutdown can leave the remote process alive in
-        // the relay grace window; daemon failures have the same risk locally.
-        // Keep ownership/lease state so the user can retry.
-        throw err
+  ipcMain.handle(
+    'pty:kill',
+    async (
+      _event,
+      args: { id: string; keepHistory?: boolean; connectionId?: string }
+    ): Promise<void> => {
+      const connectionId = args.connectionId ?? ptyOwnership.get(args.id)
+      const provider = args.connectionId
+        ? sshProviders.get(args.connectionId)
+        : tryGetProviderForPty(args.id)
+      if (!provider && connectionId) {
+        // Why: detached SSH PTYs intentionally keep ownership after their
+        // provider is unregistered. If the user closes the pane while detached,
+        // make the lease non-restorable instead of reviving it on reconnect.
+        finishPtyShutdown(args.id, connectionId, store)
+        return
       }
-      /* session already dead — cleanup below handles the rest */
+      try {
+        await (provider ?? getProviderForPty(args.id)).shutdown(args.id, {
+          immediate: true,
+          keepHistory: args.keepHistory ?? false
+        })
+      } catch (err) {
+        if (!isPtyAlreadyGoneError(err)) {
+          // Why: a failed SSH shutdown can leave the remote process alive in
+          // the relay grace window; daemon failures have the same risk locally.
+          // Keep ownership/lease state so the user can retry.
+          throw err
+        }
+        /* session already dead — cleanup below handles the rest */
+      }
+      // Why: onExit clears provider state for LocalPtyProvider, but remote SSH
+      // and daemon shutdown paths do not emit onExit through the local provider's
+      // listener. Explicit cleanup is idempotent and covers already-dead PTYs.
+      finishPtyShutdown(args.id, connectionId, store)
     }
-    // Why: onExit clears provider state for LocalPtyProvider, but remote SSH
-    // and daemon shutdown paths do not emit onExit through the local provider's
-    // listener. Explicit cleanup is idempotent and covers already-dead PTYs.
-    finishPtyShutdown(args.id, connectionId, store)
-  })
+  )
 
   ipcMain.handle(
     'pty:listSessions',

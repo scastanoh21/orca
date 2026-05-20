@@ -178,7 +178,8 @@ describe('SshRelaySession', () => {
 
     expect(mockWindow.webContents.send).toHaveBeenCalledWith('pty:data', {
       id: 'pty-1',
-      data: 'visible output'
+      data: 'visible output',
+      connectionId: 'target-1'
     })
     expect(provider.acknowledgeDataEvent).not.toHaveBeenCalled()
   })
@@ -461,7 +462,8 @@ describe('SshRelaySession', () => {
     expect(deletePtyOwnership).toHaveBeenCalledWith('pty-stale')
     expect(mockWindow.webContents.send).toHaveBeenCalledWith('pty:exit', {
       id: 'pty-stale',
-      code: -1
+      code: -1,
+      connectionId: 'target-1'
     })
   })
 

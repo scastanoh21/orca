@@ -13,9 +13,17 @@ import type { EventProps } from '../../../../shared/telemetry-events'
 // PTY ID. Eliminates the N-listener problem that triggers
 // MaxListenersExceededWarning with many panes/tabs.
 
-export type PtyDataPayload = { id: string; data: string; synthetic?: boolean }
+export type PtyDataPayload = {
+  id: string
+  data: string
+  synthetic?: boolean
+  connectionId?: string
+}
 
-export const ptyDataHandlers = new Map<string, (data: string, sourceCharCount?: number) => void>()
+export const ptyDataHandlers = new Map<
+  string,
+  (data: string, sourceCharCount?: number, connectionId?: string) => void
+>()
 /** Sidecar subscriptions that observe PTY data without owning the primary
  *  handler. Used by features that need to react to the live byte stream
  *  (e.g. agent-paste-draft watching for DECSET 2004 / bracketed-paste-
@@ -24,25 +32,45 @@ export const ptyDataHandlers = new Map<string, (data: string, sourceCharCount?: 
  *  active subscription; removal is by Set.delete inside the unsubscribe fn. */
 export const ptyDataSidecars = new Map<string, Set<(data: string) => void>>()
 
+const LOCAL_PTY_SCOPE = 'local'
+
+export function ptyHandlerKey(ptyId: string, connectionId?: string | null): string {
+  return `${connectionId || LOCAL_PTY_SCOPE}\u0000${ptyId}`
+}
+
+function deletePtyScopedEntries<T>(map: Map<string, T>, ptyId: string): void {
+  map.delete(ptyHandlerKey(ptyId))
+  for (const key of map.keys()) {
+    if (key.endsWith(`\u0000${ptyId}`)) {
+      map.delete(key)
+    }
+  }
+}
+
 /** Register a side-channel data watcher for a PTY without taking ownership
  *  of the primary handler. Returns an unsubscribe fn. ensurePtyDispatcher()
  *  is called automatically so the underlying IPC stream is wired up. */
-export function subscribeToPtyData(ptyId: string, watcher: (data: string) => void): () => void {
+export function subscribeToPtyData(
+  ptyId: string,
+  watcher: (data: string) => void,
+  connectionId?: string | null
+): () => void {
   ensurePtyDispatcher()
-  let set = ptyDataSidecars.get(ptyId)
+  const key = ptyHandlerKey(ptyId, connectionId)
+  let set = ptyDataSidecars.get(key)
   if (!set) {
     set = new Set()
-    ptyDataSidecars.set(ptyId, set)
+    ptyDataSidecars.set(key, set)
   }
   set.add(watcher)
   return () => {
-    const current = ptyDataSidecars.get(ptyId)
+    const current = ptyDataSidecars.get(key)
     if (!current) {
       return
     }
     current.delete(watcher)
     if (current.size === 0) {
-      ptyDataSidecars.delete(ptyId)
+      ptyDataSidecars.delete(key)
     }
   }
 }
@@ -70,10 +98,26 @@ let ptyDispatcherAttached = false
  */
 export function unregisterPtyDataHandlers(ptyIds: string[]): void {
   for (const id of ptyIds) {
-    ptyDataHandlers.delete(id)
-    ptyReplayHandlers.delete(id)
-    ptyTeardownHandlers.get(id)?.()
-    ptyTeardownHandlers.delete(id)
+    deletePtyScopedEntries(ptyDataHandlers, id)
+    deletePtyScopedEntries(ptyReplayHandlers, id)
+    for (const [key, teardown] of ptyTeardownHandlers) {
+      if (key.endsWith(`\u0000${id}`)) {
+        teardown()
+      }
+    }
+    deletePtyScopedEntries(ptyTeardownHandlers, id)
+  }
+}
+
+export function unregisterScopedPtyDataHandlers(
+  entries: { ptyId: string; connectionId?: string | null }[]
+): void {
+  for (const { ptyId, connectionId } of entries) {
+    const key = ptyHandlerKey(ptyId, connectionId)
+    ptyDataHandlers.delete(key)
+    ptyReplayHandlers.delete(key)
+    ptyTeardownHandlers.get(key)?.()
+    ptyTeardownHandlers.delete(key)
   }
 }
 
@@ -84,15 +128,20 @@ export function ensurePtyDispatcher(): void {
   ptyDispatcherAttached = true
   window.api.pty.onData((payload) => {
     const sourceCharCount = payload.synthetic ? 0 : payload.data.length
-    const primaryHandler = ptyDataHandlers.get(payload.id)
+    const key = ptyHandlerKey(payload.id, payload.connectionId)
+    const primaryHandler = ptyDataHandlers.get(key)
     if (primaryHandler) {
-      primaryHandler(payload.data, sourceCharCount)
+      primaryHandler(payload.data, sourceCharCount, payload.connectionId)
     } else if (payload.data.length > 0 && !payload.synthetic) {
       // Why: detach/remount gaps intentionally have no xterm consumer. ACK
       // dropped bytes so upstream PTYs cannot remain paused waiting on parsing.
-      window.api.pty.ackData(payload.id, payload.data.length)
+      if (payload.connectionId) {
+        window.api.pty.ackData(payload.id, payload.data.length, payload.connectionId)
+      } else {
+        window.api.pty.ackData(payload.id, payload.data.length)
+      }
     }
-    const sidecars = ptyDataSidecars.get(payload.id)
+    const sidecars = ptyDataSidecars.get(key)
     if (sidecars && sidecars.size > 0) {
       // Why: snapshot the Set before iterating because watchers commonly
       // unsubscribe themselves on the very chunk that satisfies them
@@ -108,14 +157,15 @@ export function ensurePtyDispatcher(): void {
     }
   })
   window.api.pty.onReplay((payload) => {
-    ptyReplayHandlers.get(payload.id)?.(payload.data)
+    ptyReplayHandlers.get(ptyHandlerKey(payload.id, payload.connectionId))?.(payload.data)
   })
   window.api.pty.onExit((payload) => {
-    ptyExitHandlers.get(payload.id)?.(payload.code)
-    const sidecars = ptyExitSidecars.get(payload.id)
+    const key = ptyHandlerKey(payload.id, payload.connectionId)
+    ptyExitHandlers.get(key)?.(payload.code)
+    const sidecars = ptyExitSidecars.get(key)
     if (sidecars && sidecars.size > 0) {
       const snapshot = Array.from(sidecars)
-      ptyExitSidecars.delete(payload.id)
+      ptyExitSidecars.delete(key)
       for (const sidecar of snapshot) {
         sidecar(payload.code)
       }
@@ -123,22 +173,27 @@ export function ensurePtyDispatcher(): void {
   })
 }
 
-export function subscribeToPtyExit(ptyId: string, watcher: (code: number) => void): () => void {
+export function subscribeToPtyExit(
+  ptyId: string,
+  watcher: (code: number) => void,
+  connectionId?: string | null
+): () => void {
   ensurePtyDispatcher()
-  let set = ptyExitSidecars.get(ptyId)
+  const key = ptyHandlerKey(ptyId, connectionId)
+  let set = ptyExitSidecars.get(key)
   if (!set) {
     set = new Set()
-    ptyExitSidecars.set(ptyId, set)
+    ptyExitSidecars.set(key, set)
   }
   set.add(watcher)
   return () => {
-    const current = ptyExitSidecars.get(ptyId)
+    const current = ptyExitSidecars.get(key)
     if (!current) {
       return
     }
     current.delete(watcher)
     if (current.size === 0) {
-      ptyExitSidecars.delete(ptyId)
+      ptyExitSidecars.delete(key)
     }
   }
 }
@@ -151,8 +206,11 @@ export function subscribeToPtyExit(ptyId: string, watcher: (code: number) => voi
 export type EagerPtyHandle = { flush: () => string; dispose: () => void }
 const eagerPtyHandles = new Map<string, EagerPtyHandle>()
 
-export function getEagerPtyBufferHandle(ptyId: string): EagerPtyHandle | undefined {
-  return eagerPtyHandles.get(ptyId)
+export function getEagerPtyBufferHandle(
+  ptyId: string,
+  connectionId?: string | null
+): EagerPtyHandle | undefined {
+  return eagerPtyHandles.get(ptyHandlerKey(ptyId, connectionId))
 }
 
 // Why: 512 KB matches the scrollback buffer cap used by TerminalPane's
@@ -162,19 +220,31 @@ const EAGER_BUFFER_MAX_BYTES = 512 * 1024
 
 export function registerEagerPtyBuffer(
   ptyId: string,
-  onExit: (ptyId: string, code: number) => void
+  onExit: (ptyId: string, code: number) => void,
+  connectionId?: string | null
 ): EagerPtyHandle {
   ensurePtyDispatcher()
 
   const buffer: string[] = []
   let bufferBytes = 0
+  const key = ptyHandlerKey(ptyId, connectionId)
 
-  const dataHandler = (data: string): void => {
+  const dataHandler = (
+    data: string,
+    sourceCharCount = data.length,
+    connectionId?: string
+  ): void => {
     buffer.push(data)
     bufferBytes += data.length
     // Why: no xterm exists yet for eager/background PTYs. Once the renderer
-    // owns the bytes in this bounded buffer, upstream flow control can resume.
-    window.api.pty.ackData(ptyId, data.length)
+    // owns provider bytes in this bounded buffer, upstream flow control can resume.
+    if (sourceCharCount > 0) {
+      if (connectionId) {
+        window.api.pty.ackData(ptyId, sourceCharCount, connectionId)
+      } else {
+        window.api.pty.ackData(ptyId, sourceCharCount)
+      }
+    }
     // Trim from the front when the buffer exceeds the cap, keeping the
     // most recent output which contains the shell prompt.
     while (bufferBytes > EAGER_BUFFER_MAX_BYTES && buffer.length > 1) {
@@ -185,15 +255,15 @@ export function registerEagerPtyBuffer(
   const exitHandler = (code: number): void => {
     // Shell died before TerminalPane attached — clean up and notify the store
     // so the tab's ptyId is cleared and connectPanePty falls through to connect().
-    ptyDataHandlers.delete(ptyId)
-    ptyReplayHandlers.delete(ptyId)
-    ptyExitHandlers.delete(ptyId)
-    eagerPtyHandles.delete(ptyId)
+    ptyDataHandlers.delete(key)
+    ptyReplayHandlers.delete(key)
+    ptyExitHandlers.delete(key)
+    eagerPtyHandles.delete(key)
     onExit(ptyId, code)
   }
 
-  ptyDataHandlers.set(ptyId, dataHandler)
-  ptyExitHandlers.set(ptyId, exitHandler)
+  ptyDataHandlers.set(key, dataHandler)
+  ptyExitHandlers.set(key, exitHandler)
 
   const handle: EagerPtyHandle = {
     flush() {
@@ -204,18 +274,18 @@ export function registerEagerPtyBuffer(
     dispose() {
       // Only remove if the current handler is still the temp one (compare by
       // reference). After attach() replaces the handler this becomes a no-op.
-      if (ptyDataHandlers.get(ptyId) === dataHandler) {
-        ptyDataHandlers.delete(ptyId)
-        ptyReplayHandlers.delete(ptyId)
+      if (ptyDataHandlers.get(key) === dataHandler) {
+        ptyDataHandlers.delete(key)
+        ptyReplayHandlers.delete(key)
       }
-      if (ptyExitHandlers.get(ptyId) === exitHandler) {
-        ptyExitHandlers.delete(ptyId)
+      if (ptyExitHandlers.get(key) === exitHandler) {
+        ptyExitHandlers.delete(key)
       }
-      eagerPtyHandles.delete(ptyId)
+      eagerPtyHandles.delete(key)
     }
   }
 
-  eagerPtyHandles.set(ptyId, handle)
+  eagerPtyHandles.set(key, handle)
   return handle
 }
 

@@ -707,22 +707,31 @@ export type PreloadApi = {
       sessionExpired?: boolean
       coldRestore?: { scrollback: string; cwd: string }
     }>
-    write: (id: string, data: string) => void
-    ackData: (id: string, charCount: number) => void
-    resize: (id: string, cols: number, rows: number) => void
+    write: (id: string, data: string, connectionId?: string) => void
+    ackData: (id: string, charCount: number, connectionId?: string) => void
+    resize: (id: string, cols: number, rows: number, connectionId?: string) => void
     reportGeometry: (id: string, cols: number, rows: number) => void
-    signal: (id: string, signal: string) => void
-    kill: (id: string, opts?: { keepHistory?: boolean }) => Promise<void>
+    signal: (id: string, signal: string, connectionId?: string) => void
+    kill: (id: string, opts?: { keepHistory?: boolean; connectionId?: string }) => Promise<void>
     ackColdRestore: (id: string) => void
     hasChildProcesses: (id: string) => Promise<boolean>
     getForegroundProcess: (id: string) => Promise<string | null>
     getCwd: (id: string) => Promise<string>
     listSessions: () => Promise<{ id: string; cwd: string; title: string }[]>
     onData: (
-      callback: (data: { id: string; data: string; synthetic?: boolean }) => void
+      callback: (data: {
+        id: string
+        data: string
+        synthetic?: boolean
+        connectionId?: string
+      }) => void
     ) => () => void
-    onReplay: (callback: (data: { id: string; data: string }) => void) => () => void
-    onExit: (callback: (data: { id: string; code: number }) => void) => () => void
+    onReplay: (
+      callback: (data: { id: string; data: string; connectionId?: string }) => void
+    ) => () => void
+    onExit: (
+      callback: (data: { id: string; code: number; connectionId?: string }) => void
+    ) => () => void
     onSerializeBufferRequest: (
       callback: (data: {
         requestId: string

@@ -417,7 +417,7 @@ export class PtyHandler {
     }
     if (
       !managed.flowPaused &&
-      this.totalUnacknowledgedChars(managed) > FLOW_CONTROL_HIGH_WATERMARK_CHARS
+      this.maxUnacknowledgedChars(managed) > FLOW_CONTROL_HIGH_WATERMARK_CHARS
     ) {
       // Why: renderer ACKs arrive after xterm parses output. Pausing remote
       // node-pty prevents one SSH PTY from filling the relay/socket queues.
@@ -452,7 +452,7 @@ export class PtyHandler {
     }
     if (
       managed.flowPaused &&
-      this.totalUnacknowledgedChars(managed) < FLOW_CONTROL_LOW_WATERMARK_CHARS
+      this.maxUnacknowledgedChars(managed) < FLOW_CONTROL_LOW_WATERMARK_CHARS
     ) {
       managed.pty.resume()
       managed.flowPaused = false
@@ -464,12 +464,12 @@ export class PtyHandler {
     return managed.unacknowledgedCharsByClient
   }
 
-  private totalUnacknowledgedChars(managed: ManagedPty): number {
-    let total = 0
+  private maxUnacknowledgedChars(managed: ManagedPty): number {
+    let max = 0
     for (const count of managed.unacknowledgedCharsByClient?.values() ?? []) {
-      total += count
+      max = Math.max(max, count)
     }
-    return total
+    return max
   }
 
   private clearFlowControlForDetachedClient(clientId: number): void {
@@ -478,7 +478,7 @@ export class PtyHandler {
       if (
         managed.flowPaused &&
         !managed.disposed &&
-        this.totalUnacknowledgedChars(managed) < FLOW_CONTROL_LOW_WATERMARK_CHARS
+        this.maxUnacknowledgedChars(managed) < FLOW_CONTROL_LOW_WATERMARK_CHARS
       ) {
         managed.pty.resume()
         managed.flowPaused = false

@@ -26,7 +26,7 @@ import {
 } from './tab-group-state'
 import {
   ensurePtyDispatcher,
-  unregisterPtyDataHandlers
+  unregisterScopedPtyDataHandlers
 } from '@/components/terminal-pane/pty-transport'
 import { normalizeTerminalLayoutSnapshot } from '@/components/terminal-pane/terminal-layout-leaf-ids'
 import { shutdownBufferCaptures } from '@/components/terminal-pane/shutdown-buffer-captures'
@@ -87,21 +87,28 @@ function resolveCreatedTabShellOverride(
   return undefined
 }
 
-function worktreeUsesRemoteConnection(
+function getWorktreeConnectionId(
   state: Pick<AppState, 'repos' | 'worktreesByRepo'>,
   worktreeId: string
-): boolean {
+): string | null {
   const directRepoId = getRepoIdFromWorktreeId(worktreeId)
   const directRepo = state.repos.find((repo) => repo.id === directRepoId)
   if (directRepo) {
-    return Boolean(directRepo.connectionId)
+    return directRepo.connectionId ?? null
   }
 
   const worktree = Object.values(state.worktreesByRepo)
     .flat()
     .find((entry) => entry.id === worktreeId)
   const repo = worktree ? state.repos.find((entry) => entry.id === worktree.repoId) : null
-  return Boolean(repo?.connectionId)
+  return repo?.connectionId ?? null
+}
+
+function worktreeUsesRemoteConnection(
+  state: Pick<AppState, 'repos' | 'worktreesByRepo'>,
+  worktreeId: string
+): boolean {
+  return Boolean(getWorktreeConnectionId(state, worktreeId))
 }
 
 export type TerminalSlice = {
@@ -1159,6 +1166,7 @@ export const createTerminalSlice: StateCreator<AppState, [], [], TerminalSlice> 
     const keepIdentifiers = opts?.keepIdentifiers ?? false
     const tabs = get().tabsByWorktree[worktreeId] ?? []
     const ptyIds = tabs.flatMap((tab) => get().ptyIdsByTabId[tab.id] ?? [])
+    const connectionId = getWorktreeConnectionId(get(), worktreeId)
 
     // Why: the main process flushes any remaining batched PTY data before
     // sending the exit event (pty.ts onExit handler). Without this, that
@@ -1167,7 +1175,7 @@ export const createTerminalSlice: StateCreator<AppState, [], [], TerminalSlice> 
     // notifications for a worktree that is already being torn down —
     // the "phantom alerts" users see after shutting down worktrees.
     // Removing the data handlers first ensures the final flush is a no-op.
-    unregisterPtyDataHandlers(ptyIds)
+    unregisterScopedPtyDataHandlers(ptyIds.map((ptyId) => ({ ptyId, connectionId })))
 
     // Why (ordering invariant — DESIGN_DOC §3.3.c): on sleep, capture every
     // pane's serializer buffer into terminalLayoutsByTabId[tab].buffersByLeafId
@@ -1334,7 +1342,12 @@ export const createTerminalSlice: StateCreator<AppState, [], [], TerminalSlice> 
     await Promise.allSettled(
       ptyIds
         .filter((ptyId) => !ptyId.startsWith('remote:'))
-        .map((ptyId) => window.api.pty.kill(ptyId, { keepHistory: keepIdentifiers }))
+        .map((ptyId) =>
+          window.api.pty.kill(ptyId, {
+            keepHistory: keepIdentifiers,
+            ...(connectionId ? { connectionId } : {})
+          })
+        )
     )
   },
 

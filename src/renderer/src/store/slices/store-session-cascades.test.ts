@@ -1142,7 +1142,8 @@ describe('terminal slice behaviors', () => {
 // Mock pty-transport's eager buffer registration
 vi.mock('@/components/terminal-pane/pty-transport', () => ({
   registerEagerPtyBuffer: vi.fn().mockReturnValue({ flush: () => '', dispose: () => {} }),
-  ensurePtyDispatcher: vi.fn()
+  ensurePtyDispatcher: vi.fn(),
+  unregisterScopedPtyDataHandlers: vi.fn()
 }))
 
 describe('reconnectPersistedTerminals', () => {

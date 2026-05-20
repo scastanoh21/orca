@@ -1039,7 +1039,11 @@ export function connectPanePty(
       // change. Sending it explicitly guarantees restored TUIs repaint at
       // the correct cursor position after snapshot replay.
       if (!isRemoteRuntimePtyId(ptyId)) {
-        window.api.pty.signal(ptyId, 'SIGWINCH')
+        if (connectionId) {
+          window.api.pty.signal(ptyId, 'SIGWINCH', connectionId)
+        } else {
+          window.api.pty.signal(ptyId, 'SIGWINCH')
+        }
       }
 
       scheduleRuntimeGraphSync()

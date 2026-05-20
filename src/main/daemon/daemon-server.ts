@@ -157,6 +157,7 @@ export class DaemonServer {
         this.streamDataBatcher.clear(hello.clientId)
         client.streamSocket?.destroy()
         client.streamSocket = socket
+        this.setupStreamSocket(socket, hello.clientId)
       }
       // Stream socket is receive-only from daemon's perspective (for events)
     }
@@ -177,6 +178,18 @@ export class DaemonServer {
       if (client?.controlSocket === socket) {
         this.disconnectClient(clientId, client)
       }
+    })
+  }
+
+  private setupStreamSocket(socket: Socket, clientId: string): void {
+    socket.on('close', () => {
+      const client = this.clients.get(clientId)
+      if (client?.streamSocket === socket) {
+        this.disconnectClient(clientId, client)
+      }
+    })
+    socket.on('error', () => {
+      socket.destroy()
     })
   }
 
@@ -210,6 +223,10 @@ export class DaemonServer {
 
     switch (request.type) {
       case 'createOrAttach': {
+        if (!client?.streamSocket || client.streamSocket.destroyed) {
+          throw new Error('Stream socket is not connected')
+        }
+        const streamSocket = client.streamSocket
         const p = request.payload
         const result = await this.host.createOrAttach({
           sessionId: p.sessionId,
@@ -233,6 +250,14 @@ export class DaemonServer {
             }
           }
         })
+        if (
+          this.clients.get(clientId) !== client ||
+          client.streamSocket !== streamSocket ||
+          streamSocket.destroyed
+        ) {
+          this.host.detach(p.sessionId, result.attachToken)
+          throw new Error('Client stream disconnected')
+        }
         const existingToken = client?.attachTokens.get(p.sessionId)
         if (existingToken) {
           this.host.detach(p.sessionId, existingToken)
@@ -270,7 +295,14 @@ export class DaemonServer {
 
       case 'acknowledgeDataEvent':
         try {
-          this.host.acknowledgeDataEvent(request.payload.sessionId, request.payload.charCount)
+          const token = client?.attachTokens.get(request.payload.sessionId)
+          if (token) {
+            this.host.acknowledgeDataEvent(
+              request.payload.sessionId,
+              token,
+              request.payload.charCount
+            )
+          }
         } catch (err) {
           if (!(err instanceof SessionNotFoundError)) {
             throw err

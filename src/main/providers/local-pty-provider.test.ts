@@ -374,6 +374,20 @@ describe('LocalPtyProvider', () => {
 
       expect(mockProc.resume).toHaveBeenCalledTimes(1)
     })
+
+    it('clears flow-control state when shutdown bypasses natural exit cleanup', async () => {
+      const { id } = await provider.spawn({ cols: 80, rows: 24 })
+      const onDataCb = mockProc.onData.mock.calls[0][0]
+
+      onDataCb('x'.repeat(100_001))
+      expect(mockProc.pause).toHaveBeenCalledTimes(1)
+
+      await provider.shutdown(id, { immediate: true })
+      mockProc.resume.mockClear()
+      provider.acknowledgeDataEvent(id, 95_002)
+
+      expect(mockProc.resume).not.toHaveBeenCalled()
+    })
   })
 
   describe('listProcesses', () => {

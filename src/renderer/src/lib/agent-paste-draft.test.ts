@@ -4,7 +4,10 @@ import { pasteDraftWhenAgentReady } from './agent-paste-draft'
 const testState = vi.hoisted(() => ({
   appState: {
     settings: {},
-    ptyIdsByTabId: { 'tab-1': ['pty-1'] }
+    ptyIdsByTabId: { 'tab-1': ['pty-1'] },
+    tabsByWorktree: { 'repo-1::/wt': [{ id: 'tab-1' }] },
+    worktreesByRepo: { 'repo-1': [{ id: 'repo-1::/wt', repoId: 'repo-1' }] },
+    repos: [{ id: 'repo-1', connectionId: null as string | null }]
   },
   ptyObserver: null as ((data: string) => void) | null,
   unsubscribe: vi.fn(),
@@ -47,6 +50,9 @@ describe('pasteDraftWhenAgentReady', () => {
     })
     testState.appState.settings = {}
     testState.appState.ptyIdsByTabId = { 'tab-1': ['pty-1'] }
+    testState.appState.tabsByWorktree = { 'repo-1::/wt': [{ id: 'tab-1' }] }
+    testState.appState.worktreesByRepo = { 'repo-1': [{ id: 'repo-1::/wt', repoId: 'repo-1' }] }
+    testState.appState.repos = [{ id: 'repo-1', connectionId: null }]
     testState.ptyObserver = null
     testState.unsubscribe.mockReset()
     testState.subscribeToPtyData.mockReset()
@@ -125,6 +131,33 @@ describe('pasteDraftWhenAgentReady', () => {
 
     await expect(promise).resolves.toBe(true)
     expect(testState.sendRuntimePtyInput).toHaveBeenCalledWith({}, 'pty-1', PASTED_ISSUE_URL)
+  })
+
+  it('subscribes and writes through the tab SSH connection', async () => {
+    testState.appState.repos = [{ id: 'repo-1', connectionId: 'ssh-1' }]
+
+    const promise = pasteDraftWhenAgentReady({
+      tabId: 'tab-1',
+      content: ISSUE_URL,
+      agent: 'codex'
+    })
+    await flushMicrotasks()
+
+    expect(testState.subscribeToPtyData).toHaveBeenCalledWith(
+      'pty-1',
+      expect.any(Function),
+      'ssh-1'
+    )
+
+    testState.ptyObserver?.(`${DECSET_BRACKETED_PASTE}${CODEX_COMPOSER_PROMPT_RENDER}`)
+
+    await expect(promise).resolves.toBe(true)
+    expect(testState.sendRuntimePtyInput).toHaveBeenCalledWith(
+      {},
+      'pty-1',
+      PASTED_ISSUE_URL,
+      'ssh-1'
+    )
   })
 
   it('does not paste for agents that already use native draft prefill', async () => {

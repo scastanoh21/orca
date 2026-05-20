@@ -202,13 +202,14 @@ export const createRepoSlice: StateCreator<AppState, [], [], RepoSlice> = (set, 
 
   removeRepo: async (repoId) => {
     try {
+      const repo = get().repos.find((entry) => entry.id === repoId)
       const target = getActiveRuntimeTarget(get().settings)
       await (target.kind === 'local'
         ? window.api.repos.remove({ repoId })
         : callRuntimeRpc(target, 'repo.rm', { repo: repoId }, { timeoutMs: 15_000 }))
 
       get().clearOrcaHookTrustForRepo(repoId)
-      const repoPath = get().repos.find((repo) => repo.id === repoId)?.path
+      const repoPath = repo?.path
       get().evictGitHubRepoCaches(repoId, repoPath)
       const { clearRepoSlugCacheEntry } = await import('../../lib/repo-slug-index')
       clearRepoSlugCacheEntry(repoId)
@@ -231,7 +232,11 @@ export const createRepoSlice: StateCreator<AppState, [], [], RepoSlice> = (set, 
           for (const ptyId of get().ptyIdsByTabId[tab.id] ?? []) {
             killedPtyIds.add(ptyId)
             if (!ptyId.startsWith('remote:')) {
-              window.api.pty.kill(ptyId)
+              if (repo?.connectionId) {
+                void window.api.pty.kill(ptyId, { connectionId: repo.connectionId })
+              } else {
+                void window.api.pty.kill(ptyId)
+              }
             }
           }
         }

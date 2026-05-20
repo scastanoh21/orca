@@ -156,12 +156,69 @@ describe('Session', () => {
 
     it('pauses and resumes output from renderer parse acknowledgements', () => {
       createSession()
-      session.attachClient({ onData: () => {}, onExit: () => {} })
+      const token = session.attachClient({ onData: () => {}, onExit: () => {} })
       subprocess.simulateData('x'.repeat(100_001))
 
       expect(subprocess.pause).toHaveBeenCalledTimes(1)
       expect(subprocess.resume).not.toHaveBeenCalled()
-      session.acknowledgeDataEvent(95_002)
+      session.acknowledgeDataEvent(token, 95_002)
+      expect(subprocess.resume).toHaveBeenCalledTimes(1)
+    })
+
+    it('waits for every attached client to acknowledge its own delivered bytes', () => {
+      createSession()
+      const token1 = session.attachClient({ onData: () => {}, onExit: () => {} })
+      const token2 = session.attachClient({ onData: () => {}, onExit: () => {} })
+      subprocess.simulateData('x'.repeat(100_001))
+
+      expect(subprocess.pause).toHaveBeenCalledTimes(1)
+
+      session.acknowledgeDataEvent(token1, 100_001)
+      expect(subprocess.resume).not.toHaveBeenCalled()
+
+      session.acknowledgeDataEvent(token2, 100_001)
+      expect(subprocess.resume).toHaveBeenCalledTimes(1)
+    })
+
+    it('uses per-client watermarks so healthy attached clients do not lower the pause threshold', () => {
+      createSession()
+      session.attachClient({ onData: () => {}, onExit: () => {} })
+      session.attachClient({ onData: () => {}, onExit: () => {} })
+
+      subprocess.simulateData('x'.repeat(60_000))
+
+      expect(subprocess.pause).not.toHaveBeenCalled()
+    })
+
+    it('does not keep phantom debt for clients detached during data broadcast', () => {
+      createSession()
+      let token2!: symbol
+      const token1 = session.attachClient({
+        onData: () => session.detachClient(token2),
+        onExit: () => {}
+      })
+      const secondClientData = vi.fn()
+      token2 = session.attachClient({ onData: secondClientData, onExit: () => {} })
+
+      subprocess.simulateData('x'.repeat(100_001))
+
+      expect(subprocess.pause).toHaveBeenCalledTimes(1)
+      expect(secondClientData).not.toHaveBeenCalled()
+
+      session.acknowledgeDataEvent(token1, 100_001)
+      expect(subprocess.resume).toHaveBeenCalledTimes(1)
+    })
+
+    it('resumes when the only slow attached client detaches', () => {
+      createSession()
+      const token1 = session.attachClient({ onData: () => {}, onExit: () => {} })
+      const token2 = session.attachClient({ onData: () => {}, onExit: () => {} })
+      subprocess.simulateData('x'.repeat(100_001))
+
+      session.acknowledgeDataEvent(token1, 100_001)
+      expect(subprocess.resume).not.toHaveBeenCalled()
+
+      session.detachClient(token2)
       expect(subprocess.resume).toHaveBeenCalledTimes(1)
     })
 
