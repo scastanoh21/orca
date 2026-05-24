@@ -186,6 +186,9 @@ export default function TerminalPane({
   // imperatively, so `setPaneCount` is used only as a render-trigger side
   // effect to force that map to re-run when a pane is split or closed.
   const [paneCount, setPaneCount] = useState<number>(0)
+  // Why: pane reorders can move panes without changing count or size, so
+  // overlay rects need an explicit layout-change render trigger.
+  const [paneLayoutRevision, setPaneLayoutRevision] = useState(0)
   const [searchOpen, setSearchOpen] = useState(false)
   const searchOpenRef = useRef(false)
   searchOpenRef.current = searchOpen
@@ -743,7 +746,8 @@ export default function TerminalPane({
     setPaneTitles,
     paneTitlesRef,
     setRenamingPaneId,
-    setPaneCount
+    setPaneCount,
+    setPaneLayoutRevision
   })
 
   useEffect(() => {
@@ -1306,6 +1310,7 @@ export default function TerminalPane({
     isolatedPaneKey,
     isVisible,
     paneCount,
+    paneLayoutRevision,
     paneTitles,
     renamingPaneId,
     syncPaneTitleOverlayRects
@@ -1561,6 +1566,7 @@ export default function TerminalPane({
     managerRef,
     paneTransportsRef,
     paneCwdRef,
+    containerRef,
     worktreeId,
     fallbackCwd: cwd ?? '',
     toggleExpandPane,
@@ -1816,6 +1822,7 @@ export default function TerminalPane({
               className="pane-title-bar"
               data-pane-prevent-terminal-focus=""
               {...(isEditing ? { 'data-editing': '' } : {})}
+              onContextMenuCapture={(event) => contextMenu.onPaneTitleContextMenu(event, pane.id)}
               style={{
                 left: overlayRect.left,
                 top: overlayRect.top,

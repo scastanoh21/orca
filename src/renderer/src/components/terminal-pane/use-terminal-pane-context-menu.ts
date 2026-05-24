@@ -14,6 +14,7 @@ type UseTerminalPaneContextMenuDeps = {
   managerRef: React.RefObject<PaneManager | null>
   paneTransportsRef: React.RefObject<Map<number, PtyTransport>>
   paneCwdRef: React.RefObject<PaneCwdMap>
+  containerRef: React.RefObject<HTMLDivElement | null>
   worktreeId: string
   fallbackCwd: string
   toggleExpandPane: (paneId: number) => void
@@ -31,6 +32,7 @@ type TerminalMenuState = {
   paneCount: number
   menuPaneId: number | null
   onContextMenuCapture: (event: React.MouseEvent<HTMLDivElement>) => void
+  onPaneTitleContextMenu: (event: React.MouseEvent<HTMLElement>, paneId: number) => void
   onCopy: () => Promise<void>
   onPaste: () => Promise<void>
   onSplitRight: () => void
@@ -47,6 +49,7 @@ export function useTerminalPaneContextMenu({
   managerRef,
   paneTransportsRef,
   paneCwdRef,
+  containerRef,
   worktreeId,
   fallbackCwd,
   toggleExpandPane,
@@ -214,7 +217,11 @@ export function useTerminalPaneContextMenu({
     }
   }
 
-  const onContextMenuCapture = (event: React.MouseEvent<HTMLDivElement>): void => {
+  const openContextMenu = (
+    event: React.MouseEvent<HTMLElement>,
+    clickedPaneId: number | null,
+    boundsElement: HTMLElement
+  ): void => {
     event.preventDefault()
     window.dispatchEvent(new Event(CLOSE_ALL_CONTEXT_MENUS_EVENT))
     const manager = managerRef.current
@@ -222,12 +229,10 @@ export function useTerminalPaneContextMenu({
       contextPaneIdRef.current = null
       return
     }
-    const target = event.target
-    if (!(target instanceof Node)) {
-      contextPaneIdRef.current = null
-      return
-    }
-    const clickedPane = manager.getPanes().find((pane) => pane.container.contains(target)) ?? null
+    const clickedPane =
+      clickedPaneId !== null
+        ? (manager.getPanes().find((pane) => pane.id === clickedPaneId) ?? null)
+        : null
     contextPaneIdRef.current = clickedPane?.id ?? null
 
     // Why: Windows terminals treat right-click as copy-or-paste depending on
@@ -247,9 +252,35 @@ export function useTerminalPaneContextMenu({
     }
 
     menuOpenedAtRef.current = Date.now()
-    const bounds = event.currentTarget.getBoundingClientRect()
+    const bounds = boundsElement.getBoundingClientRect()
     setPoint({ x: event.clientX - bounds.left, y: event.clientY - bounds.top })
     setOpen(true)
+  }
+
+  const onContextMenuCapture = (event: React.MouseEvent<HTMLDivElement>): void => {
+    const manager = managerRef.current
+    if (!manager) {
+      event.preventDefault()
+      contextPaneIdRef.current = null
+      return
+    }
+    const target = event.target
+    if (!(target instanceof Node)) {
+      event.preventDefault()
+      contextPaneIdRef.current = null
+      return
+    }
+    const clickedPane = manager.getPanes().find((pane) => pane.container.contains(target)) ?? null
+    openContextMenu(event, clickedPane?.id ?? null, event.currentTarget)
+  }
+
+  const onPaneTitleContextMenu = (event: React.MouseEvent<HTMLElement>, paneId: number): void => {
+    const boundsElement = containerRef.current
+    if (!boundsElement) {
+      event.preventDefault()
+      return
+    }
+    openContextMenu(event, paneId, boundsElement)
   }
 
   const paneCount = managerRef.current?.getPanes().length ?? 1
@@ -263,6 +294,7 @@ export function useTerminalPaneContextMenu({
     paneCount,
     menuPaneId,
     onContextMenuCapture,
+    onPaneTitleContextMenu,
     onCopy,
     onPaste,
     onSplitRight,

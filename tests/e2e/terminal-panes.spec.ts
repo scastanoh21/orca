@@ -76,6 +76,23 @@ async function openTerminalContextMenu(page: Page): Promise<void> {
   await expect(page.getByText('Set Title…', { exact: true })).toBeVisible()
 }
 
+async function openPaneTitleContextMenu(page: Page, title: string): Promise<void> {
+  const modifiers: ('Alt' | 'Control' | 'Meta' | 'Shift')[] = (await page.evaluate(() =>
+    navigator.userAgent.includes('Windows')
+  ))
+    ? ['Control']
+    : []
+  const isMac = await page.evaluate(() => navigator.userAgent.includes('Mac'))
+  const titleBar = page.locator('.pane-title-bar', { hasText: title }).first()
+  await expect(titleBar).toBeVisible()
+  await titleBar.click({
+    button: isMac ? 'left' : 'right',
+    position: { x: 20, y: 10 },
+    modifiers: isMac ? ['Control'] : modifiers
+  })
+  await expect(page.getByText('Set Title…', { exact: true })).toBeVisible()
+}
+
 async function installDelayedTerminalFocusSteals(
   page: Page,
   delaysMs: readonly number[]
@@ -122,6 +139,41 @@ function expectBoxesToMatch(
   expect(Math.abs(actual.y - expected.y)).toBeLessThan(1)
   expect(Math.abs(actual.width - expected.width)).toBeLessThan(1)
   expect(Math.abs(actual.height - expected.height)).toBeLessThan(1)
+}
+
+async function expectPaneTitleAttachedToLeaf(
+  page: Page,
+  title: string,
+  leafId: string
+): Promise<void> {
+  await expect
+    .poll(
+      () =>
+        page.evaluate(
+          ({ title, leafId }) => {
+            const titleBar = Array.from(
+              document.querySelectorAll<HTMLElement>('.pane-title-bar')
+            ).find((element) => element.textContent?.includes(title))
+            const pane = document.querySelector<HTMLElement>(`.pane[data-leaf-id="${leafId}"]`)
+            if (!titleBar || !pane) {
+              return false
+            }
+            const titleRect = titleBar.getBoundingClientRect()
+            const paneRect = pane.getBoundingClientRect()
+            return (
+              Math.abs(titleRect.left - paneRect.left) < 1 &&
+              Math.abs(titleRect.top - paneRect.top) < 1 &&
+              Math.abs(titleRect.width - paneRect.width) < 1
+            )
+          },
+          { title, leafId }
+        ),
+      {
+        timeout: 5_000,
+        message: 'Pane title overlay did not stay attached to its pane'
+      }
+    )
+    .toBe(true)
 }
 
 async function getTabCustomTitle(
@@ -314,6 +366,56 @@ test.describe('Terminal Panes', () => {
     await expect(orcaPage.locator('.pane-title-text', { hasText: title })).toBeVisible()
     await expect(orcaPage.locator('.pane[data-has-title]')).toHaveCount(0)
     expectBoxesToMatch(await readVisibleXtermContainerBox(orcaPage), terminalBoxBefore)
+  })
+
+  test('Set Title context menu opens from the title overlay strip', async ({ orcaPage }) => {
+    const title = `Overlay menu title ${Date.now()}`
+    const updatedTitle = `Overlay menu updated ${Date.now()}`
+
+    await setPaneTitleFromTerminalMenu(orcaPage, title)
+    await openPaneTitleContextMenu(orcaPage, title)
+    await orcaPage.getByText('Set Title…', { exact: true }).click()
+
+    const titleInput = orcaPage.locator('.pane-title-input').first()
+    await expect(titleInput).toBeVisible()
+    await expect(titleInput).toBeFocused()
+    await expect(titleInput).toHaveValue(title)
+    await titleInput.fill(updatedTitle)
+    await titleInput.press('Enter')
+
+    await expect(orcaPage.locator('.pane-title-text', { hasText: updatedTitle })).toHaveCount(1)
+    await expect(orcaPage.locator('.pane-title-text', { hasText: title })).toHaveCount(0)
+  })
+
+  test('Set Title overlay follows its pane after same-count pane move', async ({ orcaPage }) => {
+    const title = `Moved overlay title ${Date.now()}`
+
+    await setPaneTitleFromTerminalMenu(orcaPage, title)
+    const initialSnapshot = await waitForPaneIdentitySnapshot(orcaPage, 1)
+    const titledLeafId = initialSnapshot.activeLeafId ?? initialSnapshot.panes[0]?.leafId
+    if (!titledLeafId) {
+      throw new Error('No titled pane leaf id found before move')
+    }
+
+    await splitActiveTerminalPane(orcaPage, 'vertical')
+    await waitForPaneCount(orcaPage, 2)
+    const beforeMove = await waitForPaneIdentitySnapshot(orcaPage, 2)
+    const target = beforeMove.panes.find((pane) => pane.leafId !== titledLeafId)
+    if (!target) {
+      throw new Error('No target pane found for titled pane move')
+    }
+    const beforeOrder = await readTerminalPaneDomLeafOrder(orcaPage)
+
+    await expectPaneTitleAttachedToLeaf(orcaPage, title, titledLeafId)
+    await moveTerminalPaneByLeafId(orcaPage, titledLeafId, target.leafId, 'right')
+
+    await expect
+      .poll(async () => readTerminalPaneDomLeafOrder(orcaPage), {
+        timeout: 10_000,
+        message: 'Pane move did not update DOM order'
+      })
+      .not.toEqual(beforeOrder)
+    await expectPaneTitleAttachedToLeaf(orcaPage, title, titledLeafId)
   })
 
   test('Set Title input stays open when clicked in a split terminal', async ({ orcaPage }) => {
