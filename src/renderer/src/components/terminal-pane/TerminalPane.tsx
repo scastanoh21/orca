@@ -996,6 +996,7 @@ export default function TerminalPane({
     paneTransportsRef,
     isActiveRef,
     isVisibleRef,
+    expandedPaneIdRef,
     toggleExpandPane
   })
 

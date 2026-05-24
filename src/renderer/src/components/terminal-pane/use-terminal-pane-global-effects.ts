@@ -18,6 +18,7 @@ import { restoreScrollStateAfterLayout } from '@/lib/pane-manager/pane-scroll'
 import { useTerminalScrollVisibilityMemory } from './use-terminal-scroll-visibility-memory'
 import { useTerminalContainerFitSync } from './use-terminal-container-fit-sync'
 import { pasteTerminalText } from './terminal-bracketed-paste'
+import { registerTerminalPaneExpandToggleHandler } from './terminal-pane-expand-toggle-registry'
 
 type UseTerminalPaneGlobalEffectsArgs = {
   tabId: string
@@ -31,6 +32,7 @@ type UseTerminalPaneGlobalEffectsArgs = {
   paneTransportsRef: React.RefObject<Map<number, PtyTransport>>
   isActiveRef: React.RefObject<boolean>
   isVisibleRef: React.RefObject<boolean>
+  expandedPaneIdRef?: React.RefObject<number | null>
   toggleExpandPane: (paneId: number) => void
 }
 
@@ -46,6 +48,7 @@ export function useTerminalPaneGlobalEffects({
   paneTransportsRef,
   isActiveRef,
   isVisibleRef,
+  expandedPaneIdRef,
   toggleExpandPane
 }: UseTerminalPaneGlobalEffectsArgs): void {
   const worktreeIdRef = useRef(worktreeId)
@@ -126,27 +129,45 @@ export function useTerminalPaneGlobalEffects({
   }, [isActive, isVisible])
 
   useEffect(() => {
+    const togglePaneForChrome = (): boolean => {
+      const manager = managerRef.current
+      if (!manager) {
+        return false
+      }
+      const panes = manager.getPanes()
+      if (panes.length < 2) {
+        return false
+      }
+      const expandedPaneId = expandedPaneIdRef?.current ?? null
+      // Why: chrome buttons are outside xterm focus; collapse the pane that is
+      // visibly expanded even if manager focus has drifted to a hidden sibling.
+      let pane = manager.getActivePane() ?? panes[0]
+      if (expandedPaneId !== null) {
+        pane = panes.find((candidate) => candidate.id === expandedPaneId) ?? pane
+      }
+      if (!pane) {
+        return false
+      }
+      toggleExpandPane(pane.id)
+      return true
+    }
+
     const onToggleExpand = (event: Event): void => {
       const detail = (event as CustomEvent<{ tabId?: string }>).detail
       if (!detail?.tabId || detail.tabId !== tabId) {
         return
       }
-      const manager = managerRef.current
-      if (!manager) {
-        return
-      }
-      const panes = manager.getPanes()
-      if (panes.length < 2) {
-        return
-      }
-      const pane = manager.getActivePane() ?? panes[0]
-      if (!pane) {
-        return
-      }
-      toggleExpandPane(pane.id)
+      togglePaneForChrome()
     }
+    const unregisterToggleHandler = registerTerminalPaneExpandToggleHandler(
+      tabId,
+      togglePaneForChrome
+    )
     window.addEventListener(TOGGLE_TERMINAL_PANE_EXPAND_EVENT, onToggleExpand)
-    return () => window.removeEventListener(TOGGLE_TERMINAL_PANE_EXPAND_EVENT, onToggleExpand)
+    return () => {
+      unregisterToggleHandler()
+      window.removeEventListener(TOGGLE_TERMINAL_PANE_EXPAND_EVENT, onToggleExpand)
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tabId])
 

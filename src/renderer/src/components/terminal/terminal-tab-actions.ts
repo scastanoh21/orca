@@ -1,6 +1,7 @@
 import { useAppStore } from '@/store'
 import { TOGGLE_TERMINAL_PANE_EXPAND_EVENT } from '@/constants/terminal'
 import { reconcileTabOrder } from '../tab-bar/reconcile-order'
+import { requestRegisteredTerminalPaneExpandToggle } from '../terminal-pane/terminal-pane-expand-toggle-registry'
 import {
   activateWebRuntimeSessionTab,
   closeWebRuntimeSessionTab,
@@ -196,13 +197,27 @@ export function activateEditorFile(fileId: string): void {
   s.setActiveTabType('editor')
 }
 
+function dispatchTerminalPaneExpandToggle(tabId: string): void {
+  window.dispatchEvent(
+    new CustomEvent(TOGGLE_TERMINAL_PANE_EXPAND_EVENT, {
+      detail: { tabId }
+    })
+  )
+}
+
+export function requestTerminalPaneExpandToggle(tabId: string): void {
+  if (!requestRegisteredTerminalPaneExpandToggle(tabId)) {
+    dispatchTerminalPaneExpandToggle(tabId)
+  }
+}
+
+export function toggleActiveTerminalPaneExpand(tabId: string): void {
+  requestTerminalPaneExpandToggle(tabId)
+}
+
 export function toggleTerminalPaneExpand(tabId: string): void {
   useAppStore.getState().setActiveTab(tabId)
   requestAnimationFrame(() => {
-    window.dispatchEvent(
-      new CustomEvent(TOGGLE_TERMINAL_PANE_EXPAND_EVENT, {
-        detail: { tabId }
-      })
-    )
+    requestTerminalPaneExpandToggle(tabId)
   })
 }

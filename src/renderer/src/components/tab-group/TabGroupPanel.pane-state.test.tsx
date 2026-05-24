@@ -19,6 +19,7 @@ const mocks = vi.hoisted(() => ({
   pinFile: vi.fn(),
   setTabColor: vi.fn(),
   setTabCustomTitle: vi.fn(),
+  toggleActiveTerminalPaneExpand: vi.fn(),
   toggleTerminalPaneExpand: vi.fn()
 }))
 
@@ -37,6 +38,7 @@ vi.mock('react', async () => {
   const actual = await vi.importActual<typeof import('react')>('react') // eslint-disable-line @typescript-eslint/consistent-type-imports -- vi.importActual requires inline import()
   return {
     ...actual,
+    useCallback: <T extends (...args: never[]) => unknown>(callback: T) => callback,
     useMemo: (factory: () => unknown) => factory()
   }
 })
@@ -71,6 +73,7 @@ vi.mock('../tab-bar/TabBarQuickCommandsButton', () => ({
 }))
 
 vi.mock('../terminal/terminal-tab-actions', () => ({
+  toggleActiveTerminalPaneExpand: mocks.toggleActiveTerminalPaneExpand,
   toggleTerminalPaneExpand: mocks.toggleTerminalPaneExpand
 }))
 
@@ -225,6 +228,7 @@ describe('TabGroupPanel pane expand state affordance', () => {
     expect(button).not.toBeNull()
     expect(button?.props['aria-pressed']).toBe(false)
     expect(button?.props['data-pane-expand-state']).toBe('normal')
+    expect(button?.props.style).toMatchObject({ WebkitAppRegion: 'no-drag' })
   })
 
   it('renders a highlighted collapse affordance when the pane is expanded', async () => {
@@ -241,9 +245,14 @@ describe('TabGroupPanel pane expand state affordance', () => {
     const element = await renderPanel()
     const stopPropagation = vi.fn()
     const button = findButtonByLabel(element, 'Expand pane')
-    if (!button || typeof button.props.onClick !== 'function') {
+    if (
+      !button ||
+      typeof button.props.onClick !== 'function' ||
+      typeof button.props.onPointerDown !== 'function'
+    ) {
       throw new Error('expand pane button not found')
     }
+    button.props.onPointerDown({ stopPropagation })
     button.props.onClick({ stopPropagation })
 
     const tabBar = findChildByTypeName(element, 'TabBar')
@@ -252,8 +261,9 @@ describe('TabGroupPanel pane expand state affordance', () => {
     }
     tabBar.props.onTogglePaneExpand('terminal-1')
 
-    expect(stopPropagation).toHaveBeenCalledTimes(1)
-    expect(mocks.toggleTerminalPaneExpand).toHaveBeenNthCalledWith(1, 'terminal-1')
-    expect(mocks.toggleTerminalPaneExpand).toHaveBeenNthCalledWith(2, 'terminal-1')
+    expect(stopPropagation).toHaveBeenCalledTimes(2)
+    expect(mocks.toggleActiveTerminalPaneExpand).toHaveBeenNthCalledWith(1, 'terminal-1')
+    expect(mocks.toggleActiveTerminalPaneExpand).toHaveBeenNthCalledWith(2, 'terminal-1')
+    expect(mocks.toggleTerminalPaneExpand).not.toHaveBeenCalled()
   })
 })

@@ -5,7 +5,6 @@ import { createPortal } from 'react-dom'
 import { toast } from 'sonner'
 import {
   BACKGROUND_MOUNT_TERMINAL_WORKTREE_EVENT,
-  TOGGLE_TERMINAL_PANE_EXPAND_EVENT,
   type BackgroundMountTerminalWorktreeDetail
 } from '@/constants/terminal'
 import { useAppStore } from '../store'
@@ -38,6 +37,10 @@ import type { TabGroupLayoutNode } from '../../../shared/types'
 import BrowserPane from './browser-pane/BrowserPane'
 import { destroyPersistentWebview } from './browser-pane/webview-registry'
 import BrowserPaneOverlayLayer from './browser-pane/BrowserPaneOverlayLayer'
+import {
+  toggleActiveTerminalPaneExpand,
+  toggleTerminalPaneExpand
+} from './terminal/terminal-tab-actions'
 import TerminalPaneOverlayLayer from './terminal-pane/TerminalPaneOverlayLayer'
 import {
   collectBrowserWebviewIds,
@@ -1052,16 +1055,13 @@ function Terminal(): React.JSX.Element | null {
 
   const handleTogglePaneExpand = useCallback(
     (tabId: string) => {
-      setActiveTab(tabId)
-      requestAnimationFrame(() => {
-        window.dispatchEvent(
-          new CustomEvent(TOGGLE_TERMINAL_PANE_EXPAND_EVENT, {
-            detail: { tabId }
-          })
-        )
-      })
+      if (tabId === activeTabId) {
+        toggleActiveTerminalPaneExpand(tabId)
+        return
+      }
+      toggleTerminalPaneExpand(tabId)
     },
-    [setActiveTab]
+    [activeTabId]
   )
 
   const handleActivateBrowserTab = useCallback(

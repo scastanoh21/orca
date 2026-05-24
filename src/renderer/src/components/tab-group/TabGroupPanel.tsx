@@ -1,4 +1,4 @@
-import { lazy, Suspense, useMemo } from 'react'
+import { lazy, Suspense, useCallback, useMemo } from 'react'
 import { useDroppable } from '@dnd-kit/core'
 import { Columns2, Ellipsis, Maximize2, Minimize2, Rows2, X } from 'lucide-react'
 import { useAppStore } from '../../store'
@@ -14,7 +14,10 @@ import { TabBarQuickCommandsButton } from '../tab-bar/TabBarQuickCommandsButton'
 import { useTabGroupWorkspaceModel } from './useTabGroupWorkspaceModel'
 import TabGroupDropOverlay from './TabGroupDropOverlay'
 import { resolveGroupTabFromVisibleId } from './tab-group-visible-id'
-import { toggleTerminalPaneExpand } from '../terminal/terminal-tab-actions'
+import {
+  toggleActiveTerminalPaneExpand,
+  toggleTerminalPaneExpand
+} from '../terminal/terminal-tab-actions'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import {
   getTabPaneBodyDroppableId,
@@ -85,6 +88,16 @@ export default function TabGroupPanel({
     activeTerminalTabId !== null && model.canExpandPaneByTabId[activeTerminalTabId] === true
   const activeTerminalExpanded =
     activeTerminalTabId !== null && model.expandedPaneByTabId[activeTerminalTabId] === true
+  const handleTogglePaneExpand = useCallback(
+    (terminalId: string): void => {
+      if (terminalId === activeTerminalTabId) {
+        toggleActiveTerminalPaneExpand(terminalId)
+        return
+      }
+      toggleTerminalPaneExpand(terminalId)
+    },
+    [activeTerminalTabId]
+  )
 
   const tabBar = (
     <TabBar
@@ -123,7 +136,7 @@ export default function TabGroupPanel({
       onNewFileTab={commands.newFileTab}
       onSetCustomTitle={commands.setTabCustomTitle}
       onSetTabColor={commands.setTabColor}
-      onTogglePaneExpand={toggleTerminalPaneExpand}
+      onTogglePaneExpand={handleTogglePaneExpand}
       editorFiles={editorItems}
       browserTabs={browserItems}
       activeFileId={
@@ -272,7 +285,7 @@ export default function TabGroupPanel({
                     }}
                     onClick={(event) => {
                       event.stopPropagation()
-                      toggleTerminalPaneExpand(activeTerminalTabId)
+                      handleTogglePaneExpand(activeTerminalTabId)
                     }}
                     className={paneExpandButtonClassName}
                   >

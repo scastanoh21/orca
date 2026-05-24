@@ -341,6 +341,7 @@ export default function SortableTab({
                 e.stopPropagation()
                 onToggleExpand(tab.id)
               }}
+              style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
               title="Collapse pane"
               aria-label="Collapse pane"
             >
