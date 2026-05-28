@@ -1,13 +1,4 @@
-import {
-  useCallback,
-  useEffect,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-  type CSSProperties,
-  type JSX
-} from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type JSX } from 'react'
 import { useAppStore } from '@/store'
 import { getContextualTour, type ContextualTourId } from '../../../../shared/contextual-tours'
 import type { ContextualTourOutcome } from '../../../../shared/feature-education-telemetry'
@@ -24,18 +15,13 @@ import {
   getVisibleContextualTourStepIndexes,
   isContextualTourAllowedForModal
 } from './contextual-tour-gate'
-import {
-  clampContextualTourPanelPosition,
-  getContextualTourPanelCssPosition
-} from './contextual-tour-panel-position'
+import { getContextualTourOverlayPanelPosition } from './contextual-tour-overlay-position'
 import {
   ContextualTourOverlaySurface,
   getContextualTourFocusableElements,
   handleContextualTourOverlayKeyDown,
   type ActiveTourRenderState
 } from './ContextualTourOverlaySurface'
-
-const PANEL_FALLBACK_SIZE = { width: 304, height: 172 }
 
 export function ContextualTourOverlay(): JSX.Element | null {
   const activeTourId = useAppStore((s) => s.activeContextualTourId)
@@ -294,25 +280,12 @@ export function ContextualTourOverlay(): JSX.Element | null {
     width: typeof window === 'undefined' ? 1024 : window.innerWidth,
     height: typeof window === 'undefined' ? 768 : window.innerHeight
   }
-  const panelRect = panelRef.current?.getBoundingClientRect()
-  const panel = panelRect
-    ? { width: panelRect.width, height: panelRect.height }
-    : PANEL_FALLBACK_SIZE
-  const clamped = clampContextualTourPanelPosition({
+  const { panelPosition, panelPlacement } = getContextualTourOverlayPanelPosition({
     targetRect: renderState.rect,
-    viewport,
-    panel
+    panelElement: panelRef.current,
+    panelHost: renderState.panelHost,
+    viewport
   })
-  const panelHostRect = renderState.panelHost?.getBoundingClientRect()
-  const cssPosition = getContextualTourPanelCssPosition({
-    position: clamped,
-    panelHostRect
-  })
-  const panelPosition: CSSProperties & { '--contextual-tour-arrow-offset'?: string } = {
-    left: cssPosition.left,
-    top: cssPosition.top,
-    '--contextual-tour-arrow-offset': `${cssPosition.arrowOffset}px`
-  }
 
   return (
     <ContextualTourOverlaySurface
@@ -320,7 +293,7 @@ export function ContextualTourOverlay(): JSX.Element | null {
       renderState={renderState}
       panelRef={panelRef}
       panelPosition={panelPosition}
-      panelPlacement={clamped.placement}
+      panelPlacement={panelPlacement}
       panelHost={renderState.panelHost}
       onSkip={(id) => {
         emitContextualTourOutcome('skipped')
