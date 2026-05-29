@@ -50,9 +50,17 @@ function EditorPanelInner({
   const [copiedPathToast, setCopiedPathToast] = useState<{ fileId: string; token: number } | null>(
     null
   )
+  const copiedPathToastTimerRef = useRef<number | null>(null)
   const [showMarkdownTableOfContents, setShowMarkdownTableOfContents] = useState(false)
   const [sideBySide, setSideBySide] = useState(settings?.diffDefaultView === 'side-by-side')
   const [prevDiffView, setPrevDiffView] = useState(settings?.diffDefaultView)
+  const clearCopiedPathToastTimer = useCallback((): void => {
+    if (copiedPathToastTimerRef.current === null) {
+      return
+    }
+    window.clearTimeout(copiedPathToastTimerRef.current)
+    copiedPathToastTimerRef.current = null
+  }, [])
 
   if (settings?.diffDefaultView !== prevDiffView) {
     setPrevDiffView(settings?.diffDefaultView)
@@ -86,16 +94,17 @@ function EditorPanelInner({
     handleRenameConfirm
   } = useUntitledFileRename({ openFiles, closeFile, openFile, clearUntitled })
 
-  useEffect(() => acquireExportPdfListener(), [])
+  useEffect(() => {
+    const releaseExportPdfListener = acquireExportPdfListener()
+    return () => {
+      releaseExportPdfListener()
+      // Why: the copy-toast timeout is started by the copy event; clear it
+      // with the existing mount cleanup so it cannot update after unmount.
+      clearCopiedPathToastTimer()
+    }
+  }, [clearCopiedPathToastTimer])
   useClosedEditorTabCleanup(openFiles)
   useMarkdownPreviewShortcut({ activeFile, panelRef, openMarkdownPreview })
-  useEffect(() => {
-    if (!copiedPathToast) {
-      return
-    }
-    const timeout = window.setTimeout(() => setCopiedPathToast(null), 1500)
-    return () => window.clearTimeout(timeout)
-  }, [copiedPathToast])
 
   const handleContentChangeForFile = useCallback(
     (file: typeof activeFile, content: string) => {
@@ -181,11 +190,17 @@ function EditorPanelInner({
     }
     try {
       await window.api.ui.writeClipboardText(copyState.copyText)
+      clearCopiedPathToastTimer()
       setCopiedPathToast({ fileId: activeFile.id, token: Date.now() })
+      copiedPathToastTimerRef.current = window.setTimeout(() => {
+        copiedPathToastTimerRef.current = null
+        setCopiedPathToast(null)
+      }, 1500)
     } catch {
+      clearCopiedPathToastTimer()
       setCopiedPathToast(null)
     }
-  }, [activeFile])
+  }, [activeFile, clearCopiedPathToastTimer])
 
   if (!activeFile) {
     return null
