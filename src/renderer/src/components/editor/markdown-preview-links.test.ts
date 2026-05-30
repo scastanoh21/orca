@@ -115,6 +115,10 @@ describe('resolveImageAbsolutePath', () => {
     expect(resolveImageAbsolutePath('data:image/png;base64,abc', '/repo/README.md')).toBeNull()
   })
 
+  it('returns null for malformed file URL escapes', () => {
+    expect(resolveImageAbsolutePath('file:///repo/docs/%E0%A4%A.png', '/repo/README.md')).toBeNull()
+  })
+
   it('returns null for undefined src', () => {
     expect(resolveImageAbsolutePath(undefined, '/repo/README.md')).toBeNull()
   })
@@ -135,5 +139,9 @@ describe('fileUrlToAbsolutePath', () => {
 
   it('returns null for non-file URLs', () => {
     expect(fileUrlToAbsolutePath(new URL('https://example.com/readme.md'))).toBeNull()
+  })
+
+  it('returns null for malformed file URL escapes', () => {
+    expect(fileUrlToAbsolutePath(new URL('file:///repo/docs/%E0%A4%A.md'))).toBeNull()
   })
 })

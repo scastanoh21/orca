@@ -125,7 +125,12 @@ export function resolveImageAbsolutePath(
 
   // Convert file:///path/to/file → /path/to/file (Unix)
   // Convert file:///C:/path/to/file → C:/path/to/file (Windows)
-  let absolutePath = decodeURIComponent(resolved.pathname)
+  let absolutePath: string
+  try {
+    absolutePath = decodeURIComponent(resolved.pathname)
+  } catch {
+    return null
+  }
   if (/^\/[A-Za-z]:\//.test(absolutePath)) {
     absolutePath = absolutePath.slice(1)
   }
@@ -138,7 +143,12 @@ export function fileUrlToAbsolutePath(fileUrl: URL): string | null {
     return null
   }
 
-  let absolutePath = decodeURIComponent(fileUrl.pathname)
+  let absolutePath: string
+  try {
+    absolutePath = decodeURIComponent(fileUrl.pathname)
+  } catch {
+    return null
+  }
   if (/^\/[A-Za-z]:\//.test(absolutePath)) {
     absolutePath = absolutePath.slice(1)
   }
