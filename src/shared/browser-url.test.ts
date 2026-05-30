@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { ORCA_BROWSER_BLANK_URL } from './constants'
 import {
   buildSearchUrl,
+  looksLikeSearchQuery,
   normalizeKagiSessionLink,
   normalizeBrowserNavigationUrl,
   normalizeExternalBrowserUrl,
@@ -39,8 +40,14 @@ describe('browser-url helpers', () => {
     expect(normalizeBrowserNavigationUrl('/Users/me/Downloads/Example.ipynb')).toBe(
       'file:///Users/me/Downloads/Example.ipynb'
     )
+    expect(normalizeBrowserNavigationUrl('/Users/me/Application Support/Example.ipynb')).toBe(
+      'file:///Users/me/Application%20Support/Example.ipynb'
+    )
     expect(normalizeBrowserNavigationUrl('C:\\Users\\me\\Downloads\\Example.ipynb')).toBe(
       'file:///C:/Users/me/Downloads/Example.ipynb'
+    )
+    expect(normalizeBrowserNavigationUrl('C:\\Program Files\\Orca\\Example.ipynb')).toBe(
+      'file:///C:/Program%20Files/Orca/Example.ipynb'
     )
   })
 
@@ -68,6 +75,14 @@ describe('browser-url helpers', () => {
     )
     expect(normalizeBrowserNavigationUrl('singleword', null)).toBe(
       'https://www.google.com/search?q=singleword'
+    )
+  })
+
+  it('does not classify absolute local paths with spaces as search queries', () => {
+    expect(looksLikeSearchQuery('/Users/me/Application Support/Example.ipynb')).toBe(false)
+    expect(looksLikeSearchQuery('C:\\Program Files\\Orca\\Example.ipynb')).toBe(false)
+    expect(normalizeBrowserNavigationUrl('/Users/me/Application Support/Example.ipynb', null)).toBe(
+      'file:///Users/me/Application%20Support/Example.ipynb'
     )
   })
 

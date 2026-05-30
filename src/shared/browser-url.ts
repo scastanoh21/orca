@@ -8,8 +8,10 @@ const LOCAL_ADDRESS_PATTERN =
 // A single-word input containing a dot with a valid TLD-like suffix is treated as
 // a URL attempt, not a search query.
 const LOOKS_LIKE_URL_PATTERN = /^[^\s]+\.[a-z]{2,}(\/.*)?$/i
-const WINDOWS_ABSOLUTE_PATH_PATTERN = /^[A-Za-z]:[\\/][^\s]*$/
-const UNIX_ABSOLUTE_PATH_PATTERN = /^\/[^\s]*$/
+// Why: users often paste paths under "Application Support" or "Program Files".
+// Trim edges, but preserve internal spaces while detecting absolute paths.
+const WINDOWS_ABSOLUTE_PATH_PATTERN = /^[A-Za-z]:[\\/].*$/
+const UNIX_ABSOLUTE_PATH_PATTERN = /^\/.*$/
 
 export type SearchEngine = 'google' | 'duckduckgo' | 'bing' | 'kagi'
 
@@ -121,13 +123,17 @@ export function buildSearchUrl(
 }
 
 export function looksLikeSearchQuery(input: string): boolean {
-  if (input.includes(' ')) {
-    return true
-  }
-  if (LOOKS_LIKE_URL_PATTERN.test(input)) {
+  const trimmed = input.trim()
+  if (UNIX_ABSOLUTE_PATH_PATTERN.test(trimmed) || WINDOWS_ABSOLUTE_PATH_PATTERN.test(trimmed)) {
     return false
   }
-  if (input.includes('.') || input.includes(':')) {
+  if (trimmed.includes(' ')) {
+    return true
+  }
+  if (LOOKS_LIKE_URL_PATTERN.test(trimmed)) {
+    return false
+  }
+  if (trimmed.includes('.') || trimmed.includes(':')) {
     return false
   }
   return true
