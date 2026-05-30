@@ -77,7 +77,16 @@ export function CreateFromPicker({
     }
   }, [])
 
-  React.useEffect(() => cancelFocusFrame, [cancelFocusFrame])
+  const setInputNode = React.useCallback(
+    (node: HTMLInputElement | null): void => {
+      // Why: queued popover focus is only valid while the command input exists.
+      if (!node) {
+        cancelFocusFrame()
+      }
+      inputRef.current = node
+    },
+    [cancelFocusFrame]
+  )
 
   const focusSearchInput = React.useCallback(() => {
     cancelFocusFrame()
@@ -188,7 +197,7 @@ export function CreateFromPicker({
         >
           <Command>
             <CommandInput
-              ref={inputRef}
+              ref={setInputNode}
               value={query}
               onValueChange={setQuery}
               placeholder="Search repo branches..."

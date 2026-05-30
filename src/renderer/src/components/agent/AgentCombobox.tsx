@@ -161,7 +161,16 @@ export default function AgentCombobox({
     }
   }, [])
 
-  React.useEffect(() => cancelFocusFrame, [cancelFocusFrame])
+  const setInputNode = useCallback(
+    (node: HTMLInputElement | null): void => {
+      // Why: queued popover focus is only valid while the command input exists.
+      if (!node) {
+        cancelFocusFrame()
+      }
+      inputRef.current = node
+    },
+    [cancelFocusFrame]
+  )
 
   const focusSearchInput = useCallback(() => {
     cancelFocusFrame()
@@ -292,7 +301,7 @@ export default function AgentCombobox({
         >
           <Command shouldFilter={false} value={commandValue} onValueChange={setCommandValue}>
             <CommandInput
-              ref={inputRef}
+              ref={setInputNode}
               placeholder="Search agents..."
               value={query}
               onValueChange={setQuery}

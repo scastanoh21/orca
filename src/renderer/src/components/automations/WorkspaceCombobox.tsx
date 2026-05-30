@@ -35,7 +35,16 @@ export function WorkspaceCombobox({
     }
   }, [])
 
-  React.useEffect(() => cancelFocusFrame, [cancelFocusFrame])
+  const setInputNode = React.useCallback(
+    (node: HTMLInputElement | null): void => {
+      // Why: queued popover focus is only valid while the command input exists.
+      if (!node) {
+        cancelFocusFrame()
+      }
+      inputRef.current = node
+    },
+    [cancelFocusFrame]
+  )
 
   const focusSearchInput = React.useCallback(() => {
     cancelFocusFrame()
@@ -80,7 +89,7 @@ export function WorkspaceCombobox({
         }}
       >
         <Command>
-          <CommandInput ref={inputRef} placeholder="Search workspaces..." />
+          <CommandInput ref={setInputNode} placeholder="Search workspaces..." />
           <CommandList className="max-h-72">
             <CommandEmpty>No workspaces found.</CommandEmpty>
             {worktrees.map((worktree) => (
