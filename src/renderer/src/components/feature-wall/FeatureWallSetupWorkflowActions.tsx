@@ -33,7 +33,10 @@ export function AddReposAction(props: { reducedMotion: boolean }): React.JSX.Ele
   )
 }
 
-export function TwoAgentsAction(props: { reducedMotion: boolean }): React.JSX.Element {
+export function TwoAgentsAction(props: {
+  reducedMotion: boolean
+  done: boolean
+}): React.JSX.Element {
   const targetWorktree = useSetupTargetWorktree()
   const openModal = useAppStore((s) => s.openModal)
   const closeModal = useAppStore((s) => s.closeModal)
@@ -67,42 +70,16 @@ export function TwoAgentsAction(props: { reducedMotion: boolean }): React.JSX.El
     })
   }, [closeModal, openModal, targetWorktree])
 
-  const handleSecondaryAction = useCallback(() => {
-    cancelPendingSetupGuideTourRequest()
-    if (!targetWorktree) {
-      return
-    }
-    closeModal()
-    window.requestAnimationFrame(() => {
-      activateAndRevealWorktree(targetWorktree.id)
-    })
-  }, [closeModal, targetWorktree])
-
   return (
     <div className="space-y-4">
       <SetupTwoAgentsVisual reducedMotion={props.reducedMotion} />
-      {!paneTarget ? (
-        <div className="space-y-2">
-          <p className="max-w-[48ch] text-xs text-muted-foreground">
-            Split the terminal to run a second thing at once — another agent, a dev server, or a
-            REPL.
-          </p>
+      {!props.done && !paneTarget ? (
+        <div>
           <div className="flex flex-wrap gap-2">
             <Button type="button" size="sm" className="w-fit gap-2" onClick={handlePrimaryAction}>
               <ArrowUpRight className="size-3.5" />
-              Split terminal
+              Try it out
             </Button>
-            {targetWorktree ? (
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                className="w-fit"
-                onClick={handleSecondaryAction}
-              >
-                Start from current workspace
-              </Button>
-            ) : null}
           </div>
         </div>
       ) : null}
@@ -110,36 +87,41 @@ export function TwoAgentsAction(props: { reducedMotion: boolean }): React.JSX.El
   )
 }
 
-export function WorkspacesAction(props: { reducedMotion: boolean }): React.JSX.Element {
+export function WorkspacesAction(props: {
+  reducedMotion: boolean
+  done: boolean
+}): React.JSX.Element {
   const openModal = useAppStore((s) => s.openModal)
   const activeRepoId = useAppStore((s) => s.activeRepoId)
   return (
     <div className="space-y-4">
       <SetupWorkspacesVisual reducedMotion={props.reducedMotion} />
-      <Button
-        type="button"
-        size="sm"
-        className="w-fit gap-2"
-        onClick={() => {
-          cancelPendingSetupGuideTourRequest()
-          const tourRequestId = createSetupGuideTourRequestId()
-          openModal('new-workspace-composer', {
-            ...(activeRepoId ? { initialRepoId: activeRepoId } : {}),
-            telemetrySource: 'unknown',
-            contextualTourSource: 'setup_guide_parallel_work',
-            setupGuideTourRequestId: tourRequestId
-          })
-          requestSetupGuideTourWhenReady({
-            id: 'workspace-creation',
-            source: 'setup_guide_parallel_work',
-            wasFeaturePreviouslyInteracted: false,
-            shouldContinue: () => isSetupGuideWorkspaceComposerRequestCurrent(tourRequestId)
-          })
-        }}
-      >
-        <ArrowUpRight className="size-3.5" />
-        Try it out
-      </Button>
+      {!props.done ? (
+        <Button
+          type="button"
+          size="sm"
+          className="w-fit gap-2"
+          onClick={() => {
+            cancelPendingSetupGuideTourRequest()
+            const tourRequestId = createSetupGuideTourRequestId()
+            openModal('new-workspace-composer', {
+              ...(activeRepoId ? { initialRepoId: activeRepoId } : {}),
+              telemetrySource: 'unknown',
+              contextualTourSource: 'setup_guide_parallel_work',
+              setupGuideTourRequestId: tourRequestId
+            })
+            requestSetupGuideTourWhenReady({
+              id: 'workspace-creation',
+              source: 'setup_guide_parallel_work',
+              wasFeaturePreviouslyInteracted: false,
+              shouldContinue: () => isSetupGuideWorkspaceComposerRequestCurrent(tourRequestId)
+            })
+          }}
+        >
+          <ArrowUpRight className="size-3.5" />
+          Try it out
+        </Button>
+      ) : null}
     </div>
   )
 }

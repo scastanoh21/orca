@@ -117,13 +117,10 @@ function SelectedStepAction(props: FeatureWallSetupChecklistProps): React.JSX.El
     return <NotificationAction />
   }
   if (activeStep.id === 'split-terminal') {
-    return <TwoAgentsAction reducedMotion={reducedMotion} />
+    return <TwoAgentsAction reducedMotion={reducedMotion} done={activeDone} />
   }
   if (activeStep.id === 'two-worktrees') {
-    if (activeDone) {
-      return null
-    }
-    return <WorkspacesAction reducedMotion={reducedMotion} />
+    return <WorkspacesAction reducedMotion={reducedMotion} done={activeDone} />
   }
   if (activeStep.id === 'task-sources') {
     return <TaskSourcesAction reducedMotion={reducedMotion} />
