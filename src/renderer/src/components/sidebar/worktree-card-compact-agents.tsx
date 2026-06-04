@@ -167,11 +167,14 @@ export function CompactAgentSummaryButton({
         'compact-agent-summary-button group/agent-summary flex h-6 w-full min-w-0 items-center gap-1 rounded-sm',
         'px-1 text-left text-[11px] leading-none text-muted-foreground',
         'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-sidebar-ring',
-        // Why: collapsed it's a standalone pill; expanded it's a quiet tree
-        // header inside the worktree card, so it drops its own border/fill.
+        // Why: sidebar-accent is near-white in light mode and dark in dark
+        // mode, so hover lightening needs a theme-specific token mix.
+        'hover:bg-sidebar-accent/55 dark:hover:bg-sidebar-foreground/[0.035]',
+        // Why: expanded is a tree header inside the card, so only the
+        // standalone collapsed pill gets a resting surface and border.
         expanded
-          ? 'compact-agent-summary-button-expanded hover:bg-sidebar-accent/60'
-          : 'border border-sidebar-border/70 bg-sidebar-accent/35 hover:bg-sidebar-accent'
+          ? 'compact-agent-summary-button-expanded'
+          : 'border border-sidebar-border/70 bg-sidebar-accent/35'
       )}
       aria-label={
         expanded ? `Collapse ${subjectLabel}` : `Expand ${summary}. ${agentIdentitySummary}`
