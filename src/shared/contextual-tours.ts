@@ -168,8 +168,8 @@ export const CONTEXTUAL_TOURS = [
     id: 'floating-workspace',
     steps: [
       {
-        title: 'Run an agent across your repos',
-        body: 'Point this at the folder holding your services to run an agent across all of them — something a single-repo worktree can’t do.',
+        title: 'Run an agent across every repo',
+        body: 'Agents here run in any folder you choose — point one at the directory above your services to work across all your repos at once.',
         targetSelector:
           '[data-contextual-tour-target="floating-workspace-actions"], [data-contextual-tour-target="floating-workspace-surface"]',
         requiredForStart: true,

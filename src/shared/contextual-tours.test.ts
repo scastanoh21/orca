@@ -168,11 +168,11 @@ describe('contextual tour definitions', () => {
       | undefined
 
     expect(tour?.steps.map((step) => step.title)).toEqual([
-      'Run an agent across your repos',
+      'Run an agent across every repo',
       'Park side work here'
     ])
     expect(tour?.steps.map((step) => step.body)).toEqual([
-      'Point this at the folder holding your services to run an agent across all of them — something a single-repo worktree can’t do.',
+      'Agents here run in any folder you choose — point one at the directory above your services to work across all your repos at once.',
       'Open agents, scratch terminals, notes, and browser tabs without cluttering the worktree you’re focused on.'
     ])
     expect(tour?.steps[0]).toMatchObject({
