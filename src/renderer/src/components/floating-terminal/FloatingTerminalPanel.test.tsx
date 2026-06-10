@@ -977,7 +977,7 @@ describe('FloatingTerminalPanel close behavior', () => {
     )
   })
 
-  it('targets the empty-state action list without co-mounting the surface fallback', async () => {
+  it('targets the empty-state actions without co-mounting the surface fallback', async () => {
     const element = await renderPanel(true)
     const emptyState = findByTypeName(element, 'FloatingTerminalEmptyState')
     const renderedEmptyState = (
@@ -988,11 +988,12 @@ describe('FloatingTerminalPanel close behavior', () => {
       'floating-workspace-surface'
     )
     expect(collectPropValues(renderedEmptyState, 'data-contextual-tour-target')).toEqual([
-      'floating-workspace-actions'
+      'floating-workspace-new-terminal',
+      'floating-workspace-new-markdown'
     ])
   })
 
-  it('targets the non-empty panel surface when the action list is absent', async () => {
+  it('targets the non-empty panel surface when the empty-state actions are absent', async () => {
     setFloatingTabs([makeTab({ id: 'tab-1' })])
 
     const element = await renderPanel(true)
@@ -1004,7 +1005,10 @@ describe('FloatingTerminalPanel close behavior', () => {
       'floating-workspace-surface'
     )
     expect(collectPropValues(element, 'data-contextual-tour-target')).not.toContain(
-      'floating-workspace-actions'
+      'floating-workspace-new-terminal'
+    )
+    expect(collectPropValues(element, 'data-contextual-tour-target')).not.toContain(
+      'floating-workspace-new-markdown'
     )
   })
 

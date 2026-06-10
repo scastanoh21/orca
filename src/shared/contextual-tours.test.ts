@@ -181,8 +181,8 @@ describe('contextual tour definitions', () => {
     })
     expect(tour?.steps[1]?.preferredPlacement).toBe('left')
     expect(tour?.steps.map((step) => step.targetSelector)).toEqual([
-      '[data-contextual-tour-target="floating-workspace-actions"], [data-contextual-tour-target="floating-workspace-surface"]',
-      '[data-contextual-tour-target="floating-workspace-actions"], [data-contextual-tour-target="floating-workspace-surface"]'
+      '[data-contextual-tour-target="floating-workspace-new-terminal"], [data-contextual-tour-target="floating-workspace-surface"]',
+      '[data-contextual-tour-target="floating-workspace-new-markdown"], [data-contextual-tour-target="floating-workspace-surface"]'
     ])
   })
 

@@ -43,7 +43,7 @@ describe('contextual tour gate', () => {
   it('can start the floating workspace tour from the non-empty surface fallback', () => {
     const tour = getContextualTour('floating-workspace')
     const fallbackSelector =
-      '[data-contextual-tour-target="floating-workspace-actions"], [data-contextual-tour-target="floating-workspace-surface"]'
+      '[data-contextual-tour-target="floating-workspace-new-terminal"], [data-contextual-tour-target="floating-workspace-surface"]'
     const decision = getContextualTourRequestDecision({
       tour,
       persistedUIReady: true,

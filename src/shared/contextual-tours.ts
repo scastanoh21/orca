@@ -171,7 +171,7 @@ export const CONTEXTUAL_TOURS = [
         title: 'Run an agent across every repo',
         body: 'Agents here run in any folder you choose. Point one at the directory above your services to work across all your repos at once.',
         targetSelector:
-          '[data-contextual-tour-target="floating-workspace-actions"], [data-contextual-tour-target="floating-workspace-surface"]',
+          '[data-contextual-tour-target="floating-workspace-new-terminal"], [data-contextual-tour-target="floating-workspace-surface"]',
         requiredForStart: true,
         preferredPlacement: 'left'
       },
@@ -179,7 +179,7 @@ export const CONTEXTUAL_TOURS = [
         title: 'Park side work here',
         body: 'Open agents, scratch terminals, notes, and browser tabs without cluttering the worktree you’re focused on.',
         targetSelector:
-          '[data-contextual-tour-target="floating-workspace-actions"], [data-contextual-tour-target="floating-workspace-surface"]',
+          '[data-contextual-tour-target="floating-workspace-new-markdown"], [data-contextual-tour-target="floating-workspace-surface"]',
         preferredPlacement: 'left'
       }
     ]
