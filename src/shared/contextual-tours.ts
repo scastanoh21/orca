@@ -169,7 +169,7 @@ export const CONTEXTUAL_TOURS = [
     steps: [
       {
         title: 'Your portable command center',
-        body: 'The floating workspace runs at the repo root and stays with you as you move between worktrees.',
+        body: 'Set up your go-to tools once and they’re at hand in every worktree — no recreating them each time you switch tasks.',
         targetSelector:
           '[data-contextual-tour-target="floating-workspace-actions"], [data-contextual-tour-target="floating-workspace-surface"]',
         requiredForStart: true,

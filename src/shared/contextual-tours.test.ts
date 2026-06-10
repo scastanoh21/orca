@@ -172,7 +172,7 @@ describe('contextual tour definitions', () => {
       'Park side work here'
     ])
     expect(tour?.steps.map((step) => step.body)).toEqual([
-      'The floating workspace runs at the repo root and stays with you as you move between worktrees.',
+      'Set up your go-to tools once and they’re at hand in every worktree — no recreating them each time you switch tasks.',
       'Open agents, scratch terminals, notes, and browser tabs without cluttering the worktree you’re focused on.'
     ])
     expect(tour?.steps[0]).toMatchObject({
