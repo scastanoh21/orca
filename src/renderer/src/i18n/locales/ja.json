@@ -2443,7 +2443,9 @@
             "77ac113df0": "{{value0}} を開始: {{value1}}",
             "7b1c9d6ae1": "走る",
             "c781f992e4": "破壊的な",
-            "be8f0ff166": "削除"
+            "be8f0ff166": "削除",
+            "f3a8c2d1e7": "Search quick commands...",
+            "b4e7f9a2c1": "No commands match"
           },
           "shell": {
             "icons": {
@@ -3952,18 +3954,18 @@
           "wslLabel": "WSL default"
         },
         "FolderWorkspaceComposerDialog": {
-          "connectFailed": "Failed to connect to project.",
-          "noRepos": "Add a Git project under this folder to attach GitHub or GitLab tasks.",
-          "title": "Create Folder Workspace",
-          "create": "Create workspace",
-          "sourceProject": "Task Source",
-          "chooseSourceProject": "Choose task source"
+          "connectFailed": "プロジェクトに接続できませんでした。",
+          "noRepos": "GitHub または GitLab のタスクを関連付けるには、このフォルダー内に Git プロジェクトを追加してください。",
+          "title": "フォルダーワークスペースを作成",
+          "create": "ワークスペースを作成",
+          "sourceProject": "タスクソース",
+          "chooseSourceProject": "タスクソースを選択"
         },
         "ProjectOrderManualDefaultNotice": {
-          "a1f4c2d8e0": "Manual project order is now default",
-          "822ff300ad": "Dismiss",
-          "b7e3a91c4f": "Drag project headers to reorder, or switch to",
-          "e8c1f4a2b9": "in workspace options."
+          "a1f4c2d8e0": "手動のプロジェクト順序がデフォルトになりました",
+          "822ff300ad": "閉じる",
+          "b7e3a91c4f": "プロジェクトヘッダーをドラッグして並べ替えるか、",
+          "e8c1f4a2b9": "をワークスペースオプションで選択してください。"
         }
       },
       "shared": {
@@ -8017,7 +8019,8 @@
             "2c417432b7": "ローカルで解決済み",
             "d206117f90": "{{value0}} コンフリクト ({{value1}})",
             "f3a8b2c1d0e5": "{{value0}} のタイトルを入力してください。",
-            "e2b7a1c0d9f4": "{{value0}} の作成に失敗しました"
+            "e2b7a1c0d9f4": "{{value0}} の作成に失敗しました",
+            "e9e238b260": "Custom command is empty. Add one in Settings -> Git -> Source Control AI."
           },
           "SourceControlAgentActionDialog": {
             "8e856842d1": "選択した agent を開始できませんでした。",
@@ -8097,7 +8100,7 @@
                 "74c6885b8a": "その他のコメント操作",
                 "cbcc4ab3db": "最初の 100 件のチェックを表示しています",
                 "0dca6bfab5": "オープンチェックの詳細",
-                "991f50c7e4": "チェックが設定されていません",
+                "991f50c7e4": "まだチェックは報告されていません",
                 "9ad98f2a17": "保留中",
                 "5e52f4ef7f": "失敗した",
                 "02ca4f9074": "合格",
@@ -10543,6 +10546,44 @@
             "e176f9d0c5": "Jira Cloud site URL",
             "d785c42b8b": "Use a Jira Cloud site URL, Atlassian email, and API token to browse issues.",
             "8388bdea2b": "Connect Jira site"
+          }
+        }
+      },
+      "link": {
+        "routing": {
+          "preference": {
+            "dialog": {
+              "badge": "ターミナルリンク",
+              "preview": "プレビュー",
+              "title": "ターミナルのリンクを Orca のブラウザで開きますか？",
+              "description": "ターミナルのリンクを Orca のブラウザで開くか、システムブラウザを使い続けます。",
+              "orca": {
+                "button": "Orca で開く",
+                "note": "Orca はインポート済み Cookie を使ってログイン済みサイトを開けます。"
+              },
+              "settings": {
+                "note": "後で 設定 → ブラウザ から変更できます。"
+              },
+              "system": {
+                "button": "システムブラウザを使用"
+              },
+              "link": {
+                "label": "リンク"
+              },
+              "shortcut": {
+                "note": {
+                  "prefix": "リンクを Orca で開く場合、",
+                  "suffix": "クリックで今回だけシステムブラウザで開きます。"
+                }
+              },
+              "keep": {
+                "title": "ターミナルのリンクを Orca のブラウザで開き続けますか？",
+                "description": "またはシステムブラウザを既定で使用します。",
+                "orca": {
+                  "button": "Orca のままにする"
+                }
+              }
+            }
           }
         }
       }

@@ -2443,7 +2443,9 @@
             "77ac113df0": "시작 {{value0}}: {{value1}}",
             "7b1c9d6ae1": "달리다",
             "c781f992e4": "파괴적인",
-            "be8f0ff166": "삭제"
+            "be8f0ff166": "삭제",
+            "f3a8c2d1e7": "Search quick commands...",
+            "b4e7f9a2c1": "No commands match"
           },
           "shell": {
             "icons": {
@@ -3952,18 +3954,18 @@
           "wslLabel": "WSL default"
         },
         "FolderWorkspaceComposerDialog": {
-          "connectFailed": "Failed to connect to project.",
-          "noRepos": "Add a Git project under this folder to attach GitHub or GitLab tasks.",
-          "title": "Create Folder Workspace",
+          "connectFailed": "프로젝트에 연결하지 못했습니다.",
+          "noRepos": "GitHub 또는 GitLab 작업을 연결하려면 이 폴더 아래에 Git 프로젝트를 추가하세요.",
+          "title": "폴더 워크스페이스 만들기",
           "create": "워크스페이스 만들기",
-          "sourceProject": "Task Source",
-          "chooseSourceProject": "Choose task source"
+          "sourceProject": "작업 소스",
+          "chooseSourceProject": "작업 소스 선택"
         },
         "ProjectOrderManualDefaultNotice": {
-          "a1f4c2d8e0": "Manual project order is now default",
-          "822ff300ad": "Dismiss",
-          "b7e3a91c4f": "Drag project headers to reorder, or switch to",
-          "e8c1f4a2b9": "in workspace options."
+          "a1f4c2d8e0": "수동 프로젝트 순서가 이제 기본값입니다",
+          "822ff300ad": "닫기",
+          "b7e3a91c4f": "프로젝트 헤더를 드래그하여 순서를 바꾸거나",
+          "e8c1f4a2b9": "정렬을 워크스페이스 옵션에서 선택하세요."
         }
       },
       "shared": {
@@ -8017,7 +8019,8 @@
             "2c417432b7": "로컬에서 해결됨",
             "d206117f90": "{{value0}} 충돌 ({{value1}})",
             "f3a8b2c1d0e5": "{{value0}} 제목을 입력하세요.",
-            "e2b7a1c0d9f4": "{{value0}} 생성에 실패했습니다"
+            "e2b7a1c0d9f4": "{{value0}} 생성에 실패했습니다",
+            "e9e238b260": "Custom command is empty. Add one in Settings -> Git -> Source Control AI."
           },
           "SourceControlAgentActionDialog": {
             "8e856842d1": "선택한 agent를 시작할 수 없습니다.",
@@ -8097,7 +8100,7 @@
                 "74c6885b8a": "추가 댓글 작업",
                 "cbcc4ab3db": "처음 100개 검사 표시",
                 "0dca6bfab5": "검사 세부 정보 열기",
-                "991f50c7e4": "구성된 검사가 없습니다.",
+                "991f50c7e4": "아직 보고된 체크가 없습니다.",
                 "9ad98f2a17": "보류 중",
                 "5e52f4ef7f": "실패",
                 "02ca4f9074": "통과",
@@ -10543,6 +10546,44 @@
             "e176f9d0c5": "Jira Cloud site URL",
             "d785c42b8b": "Use a Jira Cloud site URL, Atlassian email, and API token to browse issues.",
             "8388bdea2b": "Connect Jira site"
+          }
+        }
+      },
+      "link": {
+        "routing": {
+          "preference": {
+            "dialog": {
+              "badge": "터미널 링크",
+              "preview": "미리보기",
+              "title": "터미널 링크를 Orca 브라우저에서 열까요?",
+              "description": "터미널 링크를 Orca 브라우저에서 열거나 시스템 브라우저를 계속 사용합니다.",
+              "orca": {
+                "button": "Orca에서 열기",
+                "note": "Orca는 가져온 쿠키를 사용해 로그인된 사이트를 열 수 있습니다."
+              },
+              "settings": {
+                "note": "나중에 설정 → 브라우저에서 변경할 수 있습니다."
+              },
+              "system": {
+                "button": "시스템 브라우저 사용"
+              },
+              "link": {
+                "label": "링크"
+              },
+              "shortcut": {
+                "note": {
+                  "prefix": "링크가 Orca에서 열릴 때,",
+                  "suffix": "클릭하면 한 번만 시스템 브라우저에서 열립니다."
+                }
+              },
+              "keep": {
+                "title": "터미널 링크를 Orca 브라우저에서 계속 열까요?",
+                "description": "또는 시스템 브라우저를 기본값으로 사용합니다.",
+                "orca": {
+                  "button": "Orca 유지"
+                }
+              }
+            }
           }
         }
       }

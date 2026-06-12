@@ -2443,7 +2443,9 @@
             "77ac113df0": "Start {{value0}}: {{value1}}",
             "7b1c9d6ae1": "Run",
             "c781f992e4": "destructive",
-            "be8f0ff166": "Delete"
+            "be8f0ff166": "Delete",
+            "f3a8c2d1e7": "Search quick commands...",
+            "b4e7f9a2c1": "No commands match"
           },
           "shell": {
             "icons": {
@@ -3960,7 +3962,7 @@
           "chooseSourceProject": "Choose task source"
         },
         "ProjectOrderManualDefaultNotice": {
-          "a1f4c2d8e0": "Manual project order is now default",
+          "a1f4c2d8e0": "Manual project order is now the default",
           "822ff300ad": "Dismiss",
           "b7e3a91c4f": "Drag project headers to reorder, or switch to",
           "e8c1f4a2b9": "in workspace options."
@@ -8017,7 +8019,8 @@
             "31f6d46278": "Unresolved",
             "2c417432b7": "Resolved locally",
             "f3a8b2c1d0e5": "Enter a {{value0}} title.",
-            "e2b7a1c0d9f4": "Failed to create {{value0}}"
+            "e2b7a1c0d9f4": "Failed to create {{value0}}",
+            "e9e238b260": "Custom command is empty. Add one in Settings -> Git -> Source Control AI."
           },
           "SourceControlAgentActionDialog": {
             "8e856842d1": "Could not start the selected agent.",
@@ -8097,7 +8100,7 @@
                 "74c6885b8a": "More comment actions",
                 "cbcc4ab3db": "Showing first 100 checks",
                 "0dca6bfab5": "Open check details",
-                "991f50c7e4": "No checks configured",
+                "991f50c7e4": "No checks reported yet",
                 "9ad98f2a17": "pending",
                 "5e52f4ef7f": "failing",
                 "02ca4f9074": "passing",
@@ -10543,6 +10546,44 @@
             "e176f9d0c5": "Jira Cloud site URL",
             "d785c42b8b": "Use a Jira Cloud site URL, Atlassian email, and API token to browse issues.",
             "8388bdea2b": "Connect Jira site"
+          }
+        }
+      },
+      "link": {
+        "routing": {
+          "preference": {
+            "dialog": {
+              "badge": "Terminal link",
+              "preview": "Preview",
+              "title": "Open terminal links in Orca's browser?",
+              "description": "Use Orca's browser for terminal links, or keep your system browser.",
+              "orca": {
+                "button": "Open in Orca",
+                "note": "Orca can use imported cookies for logged-in sites."
+              },
+              "settings": {
+                "note": "Change this later in Settings → Browser."
+              },
+              "system": {
+                "button": "Use system browser"
+              },
+              "link": {
+                "label": "Link"
+              },
+              "shortcut": {
+                "note": {
+                  "prefix": "When links open in Orca,",
+                  "suffix": "click opens system browser once."
+                }
+              },
+              "keep": {
+                "title": "Keep terminal links in Orca's browser?",
+                "description": "Or use your system browser by default.",
+                "orca": {
+                  "button": "Keep Orca"
+                }
+              }
+            }
           }
         }
       }

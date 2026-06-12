@@ -2443,7 +2443,9 @@
             "77ac113df0": "Inicio {{value0}}: {{value1}}",
             "7b1c9d6ae1": "Correr",
             "c781f992e4": "destructivo",
-            "be8f0ff166": "Borrar"
+            "be8f0ff166": "Borrar",
+            "f3a8c2d1e7": "Search quick commands...",
+            "b4e7f9a2c1": "No commands match"
           },
           "shell": {
             "icons": {
@@ -3952,18 +3954,18 @@
           "wslLabel": "WSL default"
         },
         "FolderWorkspaceComposerDialog": {
-          "connectFailed": "Failed to connect to project.",
-          "noRepos": "Add a Git project under this folder to attach GitHub or GitLab tasks.",
-          "title": "Create Folder Workspace",
-          "create": "Create workspace",
-          "sourceProject": "Task Source",
-          "chooseSourceProject": "Choose task source"
+          "connectFailed": "No se pudo conectar al proyecto.",
+          "noRepos": "Agrega un proyecto Git en esta carpeta para adjuntar tareas de GitHub o GitLab.",
+          "title": "Crear espacio de trabajo de carpeta",
+          "create": "Crear espacio de trabajo",
+          "sourceProject": "Origen de tareas",
+          "chooseSourceProject": "Elige el origen de tareas"
         },
         "ProjectOrderManualDefaultNotice": {
-          "a1f4c2d8e0": "Manual project order is now default",
-          "822ff300ad": "Dismiss",
-          "b7e3a91c4f": "Drag project headers to reorder, or switch to",
-          "e8c1f4a2b9": "in workspace options."
+          "a1f4c2d8e0": "El orden manual de proyectos ahora es el predeterminado",
+          "822ff300ad": "Descartar",
+          "b7e3a91c4f": "Arrastra los encabezados de proyecto para reordenarlos, o cambia a",
+          "e8c1f4a2b9": "en las opciones del espacio de trabajo."
         }
       },
       "shared": {
@@ -8017,7 +8019,8 @@
             "31f6d46278": "Irresoluto",
             "2c417432b7": "Resuelto localmente",
             "f3a8b2c1d0e5": "Ingrese un título {{value0}}.",
-            "e2b7a1c0d9f4": "No se pudo crear {{value0}}"
+            "e2b7a1c0d9f4": "No se pudo crear {{value0}}",
+            "e9e238b260": "Custom command is empty. Add one in Settings -> Git -> Source Control AI."
           },
           "SourceControlAgentActionDialog": {
             "8e856842d1": "No se pudo iniciar el agente seleccionado.",
@@ -8097,7 +8100,7 @@
                 "74c6885b8a": "Más acciones de comentarios",
                 "cbcc4ab3db": "Mostrando los primeros 100 cheques",
                 "0dca6bfab5": "Abrir detalles del cheque",
-                "991f50c7e4": "No hay controles configurados",
+                "991f50c7e4": "Aún no se han reportado controles",
                 "9ad98f2a17": "pendiente",
                 "5e52f4ef7f": "defecto",
                 "02ca4f9074": "paso",
@@ -10543,6 +10546,44 @@
             "e176f9d0c5": "Jira Cloud site URL",
             "d785c42b8b": "Use a Jira Cloud site URL, Atlassian email, and API token to browse issues.",
             "8388bdea2b": "Connect Jira site"
+          }
+        }
+      },
+      "link": {
+        "routing": {
+          "preference": {
+            "dialog": {
+              "badge": "Enlace del terminal",
+              "preview": "Vista previa",
+              "title": "¿Abrir enlaces del terminal en el navegador de Orca?",
+              "description": "Usa el navegador de Orca para los enlaces del terminal o conserva tu navegador del sistema.",
+              "orca": {
+                "button": "Abrir en Orca",
+                "note": "Orca puede usar cookies importadas para sitios con sesión iniciada."
+              },
+              "settings": {
+                "note": "Cámbialo después en Configuración → Navegador."
+              },
+              "system": {
+                "button": "Usar navegador del sistema"
+              },
+              "link": {
+                "label": "Enlace"
+              },
+              "shortcut": {
+                "note": {
+                  "prefix": "Cuando los enlaces se abren en Orca,",
+                  "suffix": "clic abre el navegador del sistema una vez."
+                }
+              },
+              "keep": {
+                "title": "¿Mantener los enlaces del terminal en el navegador de Orca?",
+                "description": "O usa tu navegador del sistema de forma predeterminada.",
+                "orca": {
+                  "button": "Mantener Orca"
+                }
+              }
+            }
           }
         }
       }

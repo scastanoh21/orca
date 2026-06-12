@@ -2443,7 +2443,9 @@
             "77ac113df0": "开始 {{value0}}: {{value1}}",
             "7b1c9d6ae1": "跑步",
             "c781f992e4": "destructive",
-            "be8f0ff166": "删除"
+            "be8f0ff166": "删除",
+            "f3a8c2d1e7": "Search quick commands...",
+            "b4e7f9a2c1": "No commands match"
           },
           "shell": {
             "icons": {
@@ -3952,18 +3954,18 @@
           "wslLabel": "WSL default"
         },
         "FolderWorkspaceComposerDialog": {
-          "connectFailed": "Failed to connect to project.",
-          "noRepos": "Add a Git project under this folder to attach GitHub or GitLab tasks.",
-          "title": "Create Folder Workspace",
+          "connectFailed": "无法连接到项目。",
+          "noRepos": "在此文件夹下添加 Git 项目，以关联 GitHub 或 GitLab 任务。",
+          "title": "创建文件夹工作区",
           "create": "创建工作区",
-          "sourceProject": "Task Source",
-          "chooseSourceProject": "Choose task source"
+          "sourceProject": "任务来源",
+          "chooseSourceProject": "选择任务来源"
         },
         "ProjectOrderManualDefaultNotice": {
-          "a1f4c2d8e0": "Manual project order is now default",
-          "822ff300ad": "Dismiss",
-          "b7e3a91c4f": "Drag project headers to reorder, or switch to",
-          "e8c1f4a2b9": "in workspace options."
+          "a1f4c2d8e0": "手动项目排序现在是默认设置",
+          "822ff300ad": "关闭",
+          "b7e3a91c4f": "拖动项目标题即可重新排序，或在工作区选项中切换到",
+          "e8c1f4a2b9": "。"
         }
       },
       "shared": {
@@ -8017,7 +8019,8 @@
             "2c417432b7": "已在本地解决",
             "d206117f90": "{{value0}} 冲突 ({{value1}})",
             "f3a8b2c1d0e5": "请输入 {{value0}} 标题。",
-            "e2b7a1c0d9f4": "创建 {{value0}} 失败"
+            "e2b7a1c0d9f4": "创建 {{value0}} 失败",
+            "e9e238b260": "Custom command is empty. Add one in Settings -> Git -> Source Control AI."
           },
           "SourceControlAgentActionDialog": {
             "8e856842d1": "无法启动选定的 Agent。",
@@ -8097,7 +8100,7 @@
                 "74c6885b8a": "更多评论动作",
                 "cbcc4ab3db": "显示前 100 项检查",
                 "0dca6bfab5": "打开检查详细信息",
-                "991f50c7e4": "未配置检查",
+                "991f50c7e4": "尚未报告任何检查",
                 "9ad98f2a17": "待办的",
                 "5e52f4ef7f": "失败",
                 "02ca4f9074": "通过",
@@ -10543,6 +10546,44 @@
             "e176f9d0c5": "Jira Cloud site URL",
             "d785c42b8b": "Use a Jira Cloud site URL, Atlassian email, and API token to browse issues.",
             "8388bdea2b": "Connect Jira site"
+          }
+        }
+      },
+      "link": {
+        "routing": {
+          "preference": {
+            "dialog": {
+              "badge": "终端链接",
+              "preview": "预览",
+              "title": "在 Orca 浏览器中打开终端链接？",
+              "description": "用 Orca 浏览器打开终端链接，或继续使用系统浏览器。",
+              "orca": {
+                "button": "在 Orca 中打开",
+                "note": "Orca 可以使用已导入的 Cookie 打开已登录的网站。"
+              },
+              "settings": {
+                "note": "之后可在设置 → 浏览器中更改。"
+              },
+              "system": {
+                "button": "使用系统浏览器"
+              },
+              "link": {
+                "label": "链接"
+              },
+              "shortcut": {
+                "note": {
+                  "prefix": "当链接在 Orca 中打开时，",
+                  "suffix": "点击可临时改用系统浏览器。"
+                }
+              },
+              "keep": {
+                "title": "继续在 Orca 浏览器中打开终端链接？",
+                "description": "或默认使用系统浏览器。",
+                "orca": {
+                  "button": "继续使用 Orca"
+                }
+              }
+            }
           }
         }
       }
