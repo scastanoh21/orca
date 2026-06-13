@@ -1,8 +1,35 @@
 import { ExternalLink, Github, Gitlab, Terminal } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { useAppStore } from '@/store'
 import { IntegrationCardDetails, IntegrationCardShell } from './integration-card-shell'
+import { getProviderAccountScope } from './provider-account-scope'
 import { usePreflightCardStatuses } from './source-control-preflight-card-status'
 import { translate } from '@/i18n/i18n'
+
+function ProviderAccountScopeDetails({
+  children
+}: {
+  children?: React.ReactNode
+}): React.JSX.Element {
+  const settings = useAppStore((s) => s.settings)
+  const accountScope = getProviderAccountScope(settings)
+
+  return (
+    <IntegrationCardDetails>
+      <div className="text-xs">
+        <span className="font-medium text-foreground">
+          {translate(
+            'auto.components.settings.cli.source.control.integration.cards.account_scope',
+            'Account scope: {{value0}}',
+            { value0: accountScope.label }
+          )}
+        </span>
+        <div className="mt-0.5 text-muted-foreground">{accountScope.description}</div>
+      </div>
+      {children}
+    </IntegrationCardDetails>
+  )
+}
 
 export function GitHubIntegrationCard(): React.JSX.Element {
   const { statuses, unavailable, refresh } = usePreflightCardStatuses('gh')
@@ -43,9 +70,9 @@ export function GitHubIntegrationCard(): React.JSX.Element {
               : 'Not authenticated'
       }
     >
-      {status !== 'checking' && !connected ? (
-        <IntegrationCardDetails>
-          {status === 'unavailable' ? (
+      <ProviderAccountScopeDetails>
+        {status !== 'checking' && !connected ? (
+          status === 'unavailable' ? (
             <>
               <p className="text-xs text-muted-foreground">
                 {translate(
@@ -125,9 +152,9 @@ export function GitHubIntegrationCard(): React.JSX.Element {
                 </Button>
               </div>
             </>
-          )}
-        </IntegrationCardDetails>
-      ) : null}
+          )
+        ) : null}
+      </ProviderAccountScopeDetails>
     </IntegrationCardShell>
   )
 }
@@ -171,9 +198,9 @@ export function GitLabIntegrationCard(): React.JSX.Element {
               : 'Not authenticated'
       }
     >
-      {status !== 'checking' && !connected ? (
-        <IntegrationCardDetails>
-          {status === 'unavailable' ? (
+      <ProviderAccountScopeDetails>
+        {status !== 'checking' && !connected ? (
+          status === 'unavailable' ? (
             <>
               <p className="text-xs text-muted-foreground">
                 {translate(
@@ -257,9 +284,9 @@ export function GitLabIntegrationCard(): React.JSX.Element {
                 </Button>
               </div>
             </>
-          )}
-        </IntegrationCardDetails>
-      ) : null}
+          )
+        ) : null}
+      </ProviderAccountScopeDetails>
     </IntegrationCardShell>
   )
 }
