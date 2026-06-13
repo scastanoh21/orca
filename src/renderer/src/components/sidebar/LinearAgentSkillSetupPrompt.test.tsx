@@ -433,6 +433,8 @@ describe('LinearAgentSkillSetupPrompt', () => {
     )
     expect(document.body.textContent).toContain('Linear ticket access ready')
     expect(document.body.textContent).not.toContain('Mock install')
+    expect(document.body.textContent).not.toContain("Don't show again")
+    expect(document.body.textContent).not.toContain('Not now')
   })
 
   it('closes success with Done without permanent dismissal or session snooze', async () => {
