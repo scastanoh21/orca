@@ -66,6 +66,17 @@ type NewWorkspaceComposerCardProps = {
   projectHostSetupOptions?: ProjectHostSetupOption[]
   selectedProjectHostSetupId?: string | null
   onProjectHostSetupChange?: (setupId: string) => void
+  taskSourceProjectOptions?: NewWorkspaceProjectOption[]
+  selectedTaskSourceProjectId?: string | null
+  onTaskSourceProjectChange?: (projectId: string) => void
+  taskSourceEmptyMessage?: string | null
+  sourceLookupRequiresConnection?: boolean
+  sourceLookupConnectionId?: string | null
+  sourceLookupSshStatus?: SshConnectionStatus | null
+  sourceLookupConnectInProgress?: boolean
+  onConnectSourceLookupRepo?: () => Promise<void>
+  allowSmartNameAddProject?: boolean
+  smartNameRepoSwitchTarget?: 'project' | 'task-source'
   primaryActionLabel: string
   projectLabel?: string
   projectPlaceholder?: string
@@ -294,6 +305,17 @@ export default function NewWorkspaceComposerCard({
   projectHostSetupOptions = EMPTY_PROJECT_HOST_SETUP_OPTIONS,
   selectedProjectHostSetupId = null,
   onProjectHostSetupChange,
+  taskSourceProjectOptions = EMPTY_PROJECT_OPTIONS,
+  selectedTaskSourceProjectId = null,
+  onTaskSourceProjectChange,
+  taskSourceEmptyMessage = null,
+  sourceLookupRequiresConnection = false,
+  sourceLookupConnectionId = null,
+  sourceLookupSshStatus = null,
+  sourceLookupConnectInProgress = false,
+  onConnectSourceLookupRepo,
+  allowSmartNameAddProject = true,
+  smartNameRepoSwitchTarget = 'project',
   primaryActionLabel,
   projectLabel,
   projectPlaceholder,
@@ -353,13 +375,27 @@ export default function NewWorkspaceComposerCard({
     const repo = eligibleRepos.find((candidate) => candidate.id === repoId)
     return repo?.displayName ?? repo?.path ?? 'This project'
   }, [eligibleRepos, repoId])
+  const selectedProjectName = React.useMemo(() => {
+    const option = projectOptions.find((candidate) => candidate.id === selectedProjectId)
+    return option?.displayName ?? selectedRepoName
+  }, [projectOptions, selectedProjectId, selectedRepoName])
   const sshStatusLabel = selectedRepoSshStatus
     ? getSshStatusLabel(selectedRepoSshStatus)
+    : translate('auto.components.NewWorkspaceComposerCard.notConnected', 'Not connected')
+  const sourceLookupSshStatusLabel = sourceLookupSshStatus
+    ? getSshStatusLabel(sourceLookupSshStatus)
     : translate('auto.components.NewWorkspaceComposerCard.notConnected', 'Not connected')
   const connectButtonLabel =
     selectedRepoSshStatus === 'disconnected' || selectedRepoSshStatus === null
       ? 'Connect'
       : 'Reconnect'
+  const sourceLookupConnectButtonLabel =
+    sourceLookupSshStatus === 'disconnected' || sourceLookupSshStatus === null
+      ? translate('auto.components.NewWorkspaceComposerCard.connectSourceLookup', 'Connect')
+      : translate('auto.components.NewWorkspaceComposerCard.reconnectSourceLookup', 'Reconnect')
+  const showTaskSourceSelector = taskSourceProjectOptions.length > 1
+  const showTaskSourceSection =
+    showTaskSourceSelector || Boolean(taskSourceEmptyMessage) || sourceLookupRequiresConnection
   const setupConfigLabel =
     setupConfig?.kind === 'default-tabs'
       ? 'Default tab commands'
@@ -455,7 +491,7 @@ export default function NewWorkspaceComposerCard({
   )
   useContextualTour(
     'workspace-creation',
-    eligibleRepos.length > 0 && Boolean(repoId),
+    projectOptions.length > 0 && Boolean(selectedProjectId),
     contextualTourSource ??
       (activeModal === 'new-workspace-composer'
         ? 'workspace_creation_modal'
@@ -532,7 +568,7 @@ export default function NewWorkspaceComposerCard({
             <p id={projectDescriptionId} className="text-[11px] text-destructive">
               {projectError}
             </p>
-          ) : eligibleRepos.length === 0 ? (
+          ) : projectOptions.length === 0 ? (
             <p id={projectDescriptionId} className="text-[11px] text-muted-foreground">
               {emptyProjectMessage ??
                 translate(
@@ -562,7 +598,7 @@ export default function NewWorkspaceComposerCard({
               <div className="min-w-0">
                 <div className="truncate text-xs font-medium text-foreground">
                   {translate('auto.components.NewWorkspaceComposerCard.b5a0796911', 'Connect')}{' '}
-                  {selectedRepoName}
+                  {selectedProjectName}
                 </div>
                 <div className="mt-0.5 text-[11px] text-muted-foreground">{sshStatusLabel}</div>
               </div>
@@ -586,6 +622,69 @@ export default function NewWorkspaceComposerCard({
             </div>
           ) : null}
         </div>
+
+        {showTaskSourceSection ? (
+          <div className="space-y-1">
+            {showTaskSourceSelector ? (
+              <>
+                <label className="block min-w-0 truncate text-xs font-medium text-muted-foreground">
+                  {translate(
+                    'auto.components.sidebar.FolderWorkspaceComposerDialog.sourceProject',
+                    'Task Source'
+                  )}
+                </label>
+                <ProjectCombobox
+                  options={taskSourceProjectOptions}
+                  value={selectedTaskSourceProjectId}
+                  onValueChange={(value) => onTaskSourceProjectChange?.(value)}
+                  onValueSelected={focusNameInput}
+                  placeholder={translate(
+                    'auto.components.sidebar.FolderWorkspaceComposerDialog.chooseSourceProject',
+                    'Choose task source'
+                  )}
+                  triggerClassName="h-9 w-full border-input text-sm focus:border-ring focus:ring-[3px] focus:ring-ring/50"
+                />
+              </>
+            ) : null}
+            {taskSourceEmptyMessage ? (
+              <p className="text-[11px] text-muted-foreground">{taskSourceEmptyMessage}</p>
+            ) : null}
+            {sourceLookupRequiresConnection && sourceLookupConnectionId ? (
+              <div
+                role="status"
+                aria-live="polite"
+                className="flex items-center justify-between gap-3 rounded-md border border-border/70 bg-muted/35 px-3 py-2"
+              >
+                <div className="min-w-0">
+                  <div className="truncate text-xs font-medium text-foreground">
+                    {translate('auto.components.NewWorkspaceComposerCard.b5a0796911', 'Connect')}{' '}
+                    {selectedRepoName}
+                  </div>
+                  <div className="mt-0.5 text-[11px] text-muted-foreground">
+                    {sourceLookupSshStatusLabel}
+                  </div>
+                </div>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="xs"
+                  onClick={() => void onConnectSourceLookupRepo?.()}
+                  disabled={sourceLookupConnectInProgress}
+                  className="shrink-0"
+                >
+                  {sourceLookupConnectInProgress ? (
+                    <LoaderCircle className="size-3.5 animate-spin" />
+                  ) : (
+                    <PlugZap className="size-3.5" />
+                  )}
+                  {sourceLookupConnectInProgress
+                    ? translate('auto.components.NewWorkspaceComposerCard.f660aa1454', 'Connecting')
+                    : sourceLookupConnectButtonLabel}
+                </Button>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
 
         <div className="min-w-0 space-y-1" data-contextual-tour-target="workspace-creation-name">
           <label className="block min-w-0 truncate text-xs font-medium text-muted-foreground">
@@ -616,9 +715,15 @@ export default function NewWorkspaceComposerCard({
             selectedSource={smartNameSelection}
             onClearSelectedSource={onClearSmartNameSelection}
             disabled={selectedRepoRequiresConnection}
-            disabledPlaceholder="Connect this repo first"
+            disabledPlaceholder={translate(
+              'auto.components.NewWorkspaceComposerCard.connectProjectFirst',
+              'Connect this project first'
+            )}
             textOnly={!selectedRepoIsGit}
             branchesEnabled={branchesEnabled}
+            repoBackedSourcesDisabled={sourceLookupRequiresConnection}
+            allowCrossRepoProjectAdd={allowSmartNameAddProject}
+            crossRepoSwitchTarget={smartNameRepoSwitchTarget}
             onPlainEnter={() => {
               // Why: Enter on the workspace name advances focus to the next
               // field (Agent combobox) rather than submitting, letting the user

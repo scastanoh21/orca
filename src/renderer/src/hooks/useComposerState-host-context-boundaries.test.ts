@@ -1,7 +1,10 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { resolveInitialWorkspaceRunSeed } from './useComposerState'
+import {
+  canResolveFolderSmartGitHubSubmit,
+  resolveInitialWorkspaceRunSeed
+} from './useComposerState'
 
 const HOOK_SOURCE = readFileSync(join(__dirname, 'useComposerState.ts'), 'utf8')
 
@@ -37,7 +40,47 @@ describe('useComposerState host-context boundaries', () => {
 
     expect(section).toContain('const runRepo = selectedRepo ??')
     expect(section).toContain('repoId: runRepo.id')
+    expect(section).toContain('getSettingsForRepoRuntimeOwner')
+    expect(section).toContain('worktree.resolveMrBase')
+    expect(section).toContain('repo: runRepo.id')
     expect(section).not.toContain('repoId: repoForItem.id')
+  })
+
+  it('does not use local SSH gates for runtime-owned folder targets or sources', () => {
+    const targetSection = sourceBetween(
+      HOOK_SOURCE,
+      'const selectedFolderSourceProjectId',
+      'const selectedWorkspaceTarget'
+    )
+    expect(targetSection).toContain('parsedFolderSourceHost')
+    expect(targetSection).toContain("parsedFolderSourceHost?.kind === 'runtime'")
+    expect(targetSection).toContain("parsedFolderTargetHost?.kind === 'runtime'")
+    expect(targetSection).toContain('connectionId: folderSourceConnectionId')
+    expect(targetSection).toContain('connectionId: folderTargetConnectionId')
+  })
+
+  it('routes folder target runtime ownership through detection, path status, and create', () => {
+    const targetSection = sourceBetween(
+      HOOK_SOURCE,
+      'const parsedFolderTargetHost',
+      'const selectedWorkspaceTarget'
+    )
+    expect(targetSection).toContain('folderTargetRuntimeEnvironmentId')
+    expect(targetSection).toContain("{ kind: 'runtime' as const")
+    expect(targetSection).toContain('useFolderWorkspaceComposerPathStatus(')
+    expect(targetSection).toContain('folderTargetRuntimeEnvironmentId')
+    expect(targetSection).toContain('useDetectedAgents(folderTargetAgentDetectionTarget)')
+
+    const submitSection = sourceBetween(
+      HOOK_SOURCE,
+      'const submitFolderTarget',
+      'const submit = useCallback'
+    )
+    expect(submitSection).toContain('isRemote: folderTargetIsRemote')
+    expect(submitSection).toContain(
+      "launchSource: telemetrySource === 'onboarding' ? 'onboarding' : 'new_workspace_composer'"
+    )
+    expect(submitSection).toContain('runtimeEnvironmentId: folderTargetRuntimeEnvironmentId')
   })
 
   it('seeds initial workspace run target from the task source context', () => {
@@ -97,5 +140,164 @@ describe('useComposerState host-context boundaries', () => {
       'const resolution = getSmartGitHubSubmitResolution(item)'
     )
     expect(submitLookup).toContain('sourceContext: selectedRepoGitHubSourceContext')
+  })
+
+  it('skips submit-time GitHub smart resolution when folder task source lookup needs SSH', () => {
+    expect(
+      canResolveFolderSmartGitHubSubmit({
+        hasFolderSourceRepo: true,
+        folderSourceRequiresConnection: true
+      })
+    ).toBe(false)
+    expect(
+      canResolveFolderSmartGitHubSubmit({
+        hasFolderSourceRepo: true,
+        folderSourceRequiresConnection: false
+      })
+    ).toBe(true)
+    expect(
+      canResolveFolderSmartGitHubSubmit({
+        hasFolderSourceRepo: false,
+        folderSourceRequiresConnection: false
+      })
+    ).toBe(false)
+
+    const section = sourceBetween(
+      HOOK_SOURCE,
+      'const submitFolderTarget',
+      'const submit = useCallback'
+    )
+    expect(section).toContain('canResolveFolderSmartGitHubSubmit')
+    expect(section).toContain('folderSourceRequiresConnection')
+    expect(section).toContain('hasFolderSourceRepo: selectedFolderSourceRepo !== null')
+    expect(section).toContain('? await resolvePendingSmartGitHubSubmit()')
+    expect(section).toContain(': null')
+  })
+
+  it('forces repo-scoped source reset when returning from folder target to a repo with the same id', () => {
+    const handleRepoChange = sourceBetween(
+      HOOK_SOURCE,
+      'const handleRepoChange = useCallback',
+      'const handleFolderSourceRepoChange = useCallback'
+    )
+    expect(handleRepoChange).toContain('forceResetStartFrom?: boolean')
+    expect(handleRepoChange).toContain('value === repoId && !options.forceResetStartFrom')
+
+    const handleProjectChange = sourceBetween(
+      HOOK_SOURCE,
+      'const handleProjectChange = useCallback',
+      'const handleSmartGitHubItemSelect'
+    )
+    expect(handleProjectChange).toContain(
+      'handleRepoChange(nextRepoId, { forceResetStartFrom: isProjectGroupTarget })'
+    )
+  })
+
+  it('clears GitLab-specific linked state when clearing smart-name selection', () => {
+    const section = sourceBetween(
+      HOOK_SOURCE,
+      'const handleClearSmartNameSelection = useCallback',
+      'const submitFolderTarget = useCallback'
+    )
+    expect(section).toContain("setLinkedIssue('')")
+    expect(section).toContain('setLinkedPR(null)')
+    expect(section).toContain('setLinkedGitLabIssue(null)')
+    expect(section).toContain('setLinkedGitLabMR(null)')
+    expect(section).toContain('setLinkedWorkItem(null)')
+  })
+
+  it('clears stale opposite-provider review fields when selecting linked work items', () => {
+    const githubApply = sourceBetween(
+      HOOK_SOURCE,
+      'const applyLinkedWorkItem = useCallback',
+      'const resolvePendingSmartGitHubSubmit'
+    )
+    expect(githubApply).toContain('setLinkedGitLabIssue(null)')
+    expect(githubApply).toContain('setLinkedGitLabMR(null)')
+
+    const gitlabApply = sourceBetween(
+      HOOK_SOURCE,
+      'const applyLinkedGitLabWorkItem = useCallback',
+      'const handleSelectLinkedItem'
+    )
+    expect(gitlabApply).toContain("setLinkedIssue('')")
+    expect(gitlabApply).toContain('setLinkedPR(null)')
+
+    const projectGroupSmartHandlers = sourceBetween(
+      HOOK_SOURCE,
+      'const handleSmartGitHubItemSelect',
+      'const handleSmartBranchSelect'
+    )
+    expect(projectGroupSmartHandlers).toContain('setLinkedGitLabIssue(null)')
+    expect(projectGroupSmartHandlers).toContain('setLinkedGitLabMR(null)')
+    expect(projectGroupSmartHandlers).toContain("setLinkedIssue('')")
+    expect(projectGroupSmartHandlers).toContain('setLinkedPR(null)')
+  })
+
+  it('disables repo-backed folder smart lookup when a folder target has no source repos', () => {
+    const cardProps = sourceBetween(
+      HOOK_SOURCE,
+      'const cardProps: ComposerCardProps = {',
+      'return {'
+    )
+    expect(cardProps).toContain('folderSourceRequiresConnection || folderSourceRepos.length === 0')
+  })
+
+  it('surfaces folder submit smart-resolution failures through create error UI', () => {
+    const section = sourceBetween(
+      HOOK_SOURCE,
+      'const submitFolderTarget',
+      'const submit = useCallback'
+    )
+    expect(section).toContain('catch (error)')
+    expect(section).toContain('const formattedError = formatWorkspaceCreateError(error)')
+    expect(section).toContain('setCreateError(formattedError)')
+    expect(section).toContain('toast.error(getWorkspaceCreateErrorToastMessage(formattedError))')
+    expect(section).toContain('if (!folderWorkspaceCreated)')
+    expect(section).toContain('setCreateError({')
+  })
+
+  it('builds folder task source options from concrete repos instead of deduped projects', () => {
+    const section = sourceBetween(
+      HOOK_SOURCE,
+      'const folderSourceProjectOptions = useMemo',
+      'const selectedFolderSourceRepo'
+    )
+    expect(section).toContain('buildNewWorkspaceFolderSourceOptions(folderSourceRepos)')
+    expect(section).not.toContain('buildNewWorkspaceProjectOptions')
+
+    const handler = sourceBetween(
+      HOOK_SOURCE,
+      'const handleFolderTaskSourceProjectChange = useCallback',
+      'const handleProjectHostSetupChange = useCallback'
+    )
+    expect(handler).toContain('getRepoIdFromNewWorkspaceFolderSourceOptionId')
+    expect(handler).toContain('handleFolderSourceRepoChange(sourceRepoId)')
+  })
+
+  it('keeps folder task source changes inside the selected folder source set', () => {
+    const section = sourceBetween(
+      HOOK_SOURCE,
+      'const handleFolderSourceRepoChange = useCallback',
+      'const handleFolderTaskSourceProjectChange = useCallback'
+    )
+    expect(section).toContain('folderSourceRepos.some((repo) => repo.id === value)')
+    expect(section).toContain('return')
+
+    const cardProps = sourceBetween(
+      HOOK_SOURCE,
+      'const cardProps: ComposerCardProps = {',
+      'return {'
+    )
+    expect(cardProps).toContain('allowSmartNameAddProject: !isProjectGroupTarget')
+  })
+
+  it('preserves Jira linked items when switching from repo target to folder target', () => {
+    const section = sourceBetween(
+      HOOK_SOURCE,
+      'const handleProjectChange = useCallback',
+      'const handleSmartGitHubItemSelect'
+    )
+    expect(section).toContain("linkedProvider !== 'linear' && linkedProvider !== 'jira'")
   })
 })

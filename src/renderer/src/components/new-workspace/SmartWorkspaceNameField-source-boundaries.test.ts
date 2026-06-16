@@ -1,0 +1,58 @@
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { describe, expect, it } from 'vitest'
+
+const FIELD_SOURCE = readFileSync(join(__dirname, 'SmartWorkspaceNameField.tsx'), 'utf8')
+
+function sourceBetween(source: string, startPattern: string, endPattern: string): string {
+  const start = source.indexOf(startPattern)
+  expect(start).toBeGreaterThanOrEqual(0)
+  const end = source.indexOf(endPattern, start + startPattern.length)
+  expect(end).toBeGreaterThan(start)
+  return source.slice(start, end)
+}
+
+describe('SmartWorkspaceNameField repo-backed source boundaries', () => {
+  it('resets hidden repo-backed modes and stale results when source lookup is disabled', () => {
+    const modeResetSection = sourceBetween(
+      FIELD_SOURCE,
+      'useEffect(() => {\n    if (availableModes.some((item) => item.id === mode))',
+      'const selectedSourceFocusKey'
+    )
+
+    expect(modeResetSection).toContain("setMode(availableModes[0]?.id ?? 'text')")
+    expect(modeResetSection).toContain('repoBackedSourcesDisabled')
+    expect(modeResetSection).toContain('setGithubItems([])')
+    expect(modeResetSection).toContain('setGitlabItems([])')
+    expect(modeResetSection).toContain('setBranches([])')
+    expect(modeResetSection).toContain('setCrossRepoPrompt(null)')
+
+    const availableModesSection = sourceBetween(
+      FIELD_SOURCE,
+      'const availableModes = getSmartWorkspaceNameModes().filter',
+      'const mrStateFilters = getMrStateFilters()'
+    )
+    expect(availableModesSection).toContain('return !repoBackedSourcesDisabled')
+    expect(availableModesSection).toContain('return gitlabSourceAvailable')
+    expect(availableModesSection).toContain('branchesEnabled && !repoBackedSourcesDisabled')
+    expect(FIELD_SOURCE).toContain('repoBackedSourcesDisabled')
+    expect(FIELD_SOURCE).toContain('!textOnly &&\n    gitlabSourceAvailable')
+
+    const placeholderSection = sourceBetween(
+      FIELD_SOURCE,
+      'const smartPlaceholder = repoBackedSourcesDisabled',
+      'return ('
+    )
+    expect(placeholderSection).toContain('Type a name or Linear URL')
+    expect(placeholderSection).toContain('Type a workspace name')
+    expect(placeholderSection).toContain('Type a name, #1234, branch, GitHub/GitLab or Linear URL')
+    expect(placeholderSection).toContain('Search GitLab MRs and issues')
+  })
+
+  it('can hide the global add-project cross-repo action for subordinate task sources', () => {
+    expect(FIELD_SOURCE).toContain('allowCrossRepoProjectAdd?: boolean')
+    expect(FIELD_SOURCE).toContain('allowCrossRepoProjectAdd = true')
+    expect(FIELD_SOURCE).toContain('!crossRepoPrompt || !allowCrossRepoProjectAdd')
+    expect(FIELD_SOURCE).toContain(') : allowCrossRepoProjectAdd ? (')
+  })
+})

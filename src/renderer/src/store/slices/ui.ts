@@ -623,6 +623,7 @@ export type UISlice = {
     // Why: project-first workspace creation resolves through these when present,
     // while old drafts can keep using only repoId during the additive migration.
     projectId?: string | null
+    projectGroupId?: string | null
     hostId?: ExecutionHostId | null
     projectHostSetupId?: string | null
     name: string
