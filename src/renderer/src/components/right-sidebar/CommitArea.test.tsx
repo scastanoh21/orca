@@ -388,6 +388,20 @@ describe('CommitArea', () => {
     expect(pushButton).toContain('rounded-r-none')
     expect(markup).toContain('aria-label="More commit and remote actions"')
   })
+
+  it('renders Create PR failures in the visible inline notice', () => {
+    const markup = renderCommitArea({
+      ...baseProps(),
+      createPrIntentNotice: {
+        tone: 'destructive',
+        message: 'Create PR failed: push this branch first.'
+      }
+    })
+
+    expect(markup).toContain('id="commit-area-create-pr-intent"')
+    expect(markup).toContain('role="alert"')
+    expect(markup).toContain('Create PR failed: push this branch first.')
+  })
 })
 
 describe('ConflictSummaryCard', () => {

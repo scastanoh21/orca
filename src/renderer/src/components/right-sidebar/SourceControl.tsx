@@ -899,7 +899,6 @@ function SourceControlInner(): React.JSX.Element {
   const [createPrInFlightByWorktree, setCreatePrInFlightByWorktree] = useState<
     Record<string, boolean>
   >({})
-  const [, setCreatePrErrors] = useState<Record<string, string | null>>({})
   const isCreatingPr = createPrInFlightByWorktree[activeWorktreeId ?? ''] ?? false
   const createPrIntentInFlightRef = useRef<Record<string, boolean>>({})
   const createPrIntentRunTokenRef = useRef<Record<string, CreatePrIntentRunToken | null>>({})
@@ -917,6 +916,12 @@ function SourceControlInner(): React.JSX.Element {
   >({})
   const isCreatePrIntentInFlight = createPrIntentInFlightByWorktree[activeWorktreeId ?? ''] ?? false
   const createPrIntentNotice = createPrIntentNotices[activeWorktreeId ?? ''] ?? null
+  const setCreatePrIntentNoticeForWorktree = useCallback(
+    (worktreeId: string, notice: CreatePrIntentNotice | null): void => {
+      setCreatePrIntentNotices((prev) => ({ ...prev, [worktreeId]: notice }))
+    },
+    []
+  )
   const prGenerationRecords = useAppStore((s) => s.pullRequestGenerationRecords)
   const allocatePullRequestGenerationRequestId = useAppStore(
     (s) => s.allocatePullRequestGenerationRequestId
@@ -2530,32 +2535,32 @@ function SourceControlInner(): React.JSX.Element {
     const title = prTitle.trim()
 
     if (!title) {
-      setCreatePrErrors((prev) => ({
-        ...prev,
-        [activeWorktreeId]: translate(
+      setCreatePrIntentNoticeForWorktree(activeWorktreeId, {
+        tone: 'destructive',
+        message: translate(
           'auto.components.right.sidebar.SourceControl.f3a8b2c1d0e5',
           'Enter a {{value0}} title.',
           { value0: hostedReviewCreateCopy.reviewLabel }
         )
-      }))
+      })
       return
     }
 
     if (!base || stripBaseRef(base).toLowerCase() === stripBaseRef(branchName).toLowerCase()) {
-      setCreatePrErrors((prev) => ({
-        ...prev,
-        [activeWorktreeId]: translate(
+      setCreatePrIntentNoticeForWorktree(activeWorktreeId, {
+        tone: 'destructive',
+        message: translate(
           'auto.components.right.sidebar.SourceControl.ae743199cd',
           'Choose a different base branch before creating a {{value0}}.',
           { value0: hostedReviewCreateCopy.reviewLabel }
         )
-      }))
+      })
       return
     }
 
     createPrInFlightRef.current[activeWorktreeId] = true
     setCreatePrInFlightByWorktree((prev) => ({ ...prev, [activeWorktreeId]: true }))
-    setCreatePrErrors((prev) => ({ ...prev, [activeWorktreeId]: null }))
+    setCreatePrIntentNoticeForWorktree(activeWorktreeId, null)
     try {
       const result = await createHostedReview(activeRepo.path, {
         repoId: activeRepo.id,
@@ -2570,6 +2575,7 @@ function SourceControlInner(): React.JSX.Element {
       })
 
       if (result.ok) {
+        setCreatePrIntentNoticeForWorktree(activeWorktreeId, null)
         await handlePullRequestCreated({
           provider: hostedReviewCreateProvider,
           number: result.number,
@@ -2607,6 +2613,7 @@ function SourceControlInner(): React.JSX.Element {
           }
         )
         if (number) {
+          setCreatePrIntentNoticeForWorktree(activeWorktreeId, null)
           await handlePullRequestCreated({
             provider: hostedReviewCreateProvider,
             number,
@@ -2616,11 +2623,14 @@ function SourceControlInner(): React.JSX.Element {
         }
       }
 
-      setCreatePrErrors((prev) => ({ ...prev, [activeWorktreeId]: result.error }))
+      setCreatePrIntentNoticeForWorktree(activeWorktreeId, {
+        tone: 'destructive',
+        message: result.error
+      })
     } catch (error) {
-      setCreatePrErrors((prev) => ({
-        ...prev,
-        [activeWorktreeId]:
+      setCreatePrIntentNoticeForWorktree(activeWorktreeId, {
+        tone: 'destructive',
+        message:
           error instanceof Error
             ? error.message
             : translate(
@@ -2628,7 +2638,7 @@ function SourceControlInner(): React.JSX.Element {
                 'Failed to create {{value0}}',
                 { value0: hostedReviewCreateCopy.reviewLabel }
               )
-      }))
+      })
     } finally {
       createPrInFlightRef.current[activeWorktreeId] = false
       setCreatePrInFlightByWorktree((prev) => ({ ...prev, [activeWorktreeId]: false }))
@@ -2651,15 +2661,9 @@ function SourceControlInner(): React.JSX.Element {
     prTitle,
     resolvedPrCreationDefaults.openAfterCreate,
     resolvedPrCreationDefaults.useTemplate,
+    setCreatePrIntentNoticeForWorktree,
     worktreePath
   ])
-
-  const setCreatePrIntentNoticeForWorktree = useCallback(
-    (worktreeId: string, notice: CreatePrIntentNotice | null): void => {
-      setCreatePrIntentNotices((prev) => ({ ...prev, [worktreeId]: notice }))
-    },
-    []
-  )
 
   const createHostedReviewForCreatePrIntent = useCallback(
     async (
@@ -2674,14 +2678,14 @@ function SourceControlInner(): React.JSX.Element {
         eligibility.defaultBaseRef ?? effectiveBaseRef ?? prBase ?? ''
       ).trim()
       if (!base || stripBaseRef(base).toLowerCase() === stripBaseRef(branchName).toLowerCase()) {
-        setCreatePrErrors((prev) => ({
-          ...prev,
-          [token.worktreeId]: translate(
+        setCreatePrIntentNoticeForWorktree(token.worktreeId, {
+          tone: 'destructive',
+          message: translate(
             'auto.components.right.sidebar.SourceControl.ae743199cd',
             'Choose a different base branch before creating a {{value0}}.',
             { value0: hostedReviewCreateCopy.reviewLabel }
           )
-        }))
+        })
         return false
       }
 
@@ -2737,14 +2741,14 @@ function SourceControlInner(): React.JSX.Element {
 
       const title = fields.title.trim()
       if (!title) {
-        setCreatePrErrors((prev) => ({
-          ...prev,
-          [token.worktreeId]: translate(
+        setCreatePrIntentNoticeForWorktree(token.worktreeId, {
+          tone: 'destructive',
+          message: translate(
             'auto.components.right.sidebar.SourceControl.f3a8b2c1d0e5',
             'Enter a {{value0}} title.',
             { value0: hostedReviewCreateCopy.reviewLabel }
           )
-        }))
+        })
         return false
       }
 
@@ -2757,7 +2761,6 @@ function SourceControlInner(): React.JSX.Element {
       })
       createPrInFlightRef.current[token.worktreeId] = true
       setCreatePrInFlightByWorktree((prev) => ({ ...prev, [token.worktreeId]: true }))
-      setCreatePrErrors((prev) => ({ ...prev, [token.worktreeId]: null }))
       try {
         const result = await createHostedReview(activeRepo.path, {
           repoId: activeRepo.id,
@@ -2794,7 +2797,6 @@ function SourceControlInner(): React.JSX.Element {
           return true
         }
 
-        setCreatePrErrors((prev) => ({ ...prev, [token.worktreeId]: result.error }))
         setCreatePrIntentNoticeForWorktree(token.worktreeId, {
           tone: 'destructive',
           message: result.error
@@ -2809,7 +2811,6 @@ function SourceControlInner(): React.JSX.Element {
                 'Failed to create {{value0}}',
                 { value0: hostedReviewCreateCopy.reviewLabel }
               )
-        setCreatePrErrors((prev) => ({ ...prev, [token.worktreeId]: message }))
         setCreatePrIntentNoticeForWorktree(token.worktreeId, {
           tone: 'destructive',
           message

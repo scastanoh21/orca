@@ -30,16 +30,17 @@ function getCurrentLocalPlatform(): NodeJS.Platform | null {
 }
 
 export function getLocalExecutionHostLabel(platform: NodeJS.Platform | null = null): string {
-  switch (platform ?? getCurrentLocalPlatform()) {
-    case 'darwin':
-      return 'Local Mac'
-    case 'win32':
-      return 'Local Windows'
-    case 'linux':
-      return 'Local Linux'
-    default:
-      return 'This computer'
+  const localPlatform = platform ?? getCurrentLocalPlatform()
+  if (localPlatform === 'darwin') {
+    return 'Local Mac'
   }
+  if (localPlatform === 'win32') {
+    return 'Local Windows'
+  }
+  if (localPlatform === 'linux') {
+    return 'Local Linux'
+  }
+  return 'This computer'
 }
 
 function normalizeHostPart(value: string | null | undefined): string | null {
