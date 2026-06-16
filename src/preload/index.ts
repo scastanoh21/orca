@@ -23,6 +23,8 @@ import type {
   GitHubCommentResult,
   GitHubWorkItem,
   GitPushTarget,
+  GitForkSyncExpectedUpstream,
+  GitForkSyncResult,
   GitUpstreamStatus,
   GhosttyImportPreview,
   ListWorkItemsResult,
@@ -2526,6 +2528,11 @@ const api = {
       connectionId?: string
       pushTarget?: GitPushTarget
     }): Promise<void> => ipcRenderer.invoke('git:fetch', args),
+    syncFork: (args: {
+      worktreePath: string
+      connectionId?: string
+      expectedUpstream: GitForkSyncExpectedUpstream
+    }): Promise<GitForkSyncResult> => ipcRenderer.invoke('git:syncFork', args),
     push: (args: {
       worktreePath: string
       publish?: boolean
@@ -2636,7 +2643,12 @@ const api = {
       relativePath: string
       line: number
       connectionId?: string
-    }): Promise<string | null> => ipcRenderer.invoke('git:remoteFileUrl', args)
+    }): Promise<string | null> => ipcRenderer.invoke('git:remoteFileUrl', args),
+    remoteCommitUrl: (args: {
+      worktreePath: string
+      sha: string
+      connectionId?: string
+    }): Promise<string | null> => ipcRenderer.invoke('git:remoteCommitUrl', args)
   },
 
   ui: {
