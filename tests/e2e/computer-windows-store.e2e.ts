@@ -82,8 +82,17 @@ async function launchCalculator(): Promise<void> {
 
 async function killCalculator(): Promise<void> {
   await runPowerShell(
-    'Get-Process CalculatorApp -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue'
-  )
+    [
+      '$processes = @()',
+      '$processes += Get-Process -Name CalculatorApp -ErrorAction SilentlyContinue',
+      '$processes += Get-Process -Name ApplicationFrameHost -ErrorAction SilentlyContinue |',
+      '  Where-Object { $_.MainWindowTitle -eq "Calculator" }',
+      'foreach ($process in $processes) {',
+      '  try { Stop-Process -Id $process.Id -Force -ErrorAction Stop } catch { }',
+      '}',
+      'exit 0'
+    ].join('\n')
+  ).catch(() => undefined)
 }
 
 async function runPowerShell(script: string): Promise<void> {
