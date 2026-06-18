@@ -130,6 +130,37 @@ describe('captureAllSleepingAgentSessions', () => {
     expect(store.getState().sleepingAgentSessionsByPaneKey['tab-1:leaf-1']).toBeUndefined()
   })
 
+  it('drops the live checkpoint when its tab is closed', () => {
+    const store = createTestStore()
+    store.setState({
+      tabsByWorktree: {
+        'wt-1': [makeTab({ id: 'tab-1', worktreeId: 'wt-1' })]
+      }
+    } as Partial<AppState>)
+
+    store.getState().setAgentStatus(
+      'tab-1:leaf-1',
+      {
+        state: 'working',
+        prompt: 'finish the task',
+        agentType: 'codex'
+      },
+      'Codex',
+      { updatedAt: 10, stateStartedAt: 10 },
+      { tabId: 'tab-1', worktreeId: 'wt-1' },
+      { providerSession: { key: 'session_id', id: 'codex-session-1' } }
+    )
+    expect(store.getState().sleepingAgentSessionsByPaneKey['tab-1:leaf-1']).toMatchObject({
+      origin: 'live'
+    })
+
+    // Why: tab close routes through dropAgentStatusByTabPrefix — without the
+    // sleeping-record sweep the origin:'live' checkpoint orphans forever (#5633).
+    store.getState().dropAgentStatusByTabPrefix('tab-1')
+
+    expect(store.getState().sleepingAgentSessionsByPaneKey['tab-1:leaf-1']).toBeUndefined()
+  })
+
   it('captures resumable agents across every worktree, not just one', () => {
     const store = createTestStore()
     store.setState({

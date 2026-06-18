@@ -936,6 +936,21 @@ export const createAgentStatusSlice: StateCreator<AppState, [], [], AgentStatusS
           s.migrationUnsupportedByPtyId,
           (entry) => entry.paneKey?.startsWith(prefix) ?? false
         )
+        // Why: closing a tab tears down its panes for good, so any live
+        // recovery checkpoints setAgentStatus minted for those panes
+        // (origin:'live', written on every non-done working tick) must drop in
+        // lockstep. Without this sweep they orphan in sleepingAgentSessionsByPaneKey
+        // — never resumable (resume skips origin:'live'), persisted to the
+        // workspace session file, and re-hydrated on every launch — so the file
+        // grows unbounded across opened/closed agent tabs (#5633).
+        let nextSleeping = s.sleepingAgentSessionsByPaneKey
+        const sleepingKeys = Object.keys(nextSleeping).filter((k) => k.startsWith(prefix))
+        if (sleepingKeys.length > 0) {
+          nextSleeping = { ...nextSleeping }
+          for (const k of sleepingKeys) {
+            delete nextSleeping[k]
+          }
+        }
         // See removeAgentStatus for rationale on ack cleanup. Apply this
         // regardless of live/retained presence — ack entries are owned by
         // the pane lifecycle independently of live/retained state.
@@ -947,7 +962,12 @@ export const createAgentStatusSlice: StateCreator<AppState, [], [], AgentStatusS
             delete nextAck[k]
           }
         }
-        if (liveKeys.length === 0 && retainedKeys.length === 0 && !migrationUnsupported.changed) {
+        if (
+          liveKeys.length === 0 &&
+          retainedKeys.length === 0 &&
+          !migrationUnsupported.changed &&
+          sleepingKeys.length === 0
+        ) {
           if (nextAck !== s.acknowledgedAgentsByPaneKey) {
             return { acknowledgedAgentsByPaneKey: nextAck }
           }
@@ -995,6 +1015,9 @@ export const createAgentStatusSlice: StateCreator<AppState, [], [], AgentStatusS
           retainedAgentsByPaneKey: nextRetained,
           migrationUnsupportedByPtyId: migrationUnsupported.next,
           retentionSuppressedPaneKeys: nextRetentionSuppressedPaneKeys,
+          ...(nextSleeping !== s.sleepingAgentSessionsByPaneKey
+            ? { sleepingAgentSessionsByPaneKey: nextSleeping }
+            : {}),
           ...(nextAck !== s.acknowledgedAgentsByPaneKey
             ? { acknowledgedAgentsByPaneKey: nextAck }
             : {}),
