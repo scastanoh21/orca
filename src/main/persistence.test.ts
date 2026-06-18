@@ -3808,7 +3808,8 @@ describe('Store', () => {
     })
 
     expect(updated.agentLaunchProfiles).toEqual([
-      { id: 'personal', agentId: 'claude', name: 'Personal' }
+      { id: 'personal', agentId: 'claude', name: 'Personal' },
+      { id: 'mixed', agentId: 'codex', name: 'Mixed' }
     ])
   })
 
