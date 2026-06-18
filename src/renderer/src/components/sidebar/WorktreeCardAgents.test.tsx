@@ -225,7 +225,8 @@ describe('WorktreeCardAgents', () => {
     const { default: WorktreeCardAgents } = await import('./WorktreeCardAgents')
 
     renderToStaticMarkup(<WorktreeCardAgents worktreeId="wt-1" />)
-    capturedRowActivations[0]?.onActivate('tab-1', 'tab-1:1')
+    expect(capturedRowActivations).toHaveLength(1)
+    capturedRowActivations[0].onActivate('tab-1', 'tab-1:1')
 
     expect(activationMocks.activateAndRevealWorktree).not.toHaveBeenCalled()
     expect(activationMocks.activateTabAndFocusPane).not.toHaveBeenCalled()
