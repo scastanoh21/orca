@@ -2307,7 +2307,7 @@
           "TerminalContextMenu": {
             "b4cdd9314e": "Borrar pantalla",
             "8c17d6786d": "Cerrar panel",
-            "copyTerminalId": "Copiar ID de terminal",
+            "copyTerminalId": "Copy Terminal ID",
             "2cf85a6a55": "Copiar ID del panel",
             "39809d152f": "Establecer título…",
             "06c2b0f043": "Igualar tamaños de paneles",
@@ -2322,8 +2322,7 @@
             "f3eeb1de13": "Copiar",
             "c2f0b72b8d": "Insertar",
             "925f49f210": "Expandir panel",
-            "df766809e0": "Contraer panel",
-            "copyTerminalId": "Copy Terminal ID"
+            "df766809e0": "Contraer panel"
           },
           "TerminalErrorToast": {
             "e4aa243f8c": "Reiniciar demonio",
@@ -8469,8 +8468,8 @@
             "a1f2c8d901": "Ver"
           },
           "SourceControl": {
-            "conflictsSection": "Conflictos",
             "1406954883": "Borrar todas las notas...",
+            "conflictsSection": "Conflictos",
             "cc05b2d088": "Abrir en el Explorador de archivos",
             "03194cfff4": "Estado de la sesión local derivado de un conflicto que abrió aquí.",
             "413a3ba113": "conflicto",
@@ -8795,6 +8794,11 @@
                 "066fedd446": "Trabajos fallidos",
                 "ae8a04ef17": "Los detalles del archivo de conflicto no están disponibles",
                 "73d0675356": "Detalles refrescantes del conflicto...",
+                "f5bc5c4cf1": "The hosting provider reports conflicts, but local Git did not reproduce them. Refresh the review or push the branch to recalculate mergeability.",
+                "5bc9bda2af": "Run from this worktree",
+                "e87fb3d929": "Copy mergeability refresh commands",
+                "1e53e45072": "Copied",
+                "084c516efb": "Copy commands",
                 "5dc3af25c0": "Seleccionar comentario",
                 "d7a2f9c401": "Send unresolved {{value0}} comments",
                 "d91f2a6c39": "Enviar {{value0}} comentarios en cola",
@@ -9106,7 +9110,16 @@
             "daysAgo": "{{value0}}d ago",
             "monthsAgo": "{{value0}}mo ago",
             "yearsAgo": "{{value0}}y ago",
-            "sessionId": "ID de sesión"
+            "sessionId": "ID de sesión",
+            "originalAsk": "Original ask",
+            "latestTurns": "Latest turns",
+            "noPreviewAvailable": "No conversation preview available",
+            "messageCount": "{{value0}} msgs",
+            "userRole": "You",
+            "agentRole": "Agent",
+            "toolRole": "Tool",
+            "systemRole": "System",
+            "sessionRole": "Session"
           },
           "AiVaultSessionRow": {
             "resumeAgentSession": "Resume {{value0}} session",
@@ -9123,7 +9136,14 @@
             "hideDetails": "Ocultar detalles",
             "showDetails": "Mostrar detalles",
             "moreSessionActions": "Más acciones de sesión",
-            "moreActions": "Más acciones"
+            "moreActions": "Más acciones",
+            "noPreviewAvailable": "No conversation preview available",
+            "dragToResume": "Drag to resume in a new tab",
+            "userRole": "You",
+            "agentRole": "Agent",
+            "toolRole": "Tool",
+            "systemRole": "System",
+            "sessionRole": "Session"
           },
           "FileExplorerNameFilter": {
             "26fb73c6e3": "Buscar archivos",
@@ -9167,9 +9187,6 @@
                 "copyCommand": "Copy command"
               }
             }
-          },
-          "SourceControlEntryContextMenu": {
-            "a1f2c8d901": "Ver"
           }
         }
       },
