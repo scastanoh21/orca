@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { Worktree } from './workspace-list-sections'
-import { filterWorktrees, getWorktreeStatus } from './workspace-list-sections'
+import { buildSections, filterWorktrees, getWorktreeStatus } from './workspace-list-sections'
 
 function worktree(overrides: Partial<Worktree> = {}): Worktree {
   return {
@@ -122,5 +122,63 @@ describe('getWorktreeStatus', () => {
         })
       )
     ).toBe('active')
+  })
+})
+
+describe('buildSections', () => {
+  it('renders empty repo sections from repo placeholders in repo grouping', () => {
+    const sections = buildSections(
+      [worktree({ repoId: 'repo-1', repo: 'orca' })],
+      'manual',
+      { filterRepoIds: new Set(), hideSleeping: false, hideDefaultBranch: false },
+      '',
+      'repo',
+      new Set(),
+      new Map([
+        ['orca', 'repo-1'],
+        ['zoom-img', 'repo-missing']
+      ])
+    )
+
+    expect(sections).toEqual([
+      { title: 'orca', data: [worktree({ repoId: 'repo-1', repo: 'orca' })] },
+      { title: 'zoom-img', data: [] }
+    ])
+  })
+
+  it('does not render empty repo sections outside repo grouping', () => {
+    const sections = buildSections(
+      [],
+      'manual',
+      { filterRepoIds: new Set(), hideSleeping: false, hideDefaultBranch: false },
+      '',
+      'none',
+      new Set(),
+      new Map([['zoom-img', 'repo-missing']])
+    )
+
+    expect(sections).toEqual([])
+  })
+
+  it('applies repo filters and search to empty repo sections', () => {
+    const sections = buildSections(
+      [],
+      'manual',
+      {
+        filterRepoIds: new Set(['repo-matching', 'repo-hidden']),
+        hideSleeping: false,
+        hideDefaultBranch: false
+      },
+      'zoom',
+      'repo',
+      new Set(),
+      new Map([
+        ['zoom-img', 'repo-matching'],
+        ['repo', 'repo-hidden'],
+        ['zoom-hidden', 'repo-unfiltered']
+      ])
+    )
+
+    expect(sections).toEqual([{ title: 'zoom-img', data: [] }])
   })
 })

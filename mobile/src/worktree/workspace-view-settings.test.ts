@@ -60,6 +60,19 @@ describe('applyDesktopViewSettings', () => {
     expect(applyDesktopViewSettings(base, {})).toEqual(base)
   })
 
+  it('syncs desktop workspace host visibility fields', () => {
+    expect(
+      applyDesktopViewSettings(base, {
+        workspaceHostScope: 'runtime:devbox',
+        visibleWorkspaceHostIds: ['local']
+      })
+    ).toEqual({
+      ...base,
+      workspaceHostScope: 'runtime:devbox',
+      visibleWorkspaceHostIds: ['local']
+    })
+  })
+
   it('ignores an unrecognized groupBy rather than blanking the mode', () => {
     const next = applyDesktopViewSettings(base, { groupBy: 'mystery' as never })
     expect(next.groupMode).toBe('repo')

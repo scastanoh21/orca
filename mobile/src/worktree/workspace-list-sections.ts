@@ -218,7 +218,8 @@ export function buildSections(
   filters: FilterState,
   search: string,
   groupMode: MobileGroupMode,
-  pinnedIds: Set<string>
+  pinnedIds: Set<string>,
+  repoIdsByName: ReadonlyMap<string, string> = new Map()
 ): Section[] {
   const filtered = filterWorktrees(worktrees, filters, search)
   const sorted = sortWorktrees(filtered, sortMode)
@@ -251,6 +252,22 @@ export function buildSections(
         list.push(w)
       } else {
         byRepo.set(key, [w])
+      }
+    }
+    const representedRepoIds = new Set(filtered.map((w) => w.repoId))
+    const query = search.trim().toLowerCase()
+    for (const [displayName, id] of repoIdsByName) {
+      if (representedRepoIds.has(id)) {
+        continue
+      }
+      if (filters.filterRepoIds.size > 0 && !filters.filterRepoIds.has(id)) {
+        continue
+      }
+      if (query && !displayName.toLowerCase().includes(query)) {
+        continue
+      }
+      if (!byRepo.has(displayName)) {
+        byRepo.set(displayName, [])
       }
     }
     for (const [repo, items] of byRepo) {
