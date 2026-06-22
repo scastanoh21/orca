@@ -122,6 +122,16 @@ export function scoreSettingsSearch(
   }, SETTINGS_SEARCH_NO_MATCH_SCORE)
 }
 
+export function getSettingsSectionSearchEntries(section: {
+  title: string
+  description: string
+  searchEntries: readonly SettingsSearchEntry[]
+}): SettingsSearchEntry[] {
+  // Why: sidebar ranking and active content filtering must receive the same
+  // pane-level entry, otherwise pane-title-only hits can rank but render blank.
+  return [{ title: section.title, description: section.description }, ...section.searchEntries]
+}
+
 export function rankSettingsSearchItems<T>(
   query: string,
   items: readonly T[],

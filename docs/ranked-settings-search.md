@@ -31,6 +31,7 @@ Before this change, `matchesSettingsSearch` returned only `true` or `false` afte
 - User types into `SettingsSidebar` search input.
 - `Settings.tsx` reads `settingsSearchQuery` from app state.
 - For each nav section, `Settings.tsx` builds `[paneEntry, ...section.searchEntries]`.
+- Sidebar ranking and the active `SettingsSection` content filter both use that same entry list.
 - `scoreSettingsSearch(...)` returns a numeric relevance score or `0` for no match.
 - `visibleNavSections` includes matching sections, plus the existing forced Git section when needed, sorted by score then original index.
 - During active search, general sidebar groups are ordered by the ranked sections they contain; empty search uses `SETTINGS_NAV_GROUPS`.

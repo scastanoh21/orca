@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   SETTINGS_SEARCH_QUERY_MAX_BYTES,
+  getSettingsSectionSearchEntries,
   isSettingsSearchQueryTooLarge,
   matchesSettingsSearch,
   normalizeSettingsSearchQuery,
@@ -74,6 +75,19 @@ describe('settings-search', () => {
         (section) => section.item.id
       )
     ).toEqual(['shortcuts', 'tasks'])
+  })
+
+  it('includes pane title entries for SettingsSection content filtering', () => {
+    const section = {
+      title: 'AI Provider Accounts',
+      description: 'Optional account switching.',
+      searchEntries: [{ title: 'Claude', description: 'Use the signed-in Claude account.' }]
+    }
+
+    const entries = getSettingsSectionSearchEntries(section)
+
+    expect(matchesSettingsSearch('accounts', entries)).toBe(true)
+    expect(matchesSettingsSearch('accounts', section.searchEntries)).toBe(false)
   })
 
   it('preserves source order for equally ranked matches', () => {

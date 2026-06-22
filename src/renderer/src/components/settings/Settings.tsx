@@ -51,7 +51,7 @@ import { AdvancedPane } from './AdvancedPane'
 import { SettingsSidebar } from './SettingsSidebar'
 import { SettingsSetupGuidePane } from './SettingsSetupGuidePane'
 import { ActiveSettingsSectionProvider, SettingsSection } from './SettingsSection'
-import { rankSettingsSearchItems, type SettingsSearchEntry } from './settings-search'
+import { getSettingsSectionSearchEntries, rankSettingsSearchItems } from './settings-search'
 import { cn } from '@/lib/utils'
 import { isIntentionalAppRestartInProgress } from '@/lib/updater-beforeunload'
 import { registerWindowCloseGuard } from '../window-close-request-coordinator'
@@ -153,10 +153,6 @@ function getSettingsSectionId(pane: SettingsNavTarget, repoId: string | null): s
 
 function getFallbackVisibleSection(sections: SettingsNavSection[]): SettingsNavSection | undefined {
   return sections.at(0)
-}
-
-function getSettingsNavSectionSearchEntries(section: SettingsNavSection): SettingsSearchEntry[] {
-  return [{ title: section.title, description: section.description }, ...section.searchEntries]
 }
 
 function getSettingsNavGroupDefinitionsForSearch(
@@ -663,14 +659,16 @@ function Settings(): React.JSX.Element {
     () => new Map(navSections.map((section) => [section.id, section] as const)),
     [navSections]
   )
-  const getSectionSearchEntries = (sectionId: string) =>
-    navSectionById.get(sectionId)?.searchEntries ?? []
+  const getSectionSearchEntries = (sectionId: string) => {
+    const section = navSectionById.get(sectionId)
+    return section ? getSettingsSectionSearchEntries(section) : []
+  }
 
   const visibleNavSections = useMemo(() => {
     const rankedSections = rankSettingsSearchItems(
       settingsSearchQuery,
       navSections,
-      getSettingsNavSectionSearchEntries
+      getSettingsSectionSearchEntries
     ).map(({ item }) => item)
     if (
       !hasUnsavedSourceControlAiPromptChanges ||
