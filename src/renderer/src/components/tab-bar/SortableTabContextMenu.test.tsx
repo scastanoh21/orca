@@ -3,7 +3,7 @@
  */
 import { act, type ComponentProps, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { REQUEST_ACTIVE_TERMINAL_PANE_SPLIT_EVENT } from '@/constants/terminal'
 import { requestActiveTerminalPaneSplit } from './request-active-terminal-pane-split'
 import { SortableTabContextMenu } from './SortableTabContextMenu'
@@ -68,6 +68,8 @@ vi.mock('../../store', () => ({
   )
 }))
 
+const mounted: { container: HTMLDivElement; root: Root }[] = []
+
 function renderMenu(overrides: Partial<ComponentProps<typeof SortableTabContextMenu>> = {}): {
   container: HTMLDivElement
   root: Root
@@ -110,6 +112,7 @@ function renderMenu(overrides: Partial<ComponentProps<typeof SortableTabContextM
       />
     )
   })
+  mounted.push({ container, root })
   return { container, root, onActivate }
 }
 
@@ -165,6 +168,14 @@ beforeEach(() => {
   }
 })
 
+afterEach(() => {
+  for (const { container, root } of mounted.splice(0)) {
+    act(() => root.unmount())
+    container.remove()
+  }
+  vi.restoreAllMocks()
+})
+
 describe('requestActiveTerminalPaneSplit', () => {
   it('dispatches the active terminal pane split event', () => {
     const dispatchSpy = vi.spyOn(window, 'dispatchEvent')
@@ -178,15 +189,13 @@ describe('requestActiveTerminalPaneSplit', () => {
       tabId: 'term-1',
       direction: 'vertical'
     })
-
-    dispatchSpy.mockRestore()
   })
 })
 
 describe('SortableTabContextMenu', () => {
   it('dispatches split requests and activates inactive terminal tabs first', () => {
     const dispatchSpy = vi.spyOn(window, 'dispatchEvent')
-    const { container, root, onActivate } = renderMenu({ isActive: false })
+    const { container, onActivate } = renderMenu({ isActive: false })
 
     act(() => getButton(container, 'Split terminal right').click())
     expect(onActivate).toHaveBeenCalledWith('term-1')
@@ -201,15 +210,11 @@ describe('SortableTabContextMenu', () => {
       tabId: 'term-1',
       direction: 'horizontal'
     })
-
-    act(() => root.unmount())
-    container.remove()
-    dispatchSpy.mockRestore()
   })
 
   it('renders workspace pane-column actions and routes directions to the move path', () => {
     storeMock.dropUnifiedTab.mockReturnValue(true)
-    const { container, root } = renderMenu()
+    const { container } = renderMenu()
 
     expect(container.textContent).toContain('Workspace layout')
     expect(container.textContent).toContain('Move Tab to Split')
@@ -219,9 +224,6 @@ describe('SortableTabContextMenu', () => {
       groupId: 'group-1',
       splitDirection: 'right'
     })
-
-    act(() => root.unmount())
-    container.remove()
   })
 
   it('hides workspace pane-column actions for a single-tab group', () => {
@@ -238,11 +240,8 @@ describe('SortableTabContextMenu', () => {
         ]
       }
     }
-    const { container, root } = renderMenu()
+    const { container } = renderMenu()
 
     expect(container.textContent).not.toContain('Workspace layout')
-
-    act(() => root.unmount())
-    container.remove()
   })
 })
