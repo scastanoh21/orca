@@ -56,6 +56,7 @@ import { installWindowVisibilityInterval, isWindowVisible } from '@/lib/window-v
 import { isMacAppDataPath } from '@/lib/passive-macos-app-data-access'
 import { runWorktreeDelete } from './delete-worktree-flow'
 import { WorktreeTitleInlineRename } from './WorktreeTitleInlineRename'
+import { TruncatedSidebarLabel } from './truncated-sidebar-label'
 import {
   canShowWorkspaceDeleteQuickAction,
   useWorkspaceDeleteModifierPressed
@@ -1521,9 +1522,13 @@ const WorktreeCard = React.memo(function WorktreeCard({
                   {getDirectoryName(worktree.path)}
                 </span>
               ) : showBranch ? (
-                <span className="min-w-0 text-[11px] text-muted-foreground truncate leading-none">
-                  {branch}
-                </span>
+                <TruncatedSidebarLabel
+                  text={branch}
+                  className="text-[11px] text-muted-foreground leading-none"
+                  // Why: the whole-card details hover already exposes full
+                  // identity; a nested tooltip would compete for the same hover.
+                  tooltipEnabled={!hasHoverDetails}
+                />
               ) : showDetachedHeadInMetaRow && detachedHeadDisplay ? (
                 <DetachedHeadBadge
                   display={detachedHeadDisplay}
@@ -1670,8 +1675,12 @@ const WorktreeCard = React.memo(function WorktreeCard({
         comment={hoverComment}
         automationProvenance={metaAutomationProvenance}
         automationHostId={worktree.hostId}
-        branchName={showBranchIdentityHover ? branch : undefined}
-        workspaceTitle={showBranchIdentityHover ? visibleCardTitle : undefined}
+        branchName={
+          !isFolder && branch.length > 0 && (showBranchIdentityHover || hasHoverDetails)
+            ? branch
+            : undefined
+        }
+        workspaceTitle={showBranchIdentityHover || hasHoverDetails ? visibleCardTitle : undefined}
         detailsAfter={
           workspacePorts.length > 0 ? <WorktreeCardPortsDetails ports={workspacePorts} /> : null
         }
