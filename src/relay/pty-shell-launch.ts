@@ -45,6 +45,8 @@ function isCodexLaunchCommand(command: string | undefined): boolean {
 }
 
 function hasOverlayRestoreEnv(env: Record<string, string>, command?: string): boolean {
+  // Why: zsh relay wrappers are usually skipped without overlay vars, but
+  // Codex launches still need wrapper materialization to enforce no-history mode.
   return Boolean(
     env.ORCA_OPENCODE_CONFIG_DIR ||
     env.ORCA_REMOTE_CLI_BIN_DIR ||
