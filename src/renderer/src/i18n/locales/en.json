@@ -1614,7 +1614,12 @@
         "duplicateIssueMissing": "Enter an issue number in this repository.",
         "duplicateIssueNotInteger": "Use a whole issue number.",
         "duplicateIssueNotPositive": "Use a positive issue number.",
-        "duplicateIssueSameIssue": "Choose a different issue."
+        "duplicateIssueSameIssue": "Choose a different issue.",
+        "repository": "Repository",
+        "backToCloseReasons": "Back",
+        "searchIssues": "Search issues",
+        "useIssueNumber": "Use issue #{{value0}}",
+        "noMatchingIssuesLoaded": "No matching issues loaded."
       },
       "Terminal": {
         "73768427cf": "Close",

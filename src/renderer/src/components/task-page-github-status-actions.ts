@@ -1,4 +1,8 @@
-import type { GitHubIssueCloseReason, GitHubIssueUpdate } from '../../../shared/types'
+import type {
+  GitHubIssueCloseReason,
+  GitHubIssueUpdate,
+  GitHubWorkItem
+} from '../../../shared/types'
 
 export type TaskPageGitHubCloseAction = {
   stateReason: GitHubIssueCloseReason
@@ -41,4 +45,24 @@ export function validateTaskPageGitHubDuplicateTarget(
     return { ok: false, reason: 'same_issue' }
   }
   return { ok: true, duplicateOf }
+}
+
+export function getTaskPageGitHubDuplicateCandidates(
+  items: GitHubWorkItem[],
+  currentIssueNumber: number,
+  query: string
+): GitHubWorkItem[] {
+  const normalizedQuery = query.trim().toLowerCase()
+  return items.filter((candidate) => {
+    if (candidate.type !== 'issue' || candidate.number === currentIssueNumber) {
+      return false
+    }
+    if (!normalizedQuery) {
+      return true
+    }
+    return (
+      candidate.title.toLowerCase().includes(normalizedQuery) ||
+      String(candidate.number).includes(normalizedQuery)
+    )
+  })
 }

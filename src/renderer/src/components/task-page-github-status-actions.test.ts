@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import {
   buildTaskPageGitHubCloseUpdate,
+  getTaskPageGitHubDuplicateCandidates,
   validateTaskPageGitHubDuplicateTarget
 } from './task-page-github-status-actions'
+import type { GitHubWorkItem } from '../../../shared/types'
 
 describe('TaskPage GitHub status actions', () => {
   it('builds completed and not planned close updates', () => {
@@ -35,4 +37,39 @@ describe('TaskPage GitHub status actions', () => {
       duplicateOf: 34
     })
   })
+
+  it('filters duplicate candidates to other matching issues', () => {
+    const items = [
+      buildWorkItem({ number: 12, title: 'Current issue', type: 'issue' }),
+      buildWorkItem({ number: 34, title: 'Copy SSH file support', type: 'issue' }),
+      buildWorkItem({ number: 56, title: 'Unrelated pull request', type: 'pr' }),
+      buildWorkItem({ number: 78, title: 'Windows path copy bug', type: 'issue' })
+    ]
+
+    expect(getTaskPageGitHubDuplicateCandidates(items, 12, '').map((item) => item.number)).toEqual([
+      34, 78
+    ])
+    expect(
+      getTaskPageGitHubDuplicateCandidates(items, 12, 'copy').map((item) => item.number)
+    ).toEqual([34, 78])
+    expect(
+      getTaskPageGitHubDuplicateCandidates(items, 12, '34').map((item) => item.number)
+    ).toEqual([34])
+  })
 })
+
+function buildWorkItem(overrides: Partial<GitHubWorkItem>): GitHubWorkItem {
+  return {
+    id: `item-${overrides.number ?? 1}`,
+    type: 'issue',
+    number: 1,
+    title: 'Issue',
+    state: 'open',
+    url: 'https://github.com/stablyai/orca/issues/1',
+    labels: [],
+    updatedAt: '2026-06-22T00:00:00.000Z',
+    author: null,
+    repoId: 'repo-1',
+    ...overrides
+  }
+}

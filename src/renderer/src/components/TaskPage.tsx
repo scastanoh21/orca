@@ -220,6 +220,7 @@ import {
 } from '@/components/task-page-github-work-item-status'
 import {
   buildTaskPageGitHubCloseUpdate,
+  getTaskPageGitHubDuplicateCandidates,
   validateTaskPageGitHubDuplicateTarget,
   type TaskPageGitHubCloseAction
 } from '@/components/task-page-github-status-actions'
@@ -1029,6 +1030,34 @@ function GHStatusCell({
   sourceContext?: TaskSourceContext | null
 }): React.JSX.Element {
   const patchWorkItem = useAppStore((s) => s.patchWorkItem)
+  const [statusStateDraft, setStatusStateDraft] = useState(() =>
+    createTaskPageGitHubStatusStateDraft(item)
+  )
+  const [open, setOpen] = useState(false)
+  const [duplicatePickerOpen, setDuplicatePickerOpen] = useState(false)
+  const [duplicateSearch, setDuplicateSearch] = useState('')
+  const [duplicateError, setDuplicateError] = useState<string | null>(null)
+  const duplicateIssueCandidates = useAppStore(
+    useShallow((s) => {
+      if (!duplicatePickerOpen) {
+        return []
+      }
+      const deduped = new Map<number, GitHubWorkItem>()
+      for (const entry of Object.values(s.workItemsCache)) {
+        for (const candidate of entry.data ?? []) {
+          if (
+            candidate.type === 'issue' &&
+            candidate.repoId === item.repoId &&
+            candidate.number !== item.number &&
+            !deduped.has(candidate.number)
+          ) {
+            deduped.set(candidate.number, candidate)
+          }
+        }
+      }
+      return Array.from(deduped.values()).sort((a, b) => b.number - a.number)
+    })
+  )
   const repoOwnerSettings = useAppStore(
     useShallow((s) => getSettingsForRepoRuntimeOwner(s, repo?.id ?? null))
   )
@@ -1042,15 +1071,29 @@ function GHStatusCell({
         : repoOwnerSettings,
     [repoOwnerSettings, sourceContext]
   )
-  const [statusStateDraft, setStatusStateDraft] = useState(() =>
-    createTaskPageGitHubStatusStateDraft(item)
-  )
-  const [open, setOpen] = useState(false)
-  const [duplicateFormOpen, setDuplicateFormOpen] = useState(false)
-  const [duplicateIssueNumber, setDuplicateIssueNumber] = useState('')
-  const [duplicateError, setDuplicateError] = useState<string | null>(null)
   const reqRef = useRef(0)
   const parsedIssueLink = useMemo(() => parseGitHubIssueOrPRLink(item.url), [item.url])
+  const filteredDuplicateCandidates = useMemo(
+    () =>
+      getTaskPageGitHubDuplicateCandidates(duplicateIssueCandidates, item.number, duplicateSearch),
+    [duplicateIssueCandidates, duplicateSearch, item.number]
+  )
+  const directDuplicateTarget = useMemo(() => {
+    const trimmed = duplicateSearch.trim()
+    const validation = validateTaskPageGitHubDuplicateTarget(trimmed, item.number)
+    if (!trimmed || !validation.ok) {
+      return null
+    }
+    if (
+      filteredDuplicateCandidates.some((candidate) => candidate.number === validation.duplicateOf)
+    ) {
+      return null
+    }
+    return validation.duplicateOf
+  }, [duplicateSearch, filteredDuplicateCandidates, item.number])
+  const duplicatePickerTitle = parsedIssueLink?.slug
+    ? `${parsedIssueLink.slug.owner}/${parsedIssueLink.slug.repo}`
+    : (repo?.displayName ?? translate('auto.components.TaskPage.repository', 'Repository'))
 
   const resolvedStatusStateDraft = resolveTaskPageGitHubStatusStateDraft(statusStateDraft, item)
   if (resolvedStatusStateDraft !== statusStateDraft) {
@@ -1181,8 +1224,46 @@ function GHStatusCell({
     ]
   )
 
-  const handleDuplicateSubmit = useCallback(() => {
-    const validation = validateTaskPageGitHubDuplicateTarget(duplicateIssueNumber, item.number)
+  const closeAsDuplicate = useCallback(
+    (targetIssueNumber: number | string) => {
+      const validation = validateTaskPageGitHubDuplicateTarget(
+        String(targetIssueNumber),
+        item.number
+      )
+      if (!validation.ok) {
+        setDuplicateError(
+          validation.reason === 'missing'
+            ? translate(
+                'auto.components.TaskPage.duplicateIssueMissing',
+                'Enter an issue number in this repository.'
+              )
+            : validation.reason === 'not_integer'
+              ? translate(
+                  'auto.components.TaskPage.duplicateIssueNotInteger',
+                  'Use a whole issue number.'
+                )
+              : validation.reason === 'not_positive'
+                ? translate(
+                    'auto.components.TaskPage.duplicateIssueNotPositive',
+                    'Use a positive issue number.'
+                  )
+                : translate(
+                    'auto.components.TaskPage.duplicateIssueSameIssue',
+                    'Choose a different issue.'
+                  )
+        )
+        return
+      }
+      setDuplicateError(null)
+      handleStateChange('closed', { stateReason: 'duplicate', duplicateOf: validation.duplicateOf })
+      setOpen(false)
+      setDuplicatePickerOpen(false)
+    },
+    [handleStateChange, item.number]
+  )
+
+  const handleDuplicateSearchSubmit = useCallback(() => {
+    const validation = validateTaskPageGitHubDuplicateTarget(duplicateSearch, item.number)
     if (!validation.ok) {
       setDuplicateError(
         validation.reason === 'missing'
@@ -1207,18 +1288,24 @@ function GHStatusCell({
       )
       return
     }
-    setDuplicateError(null)
-    handleStateChange('closed', { stateReason: 'duplicate', duplicateOf: validation.duplicateOf })
-    setOpen(false)
-    setDuplicateFormOpen(false)
-  }, [duplicateIssueNumber, handleStateChange, item.number])
+    closeAsDuplicate(validation.duplicateOf)
+  }, [closeAsDuplicate, duplicateSearch, item.number])
+
+  const handlePopoverOpenChange = useCallback((nextOpen: boolean) => {
+    setOpen(nextOpen)
+    if (!nextOpen) {
+      setDuplicatePickerOpen(false)
+      setDuplicateSearch('')
+      setDuplicateError(null)
+    }
+  }, [])
 
   if (item.type !== 'issue' || (!repo && !parsedIssueLink?.slug)) {
     return <TaskPageGitHubWorkItemStateBadge item={item} />
   }
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
+    <Popover open={open} onOpenChange={handlePopoverOpenChange}>
       <PopoverTrigger asChild>
         <button
           type="button"
@@ -1236,126 +1323,188 @@ function GHStatusCell({
           <ChevronDown className="size-2.5 opacity-50" />
         </button>
       </PopoverTrigger>
-      <PopoverContent className="w-72 p-1" align="start" onClick={(e) => e.stopPropagation()}>
-        <button
-          type="button"
-          onClick={() => {
-            handleStateChange('open')
-            setOpen(false)
-          }}
-          className={cn(
-            'flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-[12px] hover:bg-accent',
-            localState === 'open' && 'bg-accent/50'
-          )}
-        >
-          <CircleDot className="size-4 text-emerald-500" />
-          {translate('auto.components.TaskPage.606a85c774', 'Open')}
-        </button>
-        <button
-          type="button"
-          onClick={() => {
-            handleStateChange('closed', { stateReason: 'completed' })
-            setOpen(false)
-          }}
-          className={cn(
-            'flex w-full items-start gap-2 rounded-sm px-2 py-1.5 text-left hover:bg-accent',
-            localState === 'closed' && 'bg-accent/50'
-          )}
-        >
-          <CheckCircle2 className="mt-0.5 size-4 text-primary" />
-          <span className="min-w-0">
-            <span className="block text-[12px] font-medium">
-              {translate('auto.components.TaskPage.closeAsCompleted', 'Close as completed')}
-            </span>
-            <span className="block text-[11px] text-muted-foreground">
-              {translate(
-                'auto.components.TaskPage.closeAsCompletedDescription',
-                'Done, closed, fixed, resolved'
-              )}
-            </span>
-          </span>
-        </button>
-        <button
-          type="button"
-          onClick={() => {
-            handleStateChange('closed', { stateReason: 'not_planned' })
-            setOpen(false)
-          }}
-          className="flex w-full items-start gap-2 rounded-sm px-2 py-1.5 text-left hover:bg-accent"
-        >
-          <Ban className="mt-0.5 size-4 text-muted-foreground" />
-          <span className="min-w-0">
-            <span className="block text-[12px] font-medium">
-              {translate('auto.components.TaskPage.closeAsNotPlanned', 'Close as not planned')}
-            </span>
-            <span className="block text-[11px] text-muted-foreground">
-              {translate(
-                'auto.components.TaskPage.closeAsNotPlannedDescription',
-                "Won't fix, can't repro, stale"
-              )}
-            </span>
-          </span>
-        </button>
-        <div>
-          <button
-            type="button"
-            onClick={() => {
-              setDuplicateFormOpen((current) => !current)
-              setDuplicateError(null)
-            }}
-            className="flex w-full items-start gap-2 rounded-sm px-2 py-1.5 text-left hover:bg-accent"
-          >
-            <Copy className="mt-0.5 size-4 text-muted-foreground" />
-            <span className="min-w-0 flex-1">
-              <span className="block text-[12px] font-medium">
-                {translate('auto.components.TaskPage.closeAsDuplicate', 'Close as duplicate')}
-              </span>
-              <span className="block text-[11px] text-muted-foreground">
-                {translate(
-                  'auto.components.TaskPage.closeAsDuplicateDescription',
-                  'Duplicate of another issue in this repository'
-                )}
-              </span>
-            </span>
-            <ChevronRight
-              className={cn(
-                'mt-1 size-3.5 text-muted-foreground transition-transform',
-                duplicateFormOpen && 'rotate-90'
-              )}
-            />
-          </button>
-          {duplicateFormOpen ? (
-            <form
-              className="space-y-2 px-2 pb-2 pt-1"
-              onSubmit={(event) => {
-                event.preventDefault()
-                handleDuplicateSubmit()
-              }}
-            >
-              <Input
-                value={duplicateIssueNumber}
-                onChange={(event) => {
-                  setDuplicateIssueNumber(event.target.value)
+      <PopoverContent
+        className={cn(duplicatePickerOpen ? 'w-[360px]' : 'w-72', 'p-1')}
+        align="start"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {duplicatePickerOpen ? (
+          <div>
+            <div className="flex items-center gap-2 px-1 py-1.5">
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-xs"
+                className="size-7"
+                onClick={() => {
+                  setDuplicatePickerOpen(false)
+                  setDuplicateSearch('')
                   setDuplicateError(null)
                 }}
-                inputMode="numeric"
-                pattern="[0-9]*"
-                placeholder={translate(
-                  'auto.components.TaskPage.duplicateIssueNumberPlaceholder',
-                  'Issue number'
-                )}
-                className="h-8 text-xs"
+                aria-label={translate('auto.components.TaskPage.backToCloseReasons', 'Back')}
+              >
+                <ChevronLeft className="size-4" />
+              </Button>
+              <span className="min-w-0 truncate text-[12px] font-semibold">
+                {duplicatePickerTitle}
+              </span>
+            </div>
+            <div className="relative px-1 pb-2">
+              <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                autoFocus
+                value={duplicateSearch}
+                onChange={(event) => {
+                  setDuplicateSearch(event.target.value)
+                  setDuplicateError(null)
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') {
+                    event.preventDefault()
+                    handleDuplicateSearchSubmit()
+                  }
+                }}
+                placeholder={translate('auto.components.TaskPage.searchIssues', 'Search issues')}
+                className="h-9 pl-8 text-[12px]"
                 aria-invalid={duplicateError ? true : undefined}
               />
-              {duplicateError ? (
-                <p className="text-[11px] text-destructive">{duplicateError}</p>
+            </div>
+            {duplicateError ? (
+              <p className="px-2 pb-2 text-[11px] text-destructive">{duplicateError}</p>
+            ) : null}
+            <div className="scrollbar-sleek max-h-72 overflow-y-auto pr-1">
+              {directDuplicateTarget ? (
+                <button
+                  type="button"
+                  onClick={() => closeAsDuplicate(directDuplicateTarget)}
+                  className="flex w-full items-center gap-2 rounded-sm px-2 py-2 text-left hover:bg-accent"
+                >
+                  <Copy className="size-4 text-primary" />
+                  <span className="min-w-0 flex-1 text-[12px] font-medium">
+                    {translate('auto.components.TaskPage.useIssueNumber', 'Use issue #{{value0}}', {
+                      value0: directDuplicateTarget
+                    })}
+                  </span>
+                </button>
               ) : null}
-              <Button type="submit" size="xs" variant="secondary" className="w-full">
-                {translate('auto.components.TaskPage.closeAsDuplicateSubmit', 'Close duplicate')}
-              </Button>
-            </form>
-          ) : null}
-        </div>
+              {filteredDuplicateCandidates.map((candidate) => (
+                <button
+                  key={`${candidate.repoId}:${candidate.number}`}
+                  type="button"
+                  onClick={() => closeAsDuplicate(candidate.number)}
+                  className="flex w-full items-start gap-2 rounded-sm px-2 py-2 text-left hover:bg-accent"
+                >
+                  {candidate.state === 'closed' ? (
+                    <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-primary" />
+                  ) : (
+                    <CircleDot className="mt-0.5 size-4 shrink-0 text-emerald-500" />
+                  )}
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-[12px] font-medium leading-snug">
+                      {candidate.title}
+                    </span>
+                  </span>
+                  <span className="shrink-0 text-[12px] text-muted-foreground">
+                    #{candidate.number}
+                  </span>
+                </button>
+              ))}
+              {!directDuplicateTarget && filteredDuplicateCandidates.length === 0 ? (
+                <p className="px-2 py-3 text-[12px] text-muted-foreground">
+                  {translate(
+                    'auto.components.TaskPage.noMatchingIssuesLoaded',
+                    'No matching issues loaded.'
+                  )}
+                </p>
+              ) : null}
+            </div>
+          </div>
+        ) : (
+          <>
+            <button
+              type="button"
+              onClick={() => {
+                handleStateChange('open')
+                setOpen(false)
+              }}
+              className={cn(
+                'flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-[12px] hover:bg-accent',
+                localState === 'open' && 'bg-accent/50'
+              )}
+            >
+              <CircleDot className="size-4 text-emerald-500" />
+              {translate('auto.components.TaskPage.606a85c774', 'Open')}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                handleStateChange('closed', { stateReason: 'completed' })
+                setOpen(false)
+              }}
+              className={cn(
+                'flex w-full items-start gap-2 rounded-sm px-2 py-1.5 text-left hover:bg-accent',
+                localState === 'closed' && 'bg-accent/50'
+              )}
+            >
+              <CheckCircle2 className="mt-0.5 size-4 text-primary" />
+              <span className="min-w-0">
+                <span className="block text-[12px] font-medium">
+                  {translate('auto.components.TaskPage.closeAsCompleted', 'Close as completed')}
+                </span>
+                <span className="block text-[11px] text-muted-foreground">
+                  {translate(
+                    'auto.components.TaskPage.closeAsCompletedDescription',
+                    'Done, closed, fixed, resolved'
+                  )}
+                </span>
+              </span>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                handleStateChange('closed', { stateReason: 'not_planned' })
+                setOpen(false)
+              }}
+              className="flex w-full items-start gap-2 rounded-sm px-2 py-1.5 text-left hover:bg-accent"
+            >
+              <Ban className="mt-0.5 size-4 text-muted-foreground" />
+              <span className="min-w-0">
+                <span className="block text-[12px] font-medium">
+                  {translate('auto.components.TaskPage.closeAsNotPlanned', 'Close as not planned')}
+                </span>
+                <span className="block text-[11px] text-muted-foreground">
+                  {translate(
+                    'auto.components.TaskPage.closeAsNotPlannedDescription',
+                    "Won't fix, can't repro, stale"
+                  )}
+                </span>
+              </span>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setDuplicatePickerOpen(true)
+                setDuplicateSearch('')
+                setDuplicateError(null)
+              }}
+              className="flex w-full items-start gap-2 rounded-sm px-2 py-1.5 text-left hover:bg-accent"
+            >
+              <Copy className="mt-0.5 size-4 text-muted-foreground" />
+              <span className="min-w-0 flex-1">
+                <span className="block text-[12px] font-medium">
+                  {translate('auto.components.TaskPage.closeAsDuplicate', 'Close as duplicate')}
+                </span>
+                <span className="block text-[11px] text-muted-foreground">
+                  {translate(
+                    'auto.components.TaskPage.closeAsDuplicateDescription',
+                    'Duplicate of another issue in this repository'
+                  )}
+                </span>
+              </span>
+              <ChevronRight className="mt-1 size-3.5 text-muted-foreground" />
+            </button>
+          </>
+        )}
       </PopoverContent>
     </Popover>
   )

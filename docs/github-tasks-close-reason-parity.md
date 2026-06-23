@@ -19,7 +19,7 @@ Bring the GitHub Tasks list status menu closer to GitHub:
 ## Non-goals
 
 - No provider-generic changes for GitLab, Linear, or Jira.
-- No GitHub issue search picker for duplicate targets in this pass; a numeric target input is enough and maps directly to the supported API.
+- No network-backed GitHub issue search picker in this pass; the duplicate picker uses the loaded Tasks cache plus an exact issue-number fallback.
 - No schema changes or cache migration.
 - No change to PR status behavior.
 - No automatic cross-window broadcast beyond the existing cache/list refresh mechanics; this pass updates the current renderer optimistically and relies on normal refetch in other windows.
@@ -31,7 +31,7 @@ Bring the GitHub Tasks list status menu closer to GitHub:
 3. Route issue-state mutations by issue identity:
    - If the row URL parses to `owner/repo`, use `github.project.updateIssueBySlug` / runtime `github.project.updateIssueBySlug`. This avoids closing the wrong repository for GitHub project/custom-source rows whose issue repo can differ from the caller repo.
    - Otherwise keep the existing `github.updateIssue` path with `repoPath`/`repoId`/`sourceContext`.
-4. Render the status popover with `Open`, `Close as completed`, `Close as not planned`, and `Close as duplicate`. The duplicate row expands an inline number input plus a submit button.
+4. Render the status popover with `Open`, `Close as completed`, `Close as not planned`, and `Close as duplicate`. The duplicate row advances to a second-step picker with a back button, search field, loaded issue candidates, and an exact-number fallback.
 5. Replace rose closed-state classes with token-based primary/ring color-mix classes so the closed pill is completion-like, not destructive. Keep the open-state green treatment for parity with the existing Tasks page unless a broader status-color pass changes it.
 6. Keep the payload serializable for IPC/runtime/SSH: `{ state, stateReason, duplicateOf }` only contains strings and numbers.
 
@@ -49,7 +49,7 @@ Bring the GitHub Tasks list status menu closer to GitHub:
 
 - User opens a GitHub issue status pill.
 - Completed/not-planned click -> `handleStateChange('closed', { stateReason })`.
-- Duplicate click -> input target number -> `handleStateChange('closed', { stateReason: 'duplicate', duplicateOf })`.
+- Duplicate click -> second-step picker -> select a loaded issue or exact target number -> `handleStateChange('closed', { stateReason: 'duplicate', duplicateOf })`.
 - Cell optimistically patches local state and store row state.
 - Mutation goes through local IPC or runtime RPC with the same repo/source context.
 - Failure reverts the local/store state and shows the existing error toast.
@@ -57,8 +57,8 @@ Bring the GitHub Tasks list status menu closer to GitHub:
 
 ## Edge Cases
 
-- Duplicate target is blank, zero, negative, decimal, or the same issue number: keep the form open and show inline validation.
-- Duplicate target can be a different repository's issue only when the implementation accepts a URL; this pass takes a number, so validation and copy should describe it as an issue in the same repository.
+- Duplicate target is blank, zero, negative, decimal, or the same issue number: keep the picker open and show inline validation after Enter.
+- Duplicate target can be a different repository's issue only when the implementation accepts a URL; this pass takes a loaded same-repository issue or number, so validation and copy should describe it as an issue in the same repository.
 - The row refreshes while the menu is open: reconcile the optimistic draft before paint as the current status cell already does.
 - Rapid repeated choices: retain the existing request id guard so stale responses cannot revert a newer choice.
 - SSH/runtime target: payload must remain serializable and use the existing runtime method.
@@ -77,20 +77,20 @@ Bring the GitHub Tasks list status menu closer to GitHub:
 - Renderer unit: `GHStatusCell` uses slug-addressed mutation when `item.url` contains an owner/repo and falls back to `github.updateIssue` only when slug parsing is unavailable.
 - Store/cache unit: successful close from an open-filtered Tasks list invalidates or refreshes the affected work-items cache so hidden-by-filter rows do not linger indefinitely.
 - Electron validation: Tasks GitHub issue row status menu shows the new close options and closed issue pill is not red.
-- Electron validation: duplicate close form appears and validates bad input. Do not submit a real close mutation against user data.
+- Electron validation: duplicate close picker appears after the duplicate action and supports issue search/exact-number fallback. Do not submit a real close mutation against user data.
 - Electron/runtime smoke: same menu opens and validation works when the active runtime target is an SSH/environment source; avoid a real close mutation unless using disposable test data.
 
 ## UI Quality Bar
 
 - Popover should feel like an action menu, not an error/destructive confirmation.
 - Closed issue pill must be visually distinct from open but not red/destructive.
-- Duplicate input must fit in the popover at desktop and narrow widths without clipping.
+- Duplicate picker must fit in the popover at desktop and narrow widths without clipping.
 - Hover, focus, disabled, and inline validation states use existing shadcn primitives/tokens.
 
 ## Review Screenshots
 
 1. GitHub Tasks issue row with status popover open showing all close reasons.
-2. Duplicate close inline form with invalid input validation.
+2. Duplicate close second-step picker with search and issue candidates.
 3. Closed issue row/pill showing non-red completion styling.
 4. Adjacent smoke: GitHub Tasks header/search area still renders normally.
 
@@ -104,7 +104,7 @@ Bring the GitHub Tasks list status menu closer to GitHub:
 
 ## Lightweight Eng Review
 
-- Scope: kept to the GitHub Tasks status cell plus a small model module; no provider-wide or search-picker work.
+- Scope: kept to the GitHub Tasks status cell plus a small model module; no provider-wide or network-backed search-picker work.
 - Architecture/data flow: preserves current renderer -> IPC/runtime mutation boundaries, but must route rows with parseable GitHub slugs through `updateIssueBySlug` so project/custom-source issues mutate the issue's own repository rather than the selected worktree repo.
 - API feasibility: path-based mutations already use the supported `gh issue close --duplicate-of` CLI path; slug-addressed mutations need the same CLI close/reopen treatment instead of REST `duplicate_of`.
 - Failure modes covered:
@@ -124,9 +124,9 @@ Bring the GitHub Tasks list status menu closer to GitHub:
 - UI quality bar: compact GitHub-like action menu, token-based non-destructive closed styling, no clipping or overlap.
 - Required review screenshots:
   1. Status popover with close reasons.
-  2. Duplicate inline form with validation.
+  2. Duplicate second-step picker with search and issue candidates.
   3. Non-red closed status pill.
   4. Tasks header/search smoke.
 - Residual risks:
-  - Duplicate target search is numeric-only, so it is less rich than GitHub's full duplicate picker and is limited to same-repository issue numbers.
+  - Duplicate target search is limited to loaded Tasks cache candidates, with exact-number fallback for unloaded same-repository issues.
   - Other open Orca windows may show stale status until their normal GitHub Tasks data refresh runs.
