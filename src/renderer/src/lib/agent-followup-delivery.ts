@@ -6,6 +6,8 @@ import { isExpectedAgentProcess } from '../../../shared/agent-process-recognitio
 import type { GlobalSettings } from '../../../shared/types'
 
 type RuntimeOwnerSettings = Pick<GlobalSettings, 'activeRuntimeEnvironmentId'> | null | undefined
+// Why: stalled remote process inspection must not extend delayed-startup
+// cleanup beyond the existing follow-up readiness window.
 const FOLLOWUP_READY_TIMEOUT_MS = 4500
 const FOLLOWUP_READY_POLL_MS = 150
 
