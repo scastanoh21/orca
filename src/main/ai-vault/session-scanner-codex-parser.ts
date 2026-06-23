@@ -141,9 +141,13 @@ export async function parseCodexSessionFile(
     }
     const totalUsage = normalizeCodexUsage(info.total_token_usage)
     const lastUsage = normalizeCodexUsage(info.last_token_usage)
-    const delta = totalUsage ? subtractCodexUsage(totalUsage, previousTotals) : lastUsage
+    let delta: CodexUsageSnapshot | null = null
     if (totalUsage) {
+      delta = subtractCodexUsage(totalUsage, previousTotals)
       previousTotals = totalUsage
+    } else if (lastUsage) {
+      delta = lastUsage
+      previousTotals = previousTotals ? addCodexUsage(previousTotals, lastUsage) : lastUsage
     }
     if (delta) {
       accumulator.totalTokens += delta.totalTokens
@@ -155,6 +159,19 @@ export async function parseCodexSessionFile(
   }
 
   return finalizeSession(accumulator, platform, { codexHome })
+}
+
+function addCodexUsage(
+  base: CodexUsageSnapshot,
+  increment: CodexUsageSnapshot
+): CodexUsageSnapshot {
+  return {
+    inputTokens: base.inputTokens + increment.inputTokens,
+    cachedInputTokens: base.cachedInputTokens + increment.cachedInputTokens,
+    outputTokens: base.outputTokens + increment.outputTokens,
+    reasoningOutputTokens: base.reasoningOutputTokens + increment.reasoningOutputTokens,
+    totalTokens: base.totalTokens + increment.totalTokens
+  }
 }
 
 function extractCodexThreadSource(payload: Record<string, unknown>): string | null {
