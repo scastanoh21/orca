@@ -4,6 +4,10 @@ import {
   isAppRestartEligibleLazyChunkError,
   type LazyChunkErrorBreadcrumbData
 } from './lazy-chunk-error-classification'
+import {
+  clearRendererRecoveryNotificationPending,
+  markRendererRecoveryNotificationPending
+} from './renderer-recovery-notification'
 
 /**
  * Resilient replacement for React.lazy.
@@ -223,12 +227,16 @@ async function restartAppForChunkRecovery(data: LazyChunkErrorBreadcrumbData): P
     return false
   }
   recordRestartBreadcrumb(data, appVersion)
+  markRendererRecoveryNotificationPending('lazy-chunk-app-restart', 'local')
 
   const restartAttempt = restart()
     .then(() => markAppRestartAttempted(appVersion))
     .catch(() => false)
   appRestartInFlightByVersion.set(appVersion, restartAttempt)
   const restarted = await restartAttempt
+  if (!restarted) {
+    clearRendererRecoveryNotificationPending('lazy-chunk-app-restart')
+  }
   appRestartInFlightByVersion.delete(appVersion)
   return restarted
 }
@@ -267,6 +275,7 @@ export async function loadLazyWithRetry<T extends AnyComponent>(
       throw lastError
     }
     recordReloadBreadcrumb(errorData)
+    markRendererRecoveryNotificationPending('lazy-chunk-reload', 'session')
     reloadRenderer()
     return SUSPEND_UNTIL_RECOVERY
   }

@@ -28,6 +28,10 @@ import {
   isPairedWebClientWindow,
   shouldRenderDesktopWindowChrome
 } from '@/lib/desktop-window-chrome'
+import {
+  consumePendingRendererRecoveryNotification,
+  type RendererRecoveryNotificationReason
+} from '@/lib/renderer-recovery-notification'
 import { resolveLeftTitlebarChromeLayout } from '@/lib/titlebar-left-chrome'
 import { shouldShowWorktreeCreationSurface } from '@/lib/worktree-creation-surface'
 import { buildAppFontFamily } from '@/lib/app-font-family'
@@ -158,7 +162,8 @@ import {
 import { isGitRepoKind } from '../../shared/repo-kind'
 import { showTerminalShortcutCaptureNotification } from '@/lib/terminal-shortcut-capture-notification'
 import { resolveMountedLazyModalIds, type LazyModalId } from './lazy-modal-mount-state'
-import { translate } from '@/i18n/i18n'
+import { i18n, translate } from '@/i18n/i18n'
+import { resolveUiLocale } from '@/i18n/supported-languages'
 import PinnedTabCloseDialog from './components/terminal-pane/PinnedTabCloseDialog'
 
 const isMac = navigator.userAgent.includes('Mac')
@@ -372,6 +377,38 @@ function shouldMountUpdateCardForStatus(status: UpdateStatus): boolean {
   return true
 }
 
+function getRendererRecoveryToastCopy(reason: RendererRecoveryNotificationReason): {
+  title: string
+  description: string
+} {
+  switch (reason) {
+    case 'lazy-chunk-app-restart':
+      return {
+        title: translate('auto.App.b956d8fc45', 'Orca restarted to recover'),
+        description: translate(
+          'auto.App.f249f7d142',
+          'A loading error repeated after refresh, so Orca restarted once.'
+        )
+      }
+    case 'lazy-chunk-reload':
+      return {
+        title: translate('auto.App.d9f205e7dc', 'Orca refreshed to recover'),
+        description: translate(
+          'auto.App.e19372e30c',
+          'A loading error was recovered by refreshing the app shell.'
+        )
+      }
+    case 'memory-pressure-reload':
+      return {
+        title: translate('auto.App.8cf930c298', 'Orca refreshed to recover'),
+        description: translate(
+          'auto.App.d8d724bc38',
+          'Memory usage was critically high, so Orca refreshed the app shell.'
+        )
+      }
+  }
+}
+
 function App(): React.JSX.Element {
   const clearUnreadDockBadge = useUnreadDockBadge()
   useRadixBodyPointerEventsRecovery()
@@ -382,6 +419,7 @@ function App(): React.JSX.Element {
     persisted?: Promise<void>
     recordFeatureInteractionForTour: boolean
   } | null>(null)
+  const recoveryToastConsumedRef = useRef(false)
 
   // Why: Zustand actions are referentially stable, but each individual
   // useAppStore(s => s.someAction) still registers a subscription that React
@@ -627,6 +665,36 @@ function App(): React.JSX.Element {
   usePrimarySelectionPaste(primarySelectionMiddleClickPaste)
   useAppMenuPaste()
   useLargeTextControlPaste()
+
+  useEffect(() => {
+    if (settings === null || recoveryToastConsumedRef.current) {
+      return
+    }
+    // Why: recovery markers are one-shot, so wait for persisted settings to
+    // load before translating the toast in the user's chosen UI language.
+    recoveryToastConsumedRef.current = true
+    void (async () => {
+      const locale = resolveUiLocale(settings.uiLanguage)
+      try {
+        if (i18n.language !== locale) {
+          await i18n.changeLanguage(locale)
+        }
+      } catch {
+        // Best effort: the recovery explanation should still be consumed even
+        // if localization cannot switch during crash recovery startup.
+      }
+      const pendingRecovery = consumePendingRendererRecoveryNotification()
+      if (!pendingRecovery) {
+        return
+      }
+      const copy = getRendererRecoveryToastCopy(pendingRecovery.reason)
+      toast.info(copy.title, {
+        description: copy.description,
+        duration: 8000
+      })
+    })()
+  }, [settings])
+
   const petEnabled = useAppStore((s) => s.settings?.experimentalPet === true)
   const petVisible = useAppStore((s) => s.petVisible)
   const renderPetOverlay = shouldRenderPetOverlay({

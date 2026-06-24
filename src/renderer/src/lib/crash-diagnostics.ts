@@ -3,6 +3,7 @@ import type {
   CrashReportDetailValue
 } from '../../../shared/crash-reporting'
 import { getBrowserWebviewMemoryProfile } from '../components/browser-pane/webview-registry'
+import { markRendererRecoveryNotificationPending } from './renderer-recovery-notification'
 
 const RENDERER_MEMORY_SAMPLE_INTERVAL_MS = 60_000
 const BYTES_PER_MEGABYTE = 1024 * 1024
@@ -248,6 +249,7 @@ function maybeReloadForCriticalHeapPressure({
       registeredBrowserGuests
     })
   )
+  markRendererRecoveryNotificationPending('memory-pressure-reload', 'session')
   reloadRendererForMemoryPressure()
 }
 

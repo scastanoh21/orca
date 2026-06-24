@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type * as CrashDiagnostics from './crash-diagnostics'
+import { consumePendingRendererRecoveryNotification } from './renderer-recovery-notification'
 
 type DiagnosticsModule = typeof CrashDiagnostics
 type Listener = (event: unknown) => void
@@ -61,6 +62,9 @@ describe('renderer crash diagnostics', () => {
         getItem: vi.fn((key: string) => sessionStorageValues.get(key) ?? null),
         setItem: vi.fn((key: string, value: string) => {
           sessionStorageValues.set(key, value)
+        }),
+        removeItem: vi.fn((key: string) => {
+          sessionStorageValues.delete(key)
         })
       },
       location: {
@@ -184,6 +188,9 @@ describe('renderer crash diagnostics', () => {
       }
     })
     expect(reloadMock).toHaveBeenCalledTimes(1)
+    expect(consumePendingRendererRecoveryNotification()).toEqual({
+      reason: 'memory-pressure-reload'
+    })
 
     intervalCallback?.()
     expect(reloadMock).toHaveBeenCalledTimes(1)
@@ -212,6 +219,9 @@ describe('renderer crash diagnostics', () => {
       }
     })
     expect(reloadMock).toHaveBeenCalledTimes(1)
+    expect(consumePendingRendererRecoveryNotification()).toEqual({
+      reason: 'memory-pressure-reload'
+    })
   })
 
   it('uses the preload app reload bridge for renderer heap pressure recovery', () => {
@@ -230,6 +240,9 @@ describe('renderer crash diagnostics', () => {
 
     expect(appReloadMock).toHaveBeenCalledTimes(1)
     expect(reloadMock).not.toHaveBeenCalled()
+    expect(consumePendingRendererRecoveryNotification()).toEqual({
+      reason: 'memory-pressure-reload'
+    })
   })
 
   it('fails closed when heap recovery cannot write its reload guard', () => {
@@ -254,6 +267,7 @@ describe('renderer crash diagnostics', () => {
       expect.objectContaining({ name: 'renderer_memory_pressure_reload' })
     )
     expect(reloadMock).not.toHaveBeenCalled()
+    expect(consumePendingRendererRecoveryNotification()).toBeNull()
   })
 
   it('resets critical heap pressure count after a healthy sample', () => {
@@ -272,5 +286,56 @@ describe('renderer crash diagnostics', () => {
     intervalCallback?.()
 
     expect(reloadMock).not.toHaveBeenCalled()
+    expect(consumePendingRendererRecoveryNotification()).toBeNull()
+  })
+
+  it.each([
+    {
+      label: 'below the critical heap ratio',
+      usedHeapMB: 860,
+      totalHeapMB: 1024,
+      heapLimitMB: 1024
+    },
+    {
+      label: 'above the critical ratio but below the minimum heap size',
+      usedHeapMB: 480,
+      totalHeapMB: 512,
+      heapLimitMB: 512
+    },
+    {
+      label: 'with an unavailable heap limit',
+      usedHeapMB: 920,
+      totalHeapMB: 1024,
+      heapLimitMB: 0
+    }
+  ])('does not reload for $label', ({ usedHeapMB, totalHeapMB, heapLimitMB }) => {
+    diagnostics.installRendererCrashDiagnostics()
+    performanceMemory.usedJSHeapSize = usedHeapMB * 1024 * 1024
+    performanceMemory.totalJSHeapSize = totalHeapMB * 1024 * 1024
+    performanceMemory.jsHeapSizeLimit = heapLimitMB * 1024 * 1024
+
+    intervalCallback?.()
+    intervalCallback?.()
+
+    expect(recordBreadcrumbMock).not.toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'renderer_memory_pressure_reload' })
+    )
+    expect(reloadMock).not.toHaveBeenCalled()
+    expect(consumePendingRendererRecoveryNotification()).toBeNull()
+  })
+
+  it('does not reload for one isolated critical heap sample', () => {
+    diagnostics.installRendererCrashDiagnostics()
+    performanceMemory.usedJSHeapSize = 920 * 1024 * 1024
+    performanceMemory.totalJSHeapSize = 1024 * 1024 * 1024
+    performanceMemory.jsHeapSizeLimit = 1024 * 1024 * 1024
+
+    intervalCallback?.()
+
+    expect(recordBreadcrumbMock).not.toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'renderer_memory_pressure_reload' })
+    )
+    expect(reloadMock).not.toHaveBeenCalled()
+    expect(consumePendingRendererRecoveryNotification()).toBeNull()
   })
 })

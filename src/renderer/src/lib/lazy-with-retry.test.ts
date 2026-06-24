@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ComponentType } from 'react'
 
 import { isLazyChunkLoadError, loadLazyWithRetry } from './lazy-with-retry'
+import { consumePendingRendererRecoveryNotification } from './renderer-recovery-notification'
 
 const RELOAD_GUARD_KEY = 'orca:lazy-chunk-reload-attempted'
 const RELOAD_RENDERER_BOOT_KEY = 'orca:lazy-chunk-reload-renderer-boot'
@@ -191,6 +192,9 @@ describe('loadLazyWithRetry', () => {
     expect(api.reload).toHaveBeenCalledTimes(1)
     expect(reload).not.toHaveBeenCalled()
     expect(window.sessionStorage.getItem(RELOAD_GUARD_KEY)).toBe('1')
+    expect(consumePendingRendererRecoveryNotification()).toEqual({
+      reason: 'lazy-chunk-reload'
+    })
     // The load promise must suspend (never settle) while the page reloads, so the
     // error boundary never flashes.
     expect(settled).toBe(false)
@@ -316,6 +320,9 @@ describe('loadLazyWithRetry', () => {
     expect(api.getVersion).toHaveBeenCalledTimes(1)
     expect(api.restart).toHaveBeenCalledTimes(1)
     expect(window.localStorage.getItem(APP_RESTART_GUARD_KEY)).toBe('1')
+    expect(consumePendingRendererRecoveryNotification()).toEqual({
+      reason: 'lazy-chunk-app-restart'
+    })
     expect(reload).not.toHaveBeenCalled()
     expect(settled).toBe(false)
   })
@@ -363,6 +370,9 @@ describe('loadLazyWithRetry', () => {
     expect(api.getVersion).toHaveBeenCalledTimes(1)
     expect(api.restart).toHaveBeenCalledTimes(1)
     expect(window.localStorage.getItem(APP_RESTART_GUARD_KEY)).toBe('1')
+    expect(consumePendingRendererRecoveryNotification()).toEqual({
+      reason: 'lazy-chunk-app-restart'
+    })
     expect(reload).not.toHaveBeenCalled()
     expect(settled).toBe(false)
   })
@@ -613,6 +623,7 @@ describe('loadLazyWithRetry', () => {
 
     expect(api.restart).toHaveBeenCalledTimes(1)
     expect(window.localStorage.getItem(APP_RESTART_GUARD_KEY)).toBeNull()
+    expect(consumePendingRendererRecoveryNotification()).toBeNull()
   })
 
   it('fails closed before restart when the durable restart guard cannot be written', async () => {
