@@ -324,6 +324,11 @@ describe('DaemonPtyAdapter (IPtyProvider)', () => {
 
       const sessions = await adapter.listSessions()
       expect(sessions.some((session) => session.sessionId === id)).toBe(true)
+
+      lastSubprocess._simulateExit(42)
+      await waitFor(() => exits.length > 0)
+      expect(exits).toEqual([{ id, code: 42 }])
+      expect(adapter.getActiveSessionIds()).toEqual([])
     })
 
     it('does not reconnect a disposed adapter when disconnect reconciliation finishes late', async () => {
@@ -398,13 +403,61 @@ describe('DaemonPtyAdapter (IPtyProvider)', () => {
         activeSessionIds: Set<string>
         probeAliveSessionIds: () => Promise<Set<string>>
         reconcileAfterDaemonDisconnect: () => Promise<void>
+        client: {
+          ensureConnected: () => Promise<void>
+          request: (type: string, payload: unknown) => Promise<unknown>
+          disconnect: () => void
+        }
       }
       internals.activeSessionIds.add('dead-session')
       internals.activeSessionIds.add('live-session')
       internals.probeAliveSessionIds = vi.fn(async () => new Set(['live-session']))
+      internals.client = {
+        ensureConnected: vi.fn(async () => undefined),
+        request: vi.fn(async () => ({
+          isNew: false,
+          snapshot: null,
+          pid: null,
+          shellState: 'unsupported'
+        })),
+        disconnect: vi.fn()
+      }
 
       await expect(internals.reconcileAfterDaemonDisconnect()).rejects.toThrow('listener failed')
+      expect(internals.client.ensureConnected).toHaveBeenCalledTimes(1)
       expect(adapter.getActiveSessionIds()).toEqual(['live-session'])
+    })
+
+    it('clears all dead synthetic-exit state before propagating a listener error', async () => {
+      adapter.onExit(() => {
+        throw new Error('listener failed')
+      })
+
+      const internals = adapter as unknown as {
+        activeSessionIds: Set<string>
+        dirtySessionVersions: Map<string, number>
+        coldRestoreCache: Map<string, { scrollback: string; cwd: string; oscLinks?: unknown[] }>
+        probeAliveSessionIds: () => Promise<Set<string>>
+        reattachSurvivedSessions: (sessionIds: string[]) => Promise<string[]>
+        reconcileAfterDaemonDisconnect: () => Promise<void>
+      }
+      internals.activeSessionIds.add('dead-session-a')
+      internals.activeSessionIds.add('dead-session-b')
+      internals.activeSessionIds.add('live-session')
+      internals.dirtySessionVersions.set('dead-session-a', 1)
+      internals.dirtySessionVersions.set('dead-session-b', 1)
+      internals.dirtySessionVersions.set('live-session', 1)
+      internals.coldRestoreCache.set('dead-session-a', { scrollback: 'a', cwd: '/tmp' })
+      internals.coldRestoreCache.set('dead-session-b', { scrollback: 'b', cwd: '/tmp' })
+      internals.coldRestoreCache.set('live-session', { scrollback: 'live', cwd: '/tmp' })
+      internals.probeAliveSessionIds = vi.fn(async () => new Set(['live-session']))
+      internals.reattachSurvivedSessions = vi.fn(async () => [])
+
+      await expect(internals.reconcileAfterDaemonDisconnect()).rejects.toThrow('listener failed')
+
+      expect(adapter.getActiveSessionIds()).toEqual(['live-session'])
+      expect([...internals.dirtySessionVersions.keys()]).toEqual(['live-session'])
+      expect([...internals.coldRestoreCache.keys()]).toEqual(['live-session'])
     })
 
     it('exits surviving sessions if the primary client cannot reconnect after probing', async () => {
