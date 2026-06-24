@@ -412,11 +412,7 @@ function emitPinnedGroup(
   const pinnedRepoOrder: string[] = []
   const seenPinnedRepoIds = new Set<string>()
   for (const worktree of pinned) {
-    const repo = repoMap.get(worktree.repoId)
-    const hostId =
-      repo && (repo.connectionId || repo.executionHostId)
-        ? getRepoExecutionHostId(repo)
-        : defaultHostId
+    const hostId = getWorktreeHostId(worktree, repoMap, defaultHostId)
     hostWorktreeCounts.set(hostId, (hostWorktreeCounts.get(hostId) ?? 0) + 1)
     const hostIds = hostWorktreeIds.get(hostId) ?? []
     hostIds.push(worktree.id)
@@ -666,6 +662,9 @@ function getWorktreeHostId(
   repoMap: Map<string, Repo>,
   defaultHostId: ExecutionHostId
 ): ExecutionHostId {
+  if (worktree.hostId) {
+    return worktree.hostId
+  }
   const repo = repoMap.get(worktree.repoId)
   return repo && (repo.connectionId || repo.executionHostId)
     ? getRepoExecutionHostId(repo)

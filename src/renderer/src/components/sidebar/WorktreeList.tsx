@@ -922,6 +922,8 @@ function getPreferredWorktreeRows(
   rows: readonly WorktreeItemRow[],
   pinnedDisplayPolicy: PinnedWorktreeDisplayPolicy
 ): WorktreeItemRow[] {
+  // Why: when pinned rows are duplicated into natural groups, navigation and
+  // selection should prefer the natural-group copy and only fall back to pinned.
   if (pinnedDisplayPolicy === 'single-location') {
     const seen = new Set<string>()
     return rows.filter((row) => {

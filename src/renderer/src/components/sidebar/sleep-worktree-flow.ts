@@ -29,6 +29,8 @@ function getSidebarWorktreeOptions(worktreeId: string): HTMLElement[] {
 }
 
 function isPinnedSidebarWorktreeOption(element: HTMLElement): boolean {
+  // Why: duplicated pinned rows share a worktree id; the row-key prefix is the
+  // stable row-scoped signal that distinguishes the pinned copy from natural rows.
   return element.dataset.worktreeRowKey?.startsWith('pinned:') === true
 }
 
