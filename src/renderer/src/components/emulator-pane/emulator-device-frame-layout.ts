@@ -5,6 +5,8 @@ export type StreamSize = {
   height: number
 }
 
+export type EmulatorDeviceVisualOrientation = 'portrait' | 'landscape'
+
 export type PaneSize = {
   width: number
   height: number
@@ -38,6 +40,17 @@ export function resolveDeviceFrameKind(
     return 'phone'
   }
   return screenAspectRatio > 0.62 && screenAspectRatio < 1.62 ? 'tablet' : 'phone'
+}
+
+export function resolveVisualScreenAspectRatio(
+  streamSize: StreamSize | null,
+  visualOrientation: EmulatorDeviceVisualOrientation
+): number {
+  const width = streamSize?.width ?? 9
+  const height = streamSize?.height ?? 19
+  const shortSide = Math.min(width, height)
+  const longSide = Math.max(width, height)
+  return visualOrientation === 'landscape' ? longSide / shortSide : shortSide / longSide
 }
 
 function fitScreenToPane(paneSize: PaneSize | null, aspectRatio: number): PaneSize | null {

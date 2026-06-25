@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { fitDeviceFrameToPane, resolveDeviceFrameKind } from './emulator-device-frame-layout'
+import {
+  fitDeviceFrameToPane,
+  resolveDeviceFrameKind,
+  resolveVisualScreenAspectRatio
+} from './emulator-device-frame-layout'
 
 describe('resolveDeviceFrameKind', () => {
   it('prefers device names over aspect-ratio fallback', () => {
@@ -10,6 +14,20 @@ describe('resolveDeviceFrameKind', () => {
   it('uses stream shape when the device name is unavailable', () => {
     expect(resolveDeviceFrameKind(undefined, 9 / 19)).toBe('phone')
     expect(resolveDeviceFrameKind(undefined, 3 / 4)).toBe('tablet')
+  })
+})
+
+describe('resolveVisualScreenAspectRatio', () => {
+  it('uses the requested device orientation instead of trusting the stream canvas shape', () => {
+    const portraitStream = { width: 390, height: 844 }
+
+    expect(resolveVisualScreenAspectRatio(portraitStream, 'portrait')).toBeCloseTo(390 / 844)
+    expect(resolveVisualScreenAspectRatio(portraitStream, 'landscape')).toBeCloseTo(844 / 390)
+  })
+
+  it('keeps the default emulator preview portrait until a rotate succeeds', () => {
+    expect(resolveVisualScreenAspectRatio(null, 'portrait')).toBeCloseTo(9 / 19)
+    expect(resolveVisualScreenAspectRatio(null, 'landscape')).toBeCloseTo(19 / 9)
   })
 })
 
@@ -49,5 +67,16 @@ describe('fitDeviceFrameToPane', () => {
     expect(layout?.height).toBeLessThanOrEqual(pane.height)
     expect(layout?.shellWidth).toBeGreaterThan(1)
     expect(layout?.shellHeight).toBeGreaterThan(1)
+  })
+
+  it('fits the entire phone frame as landscape after a device rotation', () => {
+    const pane = { width: 1000, height: 600 }
+    const aspectRatio = resolveVisualScreenAspectRatio({ width: 390, height: 844 }, 'landscape')
+    const layout = fitDeviceFrameToPane(pane, aspectRatio, 'phone')
+
+    expect(layout).not.toBeNull()
+    expect(layout?.width).toBeLessThanOrEqual(pane.width)
+    expect(layout?.height).toBeLessThanOrEqual(pane.height)
+    expect(layout ? layout.shellWidth / layout.shellHeight : 0).toBeGreaterThan(1)
   })
 })

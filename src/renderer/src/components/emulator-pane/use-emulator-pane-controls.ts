@@ -1,9 +1,12 @@
-import { useCallback, useRef } from 'react'
+import { useCallback, useRef, useState } from 'react'
 import { callRuntimeRpc } from '@/runtime/runtime-rpc-client'
+import type { EmulatorDeviceVisualOrientation } from './emulator-device-frame-layout'
 import type { EmulatorGesturePoint } from './emulator-screen-gesture'
 
 export function useEmulatorPaneControls(worktreeId: string) {
   const nextRotateOrientationRef = useRef<'landscape_left' | 'portrait'>('landscape_left')
+  const [visualOrientation, setVisualOrientation] =
+    useState<EmulatorDeviceVisualOrientation>('portrait')
 
   const sendTap = useCallback(
     async (x: number, y: number) => {
@@ -32,9 +35,15 @@ export function useEmulatorPaneControls(worktreeId: string) {
       orientation,
       worktree: worktreeId
     })
+    setVisualOrientation(orientation === 'landscape_left' ? 'landscape' : 'portrait')
     nextRotateOrientationRef.current =
       orientation === 'landscape_left' ? 'portrait' : 'landscape_left'
   }, [worktreeId])
 
-  return { sendTap, sendButton, sendGesture, sendRotate }
+  const resetVisualOrientation = useCallback(() => {
+    nextRotateOrientationRef.current = 'landscape_left'
+    setVisualOrientation('portrait')
+  }, [])
+
+  return { sendTap, sendButton, sendGesture, sendRotate, visualOrientation, resetVisualOrientation }
 }

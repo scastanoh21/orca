@@ -9,7 +9,9 @@ import {
 } from 'react'
 import {
   fitDeviceFrameToPane,
+  resolveVisualScreenAspectRatio,
   resolveDeviceFrameKind,
+  type EmulatorDeviceVisualOrientation,
   type StreamSize
 } from './emulator-device-frame-layout'
 import {
@@ -39,6 +41,7 @@ type EmulatorDeviceFrameProps = {
   deviceName?: string
   loading: boolean
   isLive: boolean
+  visualOrientation: EmulatorDeviceVisualOrientation
   onTap: (x: number, y: number) => void
   onGesture: (points: EmulatorGesturePoint[]) => void
 }
@@ -65,6 +68,7 @@ export function EmulatorDeviceFrame({
   deviceName,
   loading,
   isLive,
+  visualOrientation,
   onTap,
   onGesture
 }: EmulatorDeviceFrameProps) {
@@ -328,13 +332,14 @@ export function EmulatorDeviceFrame({
   }, [])
 
   const showStream = isLive && Boolean(previewUrl)
-  const screenAspectRatio = streamSize ? streamSize.width / streamSize.height : 9 / 19
-  const screenAspectRatioStyle = streamSize
-    ? `${streamSize.width} / ${streamSize.height}`
-    : '9 / 19'
+  const streamAspectRatio = streamSize ? streamSize.width / streamSize.height : 9 / 19
+  // Why: serve-sim can rotate screen pixels without swapping the stream canvas,
+  // so the physical frame follows the requested orientation instead.
+  const screenAspectRatio = resolveVisualScreenAspectRatio(streamSize, visualOrientation)
+  const screenAspectRatioStyle = `${screenAspectRatio}`
   const frameKind = useMemo(
-    () => resolveDeviceFrameKind(deviceName, screenAspectRatio),
-    [deviceName, screenAspectRatio]
+    () => resolveDeviceFrameKind(deviceName, streamAspectRatio),
+    [deviceName, streamAspectRatio]
   )
   const frameLayout = useMemo(
     () => fitDeviceFrameToPane(paneSize, screenAspectRatio, frameKind),

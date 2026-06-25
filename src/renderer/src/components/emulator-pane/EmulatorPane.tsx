@@ -39,7 +39,8 @@ function EmulatorPaneContent({ tab, worktreeId, isActive = true }: EmulatorPaneP
     previewUrl,
     wsUrl,
     streamKey,
-    isLive
+    isLive,
+    visualOrientation
   } = useEmulatorPaneSession({
     worktreeId,
     tabId: tab?.id,
@@ -90,6 +91,7 @@ function EmulatorPaneContent({ tab, worktreeId, isActive = true }: EmulatorPaneP
             deviceName={displayName}
             loading={loading}
             isLive={isLive}
+            visualOrientation={visualOrientation}
             onTap={(x, y) => void sendTap(x, y)}
             onGesture={(points) => void sendGesture(points)}
           />

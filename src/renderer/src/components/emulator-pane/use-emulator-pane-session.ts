@@ -56,7 +56,14 @@ export function useEmulatorPaneSession({
   const liveTargetRef = useRef<string | null>(prelaunchedState.liveTarget)
   const deviceRefreshErrorRef = useRef<unknown>(null)
   const suppressAutoAttachRef = useRef(false)
-  const { sendTap, sendButton, sendGesture, sendRotate } = useEmulatorPaneControls(worktreeId)
+  const {
+    sendTap,
+    sendButton,
+    sendGesture,
+    sendRotate,
+    visualOrientation,
+    resetVisualOrientation
+  } = useEmulatorPaneControls(worktreeId)
 
   const refreshDevices = useCallback(async (bootedTarget?: string | null) => {
     try {
@@ -131,13 +138,14 @@ export function useEmulatorPaneSession({
       liveTargetRef.current = null
       suppressAutoAttachRef.current = true
       setStreamKey(null)
+      resetVisualOrientation()
       setError(null)
       if (tabId) {
         const row = devices.find((device) => device.udid === target || device.name === target)
         useAppStore.getState().setTabLabel(tabId, row?.name || 'Mobile Emulator')
       }
     },
-    [devices, selectedUdid, session, tabId]
+    [devices, resetVisualOrientation, selectedUdid, session, tabId]
   )
 
   const attach = useCallback(
@@ -179,6 +187,7 @@ export function useEmulatorPaneSession({
           setSession(null)
           setStreamKey(null)
           liveTargetRef.current = null
+          resetVisualOrientation()
         }
         const res = (await callRuntimeRpc({ kind: 'local' }, 'emulator.attach', {
           device: target,
@@ -228,6 +237,7 @@ export function useEmulatorPaneSession({
       devices,
       loading,
       refreshDevices,
+      resetVisualOrientation,
       selectedUdid,
       tabId,
       worktreeId
@@ -291,6 +301,7 @@ export function useEmulatorPaneSession({
     sendButton,
     sendGesture,
     sendRotate,
+    visualOrientation,
     displayName: view.displayName,
     previewUrl: view.previewUrl,
     wsUrl: view.wsUrl,
