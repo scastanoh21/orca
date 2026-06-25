@@ -6275,7 +6275,7 @@
           "d56af60e6f": "选择 Orca 处于浅色模式时使用的主题。",
           "8273bc75d7": "浅色主题",
           "74b15574c8": "配置可选的轻型模式 terminal 外观。",
-          "b584287e84": "禁用后，浅色模式会重用深色 terminal 主题。",
+          "b584287e84": "启用后，浅色模式会使用自己的终端主题和分隔线颜色。",
           "d76f60c9cc": "在浅色模式下使用单独的主题",
           "bc8e8a251a": "深色模式预览",
           "cbe56a0f79": "控制深色模式下窗格之间的分割分隔线。",
@@ -6287,13 +6287,12 @@
           "import_themes_description": "已导入的主题可用于深色和浅色主题目标。",
           "catalog_title": "终端主题",
           "catalog_description": "为深色和浅色模式选择终端主题和分隔线颜色。",
-          "target_title": "主题目标",
-          "target_description": "选择目录要编辑深色还是浅色终端设置。",
-          "target_label": "编辑目标",
-          "target_aria": "终端主题编辑目标",
+          "target_title": "主题模式",
+          "target_label": "主题模式",
+          "target_aria": "终端主题模式",
           "target_dark": "深色",
           "target_light": "浅色",
-          "light_inactive_note": "浅色模式当前正在重用深色主题。开启单独的浅色主题以应用此选择。",
+          "light_inactive_note": "开启单独的浅色主题以应用此浅色模式选择。",
           "light_preview_description": "显示实际生效的浅色终端外观。",
           "dark_preview_description": "显示实际生效的深色终端外观。"
         },
@@ -7830,7 +7829,7 @@
             "1dee533bd9": "选择 Orca 处于浅色模式时使用的主题。",
             "1d89457764": "浅色主题",
             "da864e6cec": "灯光模式",
-            "f268092ee3": "禁用后，浅色模式会重用深色 terminal 主题。",
+            "f268092ee3": "启用后，浅色模式会使用自己的终端主题和分隔线颜色。",
             "232e532169": "在浅色模式下使用单独的主题",
             "f785374072": "深色",
             "9c32726f47": "控制深色模式下窗格之间的分割分隔线。",
@@ -7912,8 +7911,7 @@
               "description": "调整普通终端回滚、修饰键快速滚动以及全屏 TUI 滚轮速度。"
             },
             "theme_target": {
-              "title": "主题目标",
-              "description": "选择终端主题目录要编辑深色还是浅色设置。",
+              "title": "主题模式",
               "keyword_target": "目标",
               "keyword_editing": "编辑"
             }

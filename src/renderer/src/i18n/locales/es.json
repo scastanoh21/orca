@@ -6290,7 +6290,7 @@
           "d56af60e6f": "Elige el tema utilizado cuando Orca está en modo claro.",
           "8273bc75d7": "Tema ligero",
           "74b15574c8": "Configure la apariencia del terminal en modo de luz opcional.",
-          "b584287e84": "Cuando está deshabilitado, el modo claro reutiliza el tema oscuro del terminal.",
+          "b584287e84": "Cuando está activado, el modo claro usa su propio tema de terminal y color de divisor.",
           "d76f60c9cc": "Utilice un tema independiente en el modo claro",
           "bc8e8a251a": "Vista previa del modo oscuro",
           "cbe56a0f79": "Controla la línea divisoria entre paneles en modo oscuro.",
@@ -6302,13 +6302,12 @@
           "import_themes_description": "Los temas importados están disponibles para los destinos de tema oscuro y claro.",
           "catalog_title": "Temas de terminal",
           "catalog_description": "Elige temas de terminal y colores de divisor para los modos oscuro y claro.",
-          "target_title": "Destino del tema",
-          "target_description": "Elige si el catálogo edita la configuración de terminal oscura o clara.",
-          "target_label": "Destino de edición",
-          "target_aria": "Destino de edición del tema de terminal",
+          "target_title": "Modo del tema",
+          "target_label": "Modo del tema",
+          "target_aria": "Modo del tema de terminal",
           "target_dark": "Oscuro",
           "target_light": "Claro",
-          "light_inactive_note": "El modo claro está reutilizando el tema oscuro. Activa el tema claro separado para aplicar esta selección.",
+          "light_inactive_note": "Activa el tema claro separado para aplicar esta selección de modo claro.",
           "light_preview_description": "Muestra la apariencia efectiva del terminal claro.",
           "dark_preview_description": "Muestra la apariencia efectiva del terminal oscuro."
         },
@@ -7845,7 +7844,7 @@
             "1dee533bd9": "Elige el tema utilizado cuando Orca está en modo claro.",
             "1d89457764": "Tema ligero",
             "da864e6cec": "modo de luz",
-            "f268092ee3": "Cuando está deshabilitado, el modo claro reutiliza el tema oscuro del terminal.",
+            "f268092ee3": "Cuando está activado, el modo claro usa su propio tema de terminal y color de divisor.",
             "232e532169": "Utilice un tema independiente en el modo claro",
             "f785374072": "oscuro",
             "9c32726f47": "Controla la línea divisoria entre paneles en modo oscuro.",
@@ -7927,8 +7926,7 @@
               "description": "Ajusta el desplazamiento normal del terminal, el desplazamiento rápido con modificador y la velocidad de rueda en TUI de pantalla completa."
             },
             "theme_target": {
-              "title": "Destino del tema",
-              "description": "Elige si el catálogo de temas del terminal edita la configuración oscura o clara.",
+              "title": "Modo del tema",
               "keyword_target": "destino",
               "keyword_editing": "edición"
             }

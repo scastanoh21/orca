@@ -114,11 +114,7 @@ export function TerminalThemeCatalogSection({
             <SearchableSetting
               title={translate(
                 'auto.components.settings.TerminalThemeSections.target_title',
-                'Theme Target'
-              )}
-              description={translate(
-                'auto.components.settings.TerminalThemeSections.target_description',
-                'Choose whether the catalog edits dark or light terminal settings.'
+                'Theme Mode'
               )}
               keywords={['terminal', 'theme', 'dark', 'light']}
               forceVisible
@@ -126,8 +122,8 @@ export function TerminalThemeCatalogSection({
               <div className="space-y-2">
                 <p className="text-xs font-medium text-muted-foreground">
                   {translate(
-                    'auto.components.settings.TerminalThemeSections.target_label',
-                    'Editing Target'
+                    'auto.components.settings.TerminalThemeSections.target_title',
+                    'Theme Mode'
                   )}
                 </p>
                 <SettingsSegmentedControl
@@ -135,7 +131,7 @@ export function TerminalThemeCatalogSection({
                   onChange={setTarget}
                   ariaLabel={translate(
                     'auto.components.settings.TerminalThemeSections.target_aria',
-                    'Terminal theme editing target'
+                    'Terminal theme mode'
                   )}
                   equalWidth
                   options={[
@@ -165,7 +161,7 @@ export function TerminalThemeCatalogSection({
               )}
               description={translate(
                 'auto.components.settings.TerminalThemeSections.b584287e84',
-                'When disabled, light mode reuses the dark terminal theme.'
+                'When enabled, light mode uses its own terminal theme and divider color.'
               )}
               keywords={['terminal', 'light mode', 'theme']}
               forceVisible
@@ -177,7 +173,7 @@ export function TerminalThemeCatalogSection({
                 )}
                 description={translate(
                   'auto.components.settings.TerminalThemeSections.b584287e84',
-                  'When disabled, light mode reuses the dark terminal theme.'
+                  'When enabled, light mode uses its own terminal theme and divider color.'
                 )}
                 checked={settings.terminalUseSeparateLightTheme}
                 onChange={() =>
@@ -187,16 +183,16 @@ export function TerminalThemeCatalogSection({
                 }
               />
             </SearchableSetting>
-          </div>
 
-          {isLightTarget && !settings.terminalUseSeparateLightTheme ? (
-            <p className="text-xs text-muted-foreground">
-              {translate(
-                'auto.components.settings.TerminalThemeSections.light_inactive_note',
-                'Light mode is currently reusing the dark theme. Turn on separate light theme to apply this selection.'
-              )}
-            </p>
-          ) : null}
+            {isLightTarget && !settings.terminalUseSeparateLightTheme ? (
+              <p className="text-xs text-muted-foreground">
+                {translate(
+                  'auto.components.settings.TerminalThemeSections.light_inactive_note',
+                  'Turn on separate light theme to apply this light-mode selection.'
+                )}
+              </p>
+            ) : null}
+          </div>
 
           <SearchableSetting
             title={pickerTitle}

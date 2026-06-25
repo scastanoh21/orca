@@ -229,7 +229,7 @@ describe('TerminalThemeCatalogSection', () => {
     )
     const preview = findElementByTypeName(element, 'TerminalSettingsPreview')
 
-    expect(hasText(element, 'Light mode is currently reusing the dark theme')).toBe(true)
+    expect(hasText(element, 'Turn on separate light theme')).toBe(true)
     expect(preview?.props?.modeOverride).toBe('light')
   })
 
