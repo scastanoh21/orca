@@ -430,7 +430,7 @@ const WorktreeCard = React.memo(function WorktreeCard({
   const hostedReviewEntry = useAppStore((s) =>
     hostedReviewCacheKey ? s.hostedReviewCache[hostedReviewCacheKey] : undefined
   )
-  const prCacheEntry = useAppStore((s) => (prCacheKey ? s.prCache[prCacheKey] : undefined))
+  const prCacheEntry = useAppStore((s) => (prCacheKey ? s.prCache?.[prCacheKey] : undefined))
   const issueEntry = useAppStore((s) => (issueCacheKey ? s.issueCache[issueCacheKey] : undefined))
   const linearIssueEntry = useAppStore((s) =>
     linearIssueCacheKey ? s.linearIssueCache[linearIssueCacheKey] : undefined
