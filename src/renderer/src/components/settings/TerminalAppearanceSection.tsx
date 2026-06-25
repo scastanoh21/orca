@@ -41,6 +41,7 @@ type TerminalAppearanceSectionProps = {
 type TerminalThemeTarget = 'dark' | 'light'
 
 function scoreThemeTargetIntent(searchQuery: string, entries: SettingsSearchEntry[]): number {
+  // Why: descriptions mention dark/light incidentally; target intent should come from labels and aliases.
   return scoreSettingsSearch(
     searchQuery,
     entries.map(({ title, keywords }) => ({ title, keywords }))
