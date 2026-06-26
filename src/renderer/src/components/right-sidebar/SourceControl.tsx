@@ -5331,7 +5331,10 @@ function SourceControlInner({
 
   return (
     <>
-      <div ref={setSourceControlRoot} className="relative flex h-full flex-col overflow-hidden">
+      <div
+        ref={setSourceControlRoot}
+        className={cn('relative flex flex-col overflow-hidden', embedded ? 'min-h-0' : 'h-full')}
+      >
         <SourceControlHeaderToolbar
           filterQuery={filterQuery}
           filterExpanded={filterExpanded}
@@ -5508,7 +5511,10 @@ function SourceControlInner({
         )}
 
         <div
-          className="relative flex flex-1 flex-col overflow-auto scrollbar-sleek pt-1"
+          className={cn(
+            'relative flex flex-1 flex-col overflow-auto scrollbar-sleek',
+            embedded ? 'pt-0.5 pb-3' : 'pt-1'
+          )}
           style={{ paddingBottom: selectedKeys.size > 0 ? 50 : undefined }}
         >
           {unresolvedConflictReviewEntries.length > 0 && (

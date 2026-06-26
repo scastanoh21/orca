@@ -29,6 +29,7 @@ const panelMocks = vi.hoisted(() => ({
   sourceControlProps: [] as { worktreeId?: string; embedded?: boolean }[],
   refreshCalls: [] as unknown[],
   invalidatedWorktreeIds: [] as string[],
+  jumpToWorktreeCalls: [] as string[],
   keepRefreshPending: false
 }))
 
@@ -43,6 +44,12 @@ vi.mock('@/store', () => {
 vi.mock('@/i18n/i18n', () => ({
   translate: (_key: string, fallback: string, values?: Record<string, unknown>) =>
     values ? fallback.replace('{{value0}}', String(values.value0)) : fallback
+}))
+
+vi.mock('@/lib/sidebar-worktree-activation', () => ({
+  activateWorktreeFromSidebar: (worktreeId: string) => {
+    panelMocks.jumpToWorktreeCalls.push(worktreeId)
+  }
 }))
 
 vi.mock('./SourceControl', () => ({
@@ -156,6 +163,7 @@ describe('FolderWorkspaceSourceControlPanel', () => {
     panelMocks.sourceControlProps = []
     panelMocks.refreshCalls = []
     panelMocks.invalidatedWorktreeIds = []
+    panelMocks.jumpToWorktreeCalls = []
     panelMocks.keepRefreshPending = false
     panelMocks.store = {
       activeWorktreeId: folderWorkspaceKey('folder-1'),
@@ -313,5 +321,32 @@ describe('FolderWorkspaceSourceControlPanel', () => {
     renderPanel()
 
     expect(container.textContent).toContain('SSH Repo')
+  })
+
+  it('jumps to a child worktree from the section header without collapsing it', () => {
+    const child = makeWorktree({
+      id: 'repo-1::/first',
+      displayName: 'First child',
+      instanceId: 'first',
+      lastActivityAt: 20
+    })
+    panelMocks.store.worktreesByRepo = { 'repo-1': [child] }
+    panelMocks.store.workspaceLineageByChildKey = {
+      [child.id]: makeWorkspaceLineage(child)
+    }
+
+    renderPanel()
+
+    const jumpButton = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Jump to worktree"]'
+    )
+    expect(jumpButton).not.toBeNull()
+
+    act(() => {
+      jumpButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    expect(panelMocks.jumpToWorktreeCalls).toEqual([child.id])
+    expect(container.querySelectorAll('[data-testid="scoped-source-control"]')).toHaveLength(1)
   })
 })
