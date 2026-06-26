@@ -404,9 +404,6 @@ export default function WorkspaceCleanupDialog(): React.JSX.Element {
     () => formatScanNoticeMessage(selectedScanErrors, repoNameById),
     [repoNameById, selectedScanErrors]
   )
-  const readyCount = groups.ready.length
-  const protectedCount = groups.protected.length
-  const inactiveCount = filteredCandidates.length
   const hasAnyCandidates = candidates.length > 0
   const initialLoading = loading && !hasAnyCandidates
   const activeBaseRows =
@@ -686,48 +683,6 @@ export default function WorkspaceCleanupDialog(): React.JSX.Element {
                       'selected'
                     )}
                   </div>
-                  <StatusPill>
-                    {inactiveCount}{' '}
-                    {translate(
-                      'auto.components.workspace.cleanup.WorkspaceCleanupDialog.2b31bf68de',
-                      'inactive'
-                    )}
-                  </StatusPill>
-                  {readyCount > 0 ? (
-                    <StatusPill tone="ready">
-                      {readyCount}{' '}
-                      {translate(
-                        'auto.components.workspace.cleanup.WorkspaceCleanupDialog.b299f201b9',
-                        'suggested'
-                      )}
-                    </StatusPill>
-                  ) : null}
-                  {groups.review.length > 0 ? (
-                    <StatusPill tone="review">
-                      {groups.review.length}{' '}
-                      {translate(
-                        'auto.components.workspace.cleanup.WorkspaceCleanupDialog.1b18868569',
-                        'need a look'
-                      )}
-                    </StatusPill>
-                  ) : null}
-                  {protectedCount > 0 ? (
-                    <StatusPill>
-                      {protectedCount}{' '}
-                      {translate(
-                        'auto.components.workspace.cleanup.WorkspaceCleanupDialog.37ab28277e',
-                        'not suggested'
-                      )}
-                    </StatusPill>
-                  ) : null}
-                  {loading ? (
-                    <StatusPill>
-                      {translate(
-                        'auto.components.workspace.cleanup.WorkspaceCleanupDialog.946e8b0eb1',
-                        'Scanning'
-                      )}
-                    </StatusPill>
-                  ) : null}
                 </div>
                 <div className="flex min-w-0 flex-wrap items-center gap-2">
                   {eligibleRepos.length > 1 ? (
