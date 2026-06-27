@@ -205,6 +205,25 @@ type ChecksPanelReviewHeaderProps = {
   onLinkAnotherPullRequest: () => void
 }
 
+export function shouldRunChecksPanelEntryRefresh({
+  hasRepo,
+  hasReviewLookupIdentity,
+  activeWorktreeId,
+  isGitLabReviewContext,
+  branch
+}: {
+  hasRepo: boolean
+  hasReviewLookupIdentity: boolean
+  activeWorktreeId: string | null | undefined
+  isGitLabReviewContext: boolean
+  branch: string
+}): boolean {
+  if (!hasRepo || !hasReviewLookupIdentity || !activeWorktreeId) {
+    return false
+  }
+  return !isGitLabReviewContext || branch.length > 0
+}
+
 export function ChecksPanelReviewHeader({
   review,
   isRefreshing,
@@ -502,7 +521,7 @@ export default function ChecksPanel(): React.JSX.Element {
   const gitStatusSnapshotRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const gitIdentityDisplay = activeWorktree ? getWorktreeGitIdentityDisplay(activeWorktree) : null
   const detachedHeadDisplay = gitIdentityDisplay?.kind === 'detached' ? gitIdentityDisplay : null
-  const branch = gitIdentityDisplay?.kind === 'branch' ? gitIdentityDisplay.branchName : ''
+  const branch = gitIdentityDisplay?.kind === 'branch' ? (gitIdentityDisplay.branchName ?? '') : ''
   const activeWorktreePath = activeWorktree?.path ?? null
   const activeWorktreePushTarget = activeWorktree?.pushTarget ?? null
   const activeSourceControlLaunchPlatform = resolveSourceControlLaunchPlatform({
@@ -2084,7 +2103,20 @@ export default function ChecksPanel(): React.JSX.Element {
 
   const handleEntryRefresh = useCallback(
     (options: { refreshChecks: boolean; refreshComments: boolean }) => {
-      if (!repo || !branch || !activeWorktreeId) {
+      const refreshRepo = repo
+      const refreshWorktreeId = activeWorktreeId
+      if (
+        !shouldRunChecksPanelEntryRefresh({
+          hasRepo: Boolean(refreshRepo),
+          hasReviewLookupIdentity,
+          activeWorktreeId: refreshWorktreeId,
+          isGitLabReviewContext,
+          branch
+        })
+      ) {
+        return
+      }
+      if (!refreshRepo || !refreshWorktreeId) {
         return
       }
       // Why: entering the Checks tab is automatic UI behavior, not an explicit
@@ -2092,9 +2124,12 @@ export default function ChecksPanel(): React.JSX.Element {
       // guards still apply; only force detail panes that the entry freshness rule
       // already proved stale, so tab entry stays fresh without broad fan-out.
       if (isGitLabReviewContext) {
-        void fetchHostedReviewForBranch(repo.path, branch, {
+        if (!branch) {
+          return
+        }
+        void fetchHostedReviewForBranch(refreshRepo.path, branch, {
           force: true,
-          repoId: repo.id,
+          repoId: refreshRepo.id,
           linkedGitHubPR: linkedPR,
           fallbackGitHubPR: fallbackGitHubPRNumber,
           linkedGitLabMR,
@@ -2107,7 +2142,7 @@ export default function ChecksPanel(): React.JSX.Element {
         }
         return
       }
-      enqueueGitHubPRRefresh(activeWorktreeId, 'active', 80)
+      enqueueGitHubPRRefresh(refreshWorktreeId, 'active', 80)
       if (options.refreshChecks) {
         void fetchChecks({ force: true })
       }
@@ -2125,6 +2160,7 @@ export default function ChecksPanel(): React.JSX.Element {
       fetchComments,
       fetchGitLabDetails,
       fetchHostedReviewForBranch,
+      hasReviewLookupIdentity,
       isGitLabReviewContext,
       linkedAzureDevOpsPR,
       linkedBitbucketPR,
