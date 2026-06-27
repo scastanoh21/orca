@@ -405,7 +405,7 @@ export async function getHostedReviewCreationEligibility(
       branch !== 'HEAD' &&
       supportsHostedReviewCreation(provider) &&
       (!baseBranch || branch.toLowerCase() !== baseBranch.toLowerCase()) &&
-      (args.hasUncommittedChanges || args.hasUpstream !== true || (args.behind ?? 0) > 0)
+      (args.hasUncommittedChanges || args.hasUpstream === false || (args.behind ?? 0) > 0)
     if (!canReturnLocalBlocker) {
       throw error
     }

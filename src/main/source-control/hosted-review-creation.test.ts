@@ -616,6 +616,21 @@ describe('getHostedReviewCreationEligibility', () => {
     })
   })
 
+  it('rethrows review lookup failures when upstream status is unknown', async () => {
+    getHostedReviewForBranchMock.mockRejectedValueOnce(new Error('gh lookup failed'))
+
+    await expect(
+      getHostedReviewCreationEligibility({
+        repoPath: '/repo',
+        branch: 'feature/create-pr',
+        base: 'main',
+        hasUncommittedChanges: false,
+        ahead: 0,
+        behind: 0
+      })
+    ).rejects.toThrow('gh lookup failed')
+  })
+
   it('enables creation for clean, in-sync, authenticated GitHub feature branches', async () => {
     await expect(
       getHostedReviewCreationEligibility({
