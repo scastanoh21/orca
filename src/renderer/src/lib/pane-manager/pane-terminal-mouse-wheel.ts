@@ -110,14 +110,17 @@ export function attachTerminalMouseWheelMultiplier(
 
     // Why: mouse-reporting TUIs receive wheel input as reports, not viewport
     // scrollback, so normal xterm scrollSensitivity cannot tune their speed.
-    queueMicrotask(() => {
-      const multiplier = normalizeTerminalTuiMouseWheelMultiplier(
-        options.getTuiMouseWheelMultiplier?.()
-      )
-      for (let i = 1; i < multiplier; i++) {
-        target.dispatchEvent(cloneWheelEvent(event))
-      }
-    })
+    // Dispatch the extra reports synchronously inside this handler (not via a
+    // deferred microtask) so every report for one notch stays tied to the same
+    // input event and animation frame; deferring them caused per-report jitter
+    // because the TUI redrew on each frame-misaligned report instead of as one
+    // coalesced burst.
+    const multiplier = normalizeTerminalTuiMouseWheelMultiplier(
+      options.getTuiMouseWheelMultiplier?.()
+    )
+    for (let i = 1; i < multiplier; i++) {
+      target.dispatchEvent(cloneWheelEvent(event))
+    }
 
     return true
   })
