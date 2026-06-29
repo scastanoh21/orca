@@ -8,7 +8,11 @@ import {
   ORCA_EDITOR_PREPARE_HOT_EXIT_EVENT,
   ORCA_EDITOR_SAVE_DIRTY_FILES_EVENT
 } from '../../../../shared/editor-save-events'
-import { requestEditorFileSave, requestEditorSaveQuiesce } from './editor-autosave'
+import {
+  ORCA_EDITOR_EXTERNAL_FILE_CHANGE_EVENT,
+  requestEditorFileSave,
+  requestEditorSaveQuiesce
+} from './editor-autosave'
 import { attachEditorAutosaveController } from './editor-autosave-controller'
 import { registerPendingEditorFlush } from './editor-pending-flush'
 import { __clearSelfWriteRegistryForTests, hasRecentSelfWrite } from './editor-self-write-registry'
@@ -616,6 +620,57 @@ describe('attachEditorAutosaveController', () => {
     try {
       await expect(requestEditorFileSave({ fileId: '/repo/file.md' })).rejects.toThrow('disk full')
       expect(hasRecentSelfWrite('/repo/file.md')).toBe(false)
+    } finally {
+      cleanup()
+    }
+  })
+
+  it('does not wipe a dirty tab draft on an external file change for its own path', () => {
+    // Why: a working-tree combined-diff tab makes useEditorExternalWatch
+    // dispatch ORCA_EDITOR_EXTERNAL_FILE_CHANGE_EVENT for a dirty single-file
+    // tab's own path. Clearing its draft here would silently destroy unsaved
+    // edits (PR #6769 regression), so the dirty tab must be skipped.
+    const writeFile = vi.fn().mockResolvedValue(undefined)
+    const eventTarget = new EventTarget()
+    vi.stubGlobal('window', {
+      addEventListener: eventTarget.addEventListener.bind(eventTarget),
+      removeEventListener: eventTarget.removeEventListener.bind(eventTarget),
+      dispatchEvent: eventTarget.dispatchEvent.bind(eventTarget),
+      setTimeout: globalThis.setTimeout.bind(globalThis),
+      clearTimeout: globalThis.clearTimeout.bind(globalThis),
+      api: {
+        fs: {
+          writeFile
+        }
+      }
+    } satisfies WindowStub)
+
+    const store = createEditorStore()
+    store.getState().openFile({
+      filePath: '/repo/file.md',
+      relativePath: 'file.md',
+      worktreeId: 'wt-1',
+      language: 'markdown',
+      mode: 'edit'
+    })
+    store.getState().setEditorDraft('/repo/file.md', 'unsaved edits')
+    store.getState().markFileDirty('/repo/file.md', true)
+
+    const cleanup = attachEditorAutosaveController(store)
+    try {
+      window.dispatchEvent(
+        new CustomEvent(ORCA_EDITOR_EXTERNAL_FILE_CHANGE_EVENT, {
+          detail: {
+            worktreeId: 'wt-1',
+            worktreePath: '/repo',
+            relativePath: 'file.md',
+            runtimeEnvironmentId: null
+          }
+        })
+      )
+
+      expect(store.getState().openFiles[0]?.isDirty).toBe(true)
+      expect(store.getState().editorDrafts['/repo/file.md']).toBe('unsaved edits')
     } finally {
       cleanup()
     }

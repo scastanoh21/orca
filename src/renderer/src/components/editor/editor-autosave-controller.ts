@@ -372,7 +372,15 @@ export function attachEditorAutosaveController(store: AppStoreApi): () => void {
     }
 
     const state = store.getState()
-    const matchingFiles = getOpenFilesForExternalFileChange(state.openFiles, detail)
+    // Why: a working-tree combined-diff tab open in the same worktree makes
+    // useEditorExternalWatch dispatch this global event for a dirty single-file
+    // tab's own path too (so the combined diff section reloads). Clearing that
+    // tab's draft here would silently destroy the user's unsaved edits, so skip
+    // any matching tab that is currently dirty — its draft must only be replaced
+    // through an explicit save/discard, never an external write.
+    const matchingFiles = getOpenFilesForExternalFileChange(state.openFiles, detail).filter(
+      (file) => !file.isDirty
+    )
     if (matchingFiles.length === 0) {
       return
     }
