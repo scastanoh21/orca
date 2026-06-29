@@ -44,7 +44,8 @@ export default function EditorFileTab({
   onTogglePin,
   dragData,
   dropIndicator,
-  includeTopTabBorder = true
+  includeTopTabBorder = true,
+  isVirtual = false
 }: {
   file: OpenFile & { tabId?: string }
   isActive: boolean
@@ -60,6 +61,10 @@ export default function EditorFileTab({
   dragData: TabDragItemData
   dropIndicator?: DropIndicator
   includeTopTabBorder?: boolean
+  // Why: callers reuse this tab chrome for synthetic, non-file tabs (Git Graph,
+  // mobile emulator) whose filePath is a display label, not an on-disk path.
+  // Such tabs must never expose rename/reveal/copy-path file operations.
+  isVirtual?: boolean
 }): React.JSX.Element {
   const worktree = useWorktreeById(file.worktreeId)
   const repo = useRepoById(worktree?.repoId ?? null)
@@ -103,7 +108,7 @@ export default function EditorFileTab({
   const renameCancelledRef = useRef(false)
   // Only on-disk edit tabs are renameable. Diff, conflict-review, and
   // combined/virtual views don't point at a single concrete file we can safely rename.
-  const canRename = file.mode === 'edit' && !file.diffSource && !file.conflict
+  const canRename = !isVirtual && file.mode === 'edit' && !file.diffSource && !file.conflict
 
   const openRenameInput = (): void => {
     if (!canRename) {
@@ -386,6 +391,7 @@ export default function EditorFileTab({
         isRenaming={isRenaming}
         hasTabsToRight={hasTabsToRight}
         canRename={canRename}
+        isVirtual={isVirtual}
         canShowMarkdownPreview={canShowMarkdownPreview}
         resolvedLanguage={resolvedLanguage}
         repoConnectionId={repo?.connectionId ?? null}

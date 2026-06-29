@@ -12097,7 +12097,7 @@
           "GitGraphPane": {
             "6f0a2d1b84": "Git Graph",
             "b71e9c4d22": "Refresh graph",
-            "9a3f5c2e70": "Showing {{value0}} of many commits across all branches",
+            "9a3f5c2e70": "Showing first {{value0}} commits across all branches",
             "2c8b1f0a93": "Loading graph...",
             "4e7d6a1c08": "No commits yet",
             "5d2e9b7a14": "Retry"

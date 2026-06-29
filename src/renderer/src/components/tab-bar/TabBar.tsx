@@ -1239,6 +1239,7 @@ function TabBarInner({
                     dragData={dragData}
                     dropIndicator={dropIndicatorByVisibleId.get(item.id) ?? null}
                     includeTopTabBorder={includeTopTabBorder}
+                    isVirtual
                   />
                 )
               }
@@ -1276,6 +1277,7 @@ function TabBarInner({
                     dragData={dragData}
                     dropIndicator={dropIndicatorByVisibleId.get(item.id) ?? null}
                     includeTopTabBorder={includeTopTabBorder}
+                    isVirtual
                   />
                 )
               }

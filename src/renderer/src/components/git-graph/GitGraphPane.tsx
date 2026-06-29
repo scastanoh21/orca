@@ -94,7 +94,7 @@ function GitGraphPane({ worktreeId }: { worktreeId: string }): React.JSX.Element
         <div className="shrink-0 border-b border-border px-3 py-1 text-[11px] text-muted-foreground">
           {translate(
             'auto.components.git.graph.GitGraphPane.9a3f5c2e70',
-            'Showing {{value0}} of many commits across all branches',
+            'Showing first {{value0}} commits across all branches',
             { value0: result.limit }
           )}
         </div>

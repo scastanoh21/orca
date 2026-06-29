@@ -337,4 +337,21 @@ describe('getActiveTabNavOrder', () => {
       { type: 'terminal', id: 'term-2' }
     ])
   })
+
+  it('keeps git-graph tabs in the legacy reconciled order (no active group)', () => {
+    // Guards the legacy fallback path: without forwarding gitGraphIds the tab is
+    // dropped from keyboard nav, so it must surface as an editor-typed ref here.
+    const state = makeState({
+      tabBarOrderByWorktree: { wt: ['term-1', 'tab-gg1'] },
+      unifiedTabsByWorktree: { wt: [gitGraphTab('tab-gg1', 'g1', 1)] },
+      tabsByWorktree: {
+        // @ts-expect-error — minimal shape
+        wt: [{ id: 'term-1' }]
+      }
+    })
+    expect(getActiveTabNavOrder(state, 'wt')).toEqual([
+      { type: 'terminal', id: 'term-1' },
+      { type: 'editor', id: 'tab-gg1' }
+    ])
+  })
 })
