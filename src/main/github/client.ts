@@ -3057,15 +3057,28 @@ export async function getPRChecks(
             details_url: string | null
           }[]
         }
-        if (data.check_runs.length > 0) {
-          return data.check_runs.map((d) => ({
-            name: d.name,
-            status: mapCheckRunRESTStatus(d.status),
-            conclusion: mapCheckRunRESTConclusion(d.status, d.conclusion),
-            url: d.details_url || d.html_url || null,
-            ...(typeof d.id === 'number' ? { checkRunId: d.id } : {}),
-            workflowRunId: parseActionsRunId(d.details_url || d.html_url || null)
-          }))
+        const checkRuns: PRCheckDetail[] = data.check_runs.map((d) => ({
+          name: d.name,
+          status: mapCheckRunRESTStatus(d.status),
+          conclusion: mapCheckRunRESTConclusion(d.status, d.conclusion),
+          url: d.details_url || d.html_url || null,
+          ...(typeof d.id === 'number' ? { checkRunId: d.id } : {}),
+          workflowRunId: parseActionsRunId(d.details_url || d.html_url || null)
+        }))
+        // Why: a workflow awaiting "Approve and run" produces a check SUITE with
+        // no check run, and is absent from statusCheckRollup — so without this
+        // the panel shows "no checks"/"all passing" while auto-merge fails with
+        // "unstable status". Surface them as their own check rows. Fetch even
+        // when there are zero check runs, since that is the exact case GitHub
+        // leaves the PR unstable with nothing to show.
+        const pendingApprovalChecks = await getPendingApprovalCheckSuites(
+          ownerRepo,
+          headSha,
+          ghOptions,
+          options?.noCache
+        )
+        if (checkRuns.length > 0 || pendingApprovalChecks.length > 0) {
+          return [...checkRuns, ...pendingApprovalChecks]
         }
       } catch (err) {
         // Why: a PR can outlive the cached head SHA after force-pushes or remote
@@ -3083,6 +3096,56 @@ export async function getPRChecks(
   } catch (err) {
     console.warn('getPRChecks failed:', err)
     throw err
+  }
+}
+
+/**
+ * Fetch check SUITES that need manual action (e.g. a workflow awaiting approval).
+ * These have no check run and are absent from statusCheckRollup, yet they keep a
+ * PR in "unstable status" and block auto-merge. We surface one synthetic check
+ * row per such suite so both check panels show it.
+ */
+async function getPendingApprovalCheckSuites(
+  ownerRepo: OwnerRepo,
+  headSha: string,
+  ghOptions: GhExecOptions,
+  noCache?: boolean
+): Promise<PRCheckDetail[]> {
+  const cacheArgs = noCache ? [] : ['--cache', '60s']
+  try {
+    const { stdout } = await ghExecFileAsync(
+      [
+        'api',
+        ...cacheArgs,
+        `repos/${ownerRepo.owner}/${ownerRepo.repo}/commits/${encodeURIComponent(headSha)}/check-suites?per_page=100`
+      ],
+      ghOptions
+    )
+    noteRateLimitSpend('core')
+    const data = JSON.parse(stdout) as {
+      check_suites?: {
+        status: string | null
+        conclusion: string | null
+        app?: { name?: string | null; slug?: string | null } | null
+      }[]
+    }
+    return (data.check_suites ?? [])
+      .filter((suite) => suite.conclusion?.toLowerCase() === 'action_required')
+      .map((suite) => ({
+        name: suite.app?.name
+          ? `${suite.app.name} (approval required)`
+          : 'Workflow approval required',
+        status: 'completed' as const,
+        conclusion: 'action_required' as const,
+        // Why: check suites expose no per-PR details URL; the checks tab is the
+        // closest actionable destination for approving the run.
+        url: `https://github.com/${ownerRepo.owner}/${ownerRepo.repo}/commits/${headSha}/checks`
+      }))
+  } catch (err) {
+    // Why: this is a best-effort enrichment; a failed suites lookup must not
+    // blank out the check runs we already fetched successfully.
+    console.warn('getPendingApprovalCheckSuites failed:', err)
+    return []
   }
 }
 

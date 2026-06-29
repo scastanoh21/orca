@@ -92,19 +92,21 @@ describe('getPRChecks', () => {
 
   it('queries check-runs by PR head SHA when GitHub remote metadata is available', async () => {
     getOwnerRepoMock.mockResolvedValueOnce({ owner: 'acme', repo: 'widgets' })
-    ghExecFileAsyncMock.mockResolvedValueOnce({
-      stdout: JSON.stringify({
-        check_runs: [
-          {
-            name: 'build',
-            status: 'completed',
-            conclusion: 'success',
-            html_url: 'https://github.com/acme/widgets/actions/runs/1',
-            details_url: null
-          }
-        ]
+    ghExecFileAsyncMock
+      .mockResolvedValueOnce({
+        stdout: JSON.stringify({
+          check_runs: [
+            {
+              name: 'build',
+              status: 'completed',
+              conclusion: 'success',
+              html_url: 'https://github.com/acme/widgets/actions/runs/1',
+              details_url: null
+            }
+          ]
+        })
       })
-    })
+      .mockResolvedValueOnce({ stdout: JSON.stringify({ check_suites: [] }) })
 
     const checks = await getPRChecks('/repo-root', 42, 'head-oid')
 
@@ -123,10 +125,60 @@ describe('getPRChecks', () => {
     ])
   })
 
-  it('falls back to gh pr checks when the head SHA has no check runs', async () => {
+  it('surfaces an action_required check suite that has no check run', async () => {
+    getOwnerRepoMock.mockResolvedValueOnce({ owner: 'acme', repo: 'widgets' })
+    ghExecFileAsyncMock
+      .mockResolvedValueOnce({
+        stdout: JSON.stringify({
+          check_runs: [
+            {
+              name: 'track-community-pr',
+              status: 'completed',
+              conclusion: 'success',
+              html_url: 'https://github.com/acme/widgets/actions/runs/1',
+              details_url: null
+            }
+          ]
+        })
+      })
+      .mockResolvedValueOnce({
+        stdout: JSON.stringify({
+          check_suites: [
+            { status: 'completed', conclusion: 'success', app: { name: 'GitHub Actions' } },
+            { status: 'completed', conclusion: 'action_required', app: { name: 'GitHub Actions' } }
+          ]
+        })
+      })
+
+    const checks = await getPRChecks('/repo-root', 42, 'head-oid')
+
+    expect(ghExecFileAsyncMock).toHaveBeenNthCalledWith(
+      2,
+      ['api', '--cache', '60s', 'repos/acme/widgets/commits/head-oid/check-suites?per_page=100'],
+      { cwd: '/repo-root' }
+    )
+    expect(checks).toEqual([
+      {
+        name: 'track-community-pr',
+        status: 'completed',
+        conclusion: 'success',
+        url: 'https://github.com/acme/widgets/actions/runs/1',
+        workflowRunId: 1
+      },
+      {
+        name: 'GitHub Actions (approval required)',
+        status: 'completed',
+        conclusion: 'action_required',
+        url: 'https://github.com/acme/widgets/commits/head-oid/checks'
+      }
+    ])
+  })
+
+  it('falls back to gh pr checks when the head SHA has no check runs or suites', async () => {
     getOwnerRepoMock.mockResolvedValueOnce({ owner: 'acme', repo: 'widgets' })
     ghExecFileAsyncMock
       .mockResolvedValueOnce({ stdout: JSON.stringify({ check_runs: [] }) })
+      .mockResolvedValueOnce({ stdout: JSON.stringify({ check_suites: [] }) })
       .mockResolvedValueOnce({
         stdout: JSON.stringify([
           { name: 'verify', state: 'PENDING', link: 'https://example.com/verify' }
@@ -136,7 +188,7 @@ describe('getPRChecks', () => {
     const checks = await getPRChecks('/repo-root', 42, 'head-oid')
 
     expect(ghExecFileAsyncMock).toHaveBeenNthCalledWith(
-      2,
+      3,
       ['pr', 'checks', '42', '--json', 'name,state,link', '--repo', 'acme/widgets'],
       { cwd: '/repo-root' }
     )
@@ -151,39 +203,71 @@ describe('getPRChecks', () => {
     ])
   })
 
-  it('maps remaining completed GitHub conclusions to failure', async () => {
+  it('maps stale and startup_failure conclusions to failure and action_required to its own state', async () => {
     getOwnerRepoMock.mockResolvedValueOnce({ owner: 'acme', repo: 'widgets' })
-    ghExecFileAsyncMock.mockResolvedValueOnce({
-      stdout: JSON.stringify({
-        check_runs: [
-          {
-            name: 'needs-approval',
-            status: 'completed',
-            conclusion: 'action_required',
-            html_url: 'https://github.com/acme/widgets/actions/runs/1',
-            details_url: null
-          },
-          {
-            name: 'old-run',
-            status: 'completed',
-            conclusion: 'stale',
-            html_url: 'https://github.com/acme/widgets/actions/runs/2',
-            details_url: null
-          },
-          {
-            name: 'boot',
-            status: 'completed',
-            conclusion: 'startup_failure',
-            html_url: 'https://github.com/acme/widgets/actions/runs/3',
-            details_url: null
-          }
-        ]
+    ghExecFileAsyncMock
+      .mockResolvedValueOnce({
+        stdout: JSON.stringify({
+          check_runs: [
+            {
+              name: 'needs-approval',
+              status: 'completed',
+              conclusion: 'action_required',
+              html_url: 'https://github.com/acme/widgets/actions/runs/1',
+              details_url: null
+            },
+            {
+              name: 'old-run',
+              status: 'completed',
+              conclusion: 'stale',
+              html_url: 'https://github.com/acme/widgets/actions/runs/2',
+              details_url: null
+            },
+            {
+              name: 'boot',
+              status: 'completed',
+              conclusion: 'startup_failure',
+              html_url: 'https://github.com/acme/widgets/actions/runs/3',
+              details_url: null
+            }
+          ]
+        })
       })
-    })
+      .mockResolvedValueOnce({ stdout: JSON.stringify({ check_suites: [] }) })
 
     const checks = await getPRChecks('/repo-root', 42, 'head-oid')
 
-    expect(checks.map((check) => check.conclusion)).toEqual(['failure', 'failure', 'failure'])
+    expect(checks.map((check) => check.conclusion)).toEqual([
+      'action_required',
+      'failure',
+      'failure'
+    ])
+  })
+
+  it('surfaces an action_required suite even when there are zero check runs', async () => {
+    getOwnerRepoMock.mockResolvedValueOnce({ owner: 'acme', repo: 'widgets' })
+    ghExecFileAsyncMock
+      .mockResolvedValueOnce({ stdout: JSON.stringify({ check_runs: [] }) })
+      .mockResolvedValueOnce({
+        stdout: JSON.stringify({
+          check_suites: [
+            { status: 'completed', conclusion: 'action_required', app: { name: 'GitHub Actions' } }
+          ]
+        })
+      })
+
+    const checks = await getPRChecks('/repo-root', 42, 'head-oid')
+
+    // Why: must not fall through to `gh pr checks` — the suite is the only signal.
+    expect(ghExecFileAsyncMock).toHaveBeenCalledTimes(2)
+    expect(checks).toEqual([
+      {
+        name: 'GitHub Actions (approval required)',
+        status: 'completed',
+        conclusion: 'action_required',
+        url: 'https://github.com/acme/widgets/commits/head-oid/checks'
+      }
+    ])
   })
 
   it('treats gh pr checks "no checks reported" as an empty check list', async () => {
@@ -191,6 +275,7 @@ describe('getPRChecks', () => {
     getOwnerRepoMock.mockResolvedValueOnce({ owner: 'acme', repo: 'widgets' })
     ghExecFileAsyncMock
       .mockResolvedValueOnce({ stdout: JSON.stringify({ check_runs: [] }) })
+      .mockResolvedValueOnce({ stdout: JSON.stringify({ check_suites: [] }) })
       .mockRejectedValueOnce(
         Object.assign(new Error('Command failed: gh pr checks 42'), {
           stderr: "no checks reported on the 'codex/keybindings-toml' branch\n",
@@ -210,6 +295,7 @@ describe('getPRChecks', () => {
     getOwnerRepoMock.mockResolvedValueOnce({ owner: 'acme', repo: 'widgets' })
     ghExecFileAsyncMock
       .mockResolvedValueOnce({ stdout: JSON.stringify({ check_runs: [] }) })
+      .mockResolvedValueOnce({ stdout: JSON.stringify({ check_suites: [] }) })
       .mockRejectedValueOnce(
         Object.assign(new Error('Command failed: gh pr checks 42'), {
           stderr: 'GraphQL: Could not resolve to a PullRequest',
@@ -291,6 +377,7 @@ describe('getPRChecks', () => {
           ]
         })
       })
+      .mockResolvedValueOnce({ stdout: JSON.stringify({ check_suites: [] }) })
       .mockResolvedValueOnce({
         stdout: JSON.stringify([
           {

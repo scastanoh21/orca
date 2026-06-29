@@ -204,6 +204,7 @@ function getCheckDetailNames(checks: readonly PRCheckDetail[]): string[] {
       check.conclusion === 'failure' ||
       check.conclusion === 'timed_out' ||
       check.conclusion === 'cancelled' ||
+      check.conclusion === 'action_required' ||
       check.conclusion === 'pending' ||
       check.conclusion === null ||
       check.status === 'queued' ||

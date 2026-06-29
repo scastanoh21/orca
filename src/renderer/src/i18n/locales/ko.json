@@ -858,7 +858,8 @@
           "to": "to",
           "activity": "Activity",
           "noActivity": "No activity yet."
-        }
+        },
+        "checkActionRequiredHint": "This check needs a manual action on GitHub (for example, approving the workflow run) before merging is unblocked."
       },
       "GitLabItemDialog": {
         "65e784c1f1": "다시 열기",
@@ -1317,7 +1318,8 @@
         "commentTooLarge": "댓글이 너무 커서 안전하게 제출할 수 없습니다.",
         "8ff5ae8866": "담당자",
         "82c87eceb9": "담당자 편집",
-        "1ff5d979df": "할당된 사람이 없음"
+        "1ff5d979df": "할당된 사람이 없음",
+        "checkActionRequiredHint": "This check needs a manual action on GitHub (for example, approving the workflow run) before merging is unblocked."
       },
       "QuickOpen": {
         "1dbd3f59ff": "이동",
@@ -9105,7 +9107,8 @@
                 "8a621a2c4f": "Grouped",
                 "b13f85d75c": "Timeline",
                 "f5cf324efa": "Comment display options",
-                "5e6e5a13fa": "View"
+                "5e6e5a13fa": "View",
+                "actionRequiredHint": "This check needs a manual action on GitHub (for example, approving the workflow run) before merging is unblocked."
               },
               "empty": {
                 "state": {
@@ -11185,7 +11188,8 @@
           "d5a8c2f1b9": "이 체크를 수정할 기본 AI agent 시작",
           "e2b4d7c8a1": "이 체크를 처리할 agent 선택",
           "f1c9e3a6d4": "체크를 수정할 agent 선택",
-          "5e2a9c3f88": "Open file at this line"
+          "5e2a9c3f88": "Open file at this line",
+          "actionRequired": "Action required"
         },
         "check": {
           "run": {

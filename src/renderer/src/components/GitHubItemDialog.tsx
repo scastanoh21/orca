@@ -4022,6 +4022,7 @@ function CommentReplyForm({
 const CHECK_SORT_ORDER: Record<string, number> = {
   failure: 0,
   timed_out: 0,
+  action_required: 0,
   cancelled: 1,
   pending: 2,
   neutral: 3,
@@ -4047,6 +4048,9 @@ function getCheckStatusLabel(check: PRCheckDetail): string {
   if (conclusion === 'timed_out') {
     return 'Timed out'
   }
+  if (conclusion === 'action_required') {
+    return 'Action required'
+  }
   if (conclusion === 'neutral') {
     return 'Neutral'
   }
@@ -4065,6 +4069,7 @@ function getCheckStatusLabel(check: PRCheckDetail): string {
 function getCheckCounts(checks: PRCheckDetail[]): {
   passing: number
   failing: number
+  needsAction: number
   pending: number
   skipped: number
   neutral: number
@@ -4074,6 +4079,8 @@ function getCheckCounts(checks: PRCheckDetail[]): {
       const conclusion = getCheckConclusion(check)
       if (conclusion === 'success') {
         counts.passing += 1
+      } else if (conclusion === 'action_required') {
+        counts.needsAction += 1
       } else if (['failure', 'cancelled', 'timed_out'].includes(conclusion)) {
         counts.failing += 1
       } else if (conclusion === 'skipped') {
@@ -4085,7 +4092,7 @@ function getCheckCounts(checks: PRCheckDetail[]): {
       }
       return counts
     },
-    { passing: 0, failing: 0, pending: 0, skipped: 0, neutral: 0 }
+    { passing: 0, failing: 0, needsAction: 0, pending: 0, skipped: 0, neutral: 0 }
   )
 }
 
@@ -4096,6 +4103,11 @@ function getChecksSummaryLabel(checks: PRCheckDetail[]): string {
   }
   if (counts.failing > 0) {
     return `${counts.failing} ${counts.failing === 1 ? 'check' : 'checks'} failing`
+  }
+  // Why: action_required (e.g. a workflow awaiting approval) blocks merge but is
+  // not a failure; call it out distinctly so users know a manual step is needed.
+  if (counts.needsAction > 0) {
+    return `${counts.needsAction} ${counts.needsAction === 1 ? 'check needs' : 'checks need'} action`
   }
   if (counts.pending > 0) {
     return `${counts.pending} ${counts.pending === 1 ? 'check' : 'checks'} pending`
@@ -4172,19 +4184,23 @@ function ChecksTab({
   const SummaryIcon =
     counts.failing > 0
       ? CHECK_ICON.failure
-      : counts.pending > 0
-        ? CHECK_ICON.pending
-        : list.length > 0
-          ? CHECK_ICON.success
-          : CircleDashed
+      : counts.needsAction > 0
+        ? CHECK_ICON.action_required
+        : counts.pending > 0
+          ? CHECK_ICON.pending
+          : list.length > 0
+            ? CHECK_ICON.success
+            : CircleDashed
   const summaryColor =
     counts.failing > 0
       ? CHECK_COLOR.failure
-      : counts.pending > 0
-        ? CHECK_COLOR.pending
-        : list.length > 0
-          ? CHECK_COLOR.success
-          : 'text-muted-foreground'
+      : counts.needsAction > 0
+        ? CHECK_COLOR.action_required
+        : counts.pending > 0
+          ? CHECK_COLOR.pending
+          : list.length > 0
+            ? CHECK_COLOR.success
+            : 'text-muted-foreground'
   const canFixBrokenChecks = Boolean((repoId ?? item.repoId) && failedChecks.length > 0)
 
   const handleRefresh = useCallback(async (): Promise<PRCheckDetail[] | null> => {
@@ -4716,10 +4732,15 @@ function ChecksTab({
 
             {!state?.error && !hasOutput && !hasAnnotations && !hasJobs && (
               <div className="text-[12px] text-muted-foreground">
-                {translate(
-                  'auto.components.GitHubItemDialog.744197c84d',
-                  'No inline output is available for this check.'
-                )}
+                {getCheckConclusion(check) === 'action_required'
+                  ? translate(
+                      'auto.components.GitHubItemDialog.checkActionRequiredHint',
+                      'Needs a manual action on GitHub (e.g. approving the run) to unblock merging.'
+                    )
+                  : translate(
+                      'auto.components.GitHubItemDialog.744197c84d',
+                      'No inline output is available for this check.'
+                    )}
               </div>
             )}
 
