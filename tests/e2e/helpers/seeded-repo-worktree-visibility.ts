@@ -4,41 +4,48 @@ export async function optIntoVisibleSeededRepoWorktrees(
   page: Page,
   repoPath: string
 ): Promise<string> {
+  let latestResult = 'not-started'
   // Why: macOS CI can paint the added repo before the first renderer fetch has
   // updated the test-side store read. Poll the public fetch path.
-  const repoIdHandle = await page.waitForFunction(
-    async (repoPath) => {
-      const store = window.__store
-      if (!store) {
-        return null
-      }
+  await playwrightExpect
+    .poll(
+      async () => {
+        latestResult = await page.evaluate(async (repoPath) => {
+          const store = window.__store
+          if (!store) {
+            return 'store-missing'
+          }
 
-      await store.getState().fetchRepos()
-      const repo = store.getState().repos.find((candidate) => candidate.path === repoPath)
-      if (!repo) {
-        return null
-      }
+          await store.getState().fetchRepos()
+          const repo = store.getState().repos.find((candidate) => candidate.path === repoPath)
+          if (!repo) {
+            return 'repo-missing'
+          }
 
-      // Why: the fixture deliberately creates external Git worktrees. New
-      // repos hide those by default after the visibility rollout, so opt this
-      // disposable repo into showing them before specs assert on worktree state.
-      const updated = await store
-        .getState()
-        .updateRepo(repo.id, { externalWorktreeVisibility: 'show' })
-      if (!updated) {
-        return null
+          // Why: the fixture deliberately creates external Git worktrees. New
+          // repos hide those by default after the visibility rollout, so opt this
+          // disposable repo into showing them before specs assert on worktree state.
+          const updated = await store
+            .getState()
+            .updateRepo(repo.id, { externalWorktreeVisibility: 'show' })
+          const currentRepo = store.getState().repos.find((candidate) => candidate.id === repo.id)
+          if (!updated || currentRepo?.externalWorktreeVisibility !== 'show') {
+            return JSON.stringify({
+              updated,
+              repoVisibility: currentRepo?.externalWorktreeVisibility ?? null
+            })
+          }
+          return `repo:${repo.id}`
+        }, repoPath)
+        return latestResult
+      },
+      {
+        timeout: 30_000,
+        message: 'seeded e2e repo did not load'
       }
-      const currentRepo = store.getState().repos.find((candidate) => candidate.id === repo.id)
-      return currentRepo?.externalWorktreeVisibility === 'show' ? repo.id : null
-    },
-    repoPath,
-    { timeout: 30_000 }
-  )
-  const repoId = await repoIdHandle.jsonValue()
-  if (typeof repoId !== 'string') {
-    throw new Error('seeded e2e repo did not load')
-  }
-  return repoId
+    )
+    .toMatch(/^repo:/)
+  return latestResult.slice('repo:'.length)
 }
 
 export async function waitForVisibleSeededRepoWorktrees(page: Page, repoId: string): Promise<void> {
@@ -65,7 +72,12 @@ export async function waitForVisibleSeededRepoWorktrees(page: Page, repoId: stri
           const currentRepo = store.getState().repos.find((candidate) => candidate.id === repo.id)
           const detected = await window.api.worktrees.listDetected({ repoId: repo.id })
           const visibleCount = detected.worktrees.filter((worktree) => worktree.visible).length
-          if (!updated || currentRepo?.externalWorktreeVisibility !== 'show' || visibleCount < 2) {
+          if (
+            !updated ||
+            currentRepo?.externalWorktreeVisibility !== 'show' ||
+            !detected.authoritative ||
+            visibleCount < 2
+          ) {
             return JSON.stringify({
               updated,
               repoVisibility: currentRepo?.externalWorktreeVisibility ?? null,
