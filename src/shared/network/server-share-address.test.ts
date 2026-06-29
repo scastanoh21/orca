@@ -34,4 +34,21 @@ describe('parseServerShareAddress', () => {
   it('rejects an out-of-range port', () => {
     expect(parseServerShareAddress('my-host:70000').ok).toBe(false)
   })
+
+  it('accepts hosts containing underscores', () => {
+    expect(parseServerShareAddress('my_host')).toEqual({ ok: true, value: 'my_host' })
+    expect(parseServerShareAddress('db_1.internal:6768')).toEqual({
+      ok: true,
+      value: 'db_1.internal:6768'
+    })
+  })
+
+  it('accepts bare and bracketed IPv6 literals', () => {
+    expect(parseServerShareAddress('fd7a:abcd::1')).toEqual({ ok: true, value: 'fd7a:abcd::1' })
+    expect(parseServerShareAddress('[fd7a::1]:6768')).toEqual({
+      ok: true,
+      value: '[fd7a::1]:6768'
+    })
+    expect(parseServerShareAddress('[fd7a::1]:70000').ok).toBe(false)
+  })
 })

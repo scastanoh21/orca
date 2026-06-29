@@ -5,7 +5,10 @@
 
 export type ParseServerShareAddressResult = { ok: true; value: string } | { ok: false }
 
-const HOST_LABEL = '[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?'
+// Why: underscores are allowed — the main-process resolver passes arbitrary
+// host strings straight through (runtime-rpc.ts parsePairingAddressOverride),
+// so internal names like `db_1` must stay advertisable here too.
+const HOST_LABEL = '[a-zA-Z0-9_](?:[a-zA-Z0-9_-]{0,61}[a-zA-Z0-9_])?'
 const HOSTNAME = `${HOST_LABEL}(?:\\.${HOST_LABEL})*`
 const IPV4 = '(?:\\d{1,3}\\.){3}\\d{1,3}'
 const HOST = `(?:${HOSTNAME}|${IPV4})`
@@ -23,6 +26,20 @@ export function parseServerShareAddress(input: string): ParseServerShareAddressR
   if (/^wss?:\/\//i.test(trimmed)) {
     try {
       const url = new URL(trimmed)
+      return url.hostname !== '' ? { ok: true, value: trimmed } : { ok: false }
+    } catch {
+      return { ok: false }
+    }
+  }
+
+  // IPv6 literal, bare (`fd7a::1`) or bracketed with optional port
+  // (`[fd7a::1]:6768`). The main-process resolver brackets these before use
+  // (runtime-rpc.ts resolvePairingEndpoint), so accept them here. Defer to the
+  // URL parser by bracketing, which validates the address and any port.
+  if (trimmed.includes(':') && !HOST_OR_HOST_PORT.test(trimmed)) {
+    const bracketed = trimmed.startsWith('[') ? trimmed : `[${trimmed}]`
+    try {
+      const url = new URL(`ws://${bracketed}`)
       return url.hostname !== '' ? { ok: true, value: trimmed } : { ok: false }
     } catch {
       return { ok: false }
