@@ -162,7 +162,10 @@ export function isImeNativeTextKeydownCandidate(
   if (isSyntheticUnicodeTextKey(event)) {
     return true
   }
-  if (isAsciiPunctuationKey(event.key) || isCjkDirectPunctuationKey(event.key)) {
+  if (
+    inputSourceFeatures.forwardAsciiPunctuation &&
+    (isAsciiPunctuationKey(event.key) || isCjkDirectPunctuationKey(event.key))
+  ) {
     return true
   }
   return (
