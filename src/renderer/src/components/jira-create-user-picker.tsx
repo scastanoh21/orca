@@ -14,6 +14,7 @@ import {
 // The Jira create dialog stores selected accountIds (comma-separated for the
 // multi-user variant) so the existing Record<string,string> draft shape is kept.
 const MULTI_USER_SEPARATOR = ','
+const USER_SEARCH_CACHE_LIMIT = 20
 
 type JiraCreateUserPickerProps = {
   fieldName: string
@@ -48,6 +49,32 @@ function mergeUsers(...sources: readonly (readonly JiraUser[])[]): JiraUser[] {
   return [...byAccountId.values()]
 }
 
+export function shouldSearchJiraCreateUsers(query: string, projectKeyOrId: string): boolean {
+  return Boolean(query.trim() && projectKeyOrId.trim())
+}
+
+export function getJiraCreateUserSearchCacheKey(
+  projectKeyOrId: string,
+  query: string,
+  siteId?: string | null
+): string {
+  return [siteId ?? '', projectKeyOrId.trim(), query.trim().toLowerCase()].join('\u0000')
+}
+
+function cacheJiraCreateUsers(
+  cache: Map<string, JiraUser[]>,
+  key: string,
+  users: JiraUser[]
+): void {
+  if (!cache.has(key) && cache.size >= USER_SEARCH_CACHE_LIMIT) {
+    const oldestKey = cache.keys().next().value
+    if (oldestKey !== undefined) {
+      cache.delete(oldestKey)
+    }
+  }
+  cache.set(key, users)
+}
+
 export default function JiraCreateUserPicker({
   fieldName,
   value,
@@ -64,8 +91,10 @@ export default function JiraCreateUserPicker({
   const [results, setResults] = useState<JiraUser[]>([])
   const [loading, setLoading] = useState(false)
   const requestIdRef = useRef(0)
+  const resultCacheRef = useRef(new Map<string, JiraUser[]>())
 
   const selectedAccountIds = useMemo(() => parseSelectedAccountIds(value), [value])
+  const hasSearchQuery = query.trim().length > 0
 
   // Why: the picker only ever holds accountIds in its draft, so resolved labels
   // come from search results plus any users the parent already knows about.
@@ -84,22 +113,33 @@ export default function JiraCreateUserPicker({
   )
 
   useEffect(() => {
+    requestIdRef.current += 1
     if (!open) {
+      setLoading(false)
       return
     }
-    requestIdRef.current += 1
+    if (!shouldSearchJiraCreateUsers(query, projectKeyOrId)) {
+      setLoading(false)
+      setResults([])
+      return
+    }
     const requestId = requestIdRef.current
+    const trimmedProjectKey = projectKeyOrId.trim()
+    const trimmedQuery = query.trim()
+    const cacheKey = getJiraCreateUserSearchCacheKey(trimmedProjectKey, trimmedQuery, siteId)
+    const cachedUsers = resultCacheRef.current.get(cacheKey)
+    if (cachedUsers) {
+      setLoading(false)
+      setResults(cachedUsers)
+      return
+    }
     setLoading(true)
-    // Why: debounce so typing a name does not fire a project-user search per
-    // keystroke; the runtime wrapper also guards oversized queries before RPC.
+    // Why: wait for a real query and debounce it so opening the picker or
+    // typing a name does not fire avoidable project-user searches.
     const timer = window.setTimeout(() => {
-      void jiraListCreateAssignableUsers(
-        runtimeSettings,
-        projectKeyOrId,
-        query || undefined,
-        siteId
-      )
+      void jiraListCreateAssignableUsers(runtimeSettings, trimmedProjectKey, trimmedQuery, siteId)
         .then((users) => {
+          cacheJiraCreateUsers(resultCacheRef.current, cacheKey, users)
           if (requestId === requestIdRef.current) {
             setResults(users)
           }
@@ -179,7 +219,12 @@ export default function JiraCreateUserPicker({
               </div>
             ) : resolvedUsers.length === 0 ? (
               <div className="px-3 py-6 text-center text-xs text-muted-foreground">
-                {translate('auto.components.jira.create.user.picker.empty', 'No users found.')}
+                {hasSearchQuery
+                  ? translate('auto.components.jira.create.user.picker.empty', 'No users found.')
+                  : translate(
+                      'auto.components.jira.create.user.picker.prompt',
+                      'Type to search users.'
+                    )}
               </div>
             ) : (
               resolvedUsers.map((user) => {

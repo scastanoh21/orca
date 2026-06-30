@@ -11742,10 +11742,11 @@
         "create": {
           "user": {
             "picker": {
-              "select": "Select {{value0}}",
-              "search": "Search users...",
-              "loading": "Searching…",
-              "empty": "No users found."
+              "select": "{{value0}}を選択",
+              "search": "ユーザーを検索...",
+              "loading": "検索中…",
+              "empty": "ユーザーが見つかりません。",
+              "prompt": "入力してユーザーを検索します。"
             }
           }
         }

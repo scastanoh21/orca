@@ -11745,7 +11745,8 @@
               "select": "Select {{value0}}",
               "search": "Search users...",
               "loading": "Searching…",
-              "empty": "No users found."
+              "empty": "No users found.",
+              "prompt": "Type to search users."
             }
           }
         }

@@ -3,7 +3,8 @@ import {
   buildJiraCreateCustomFields,
   buildJiraCreateFieldValue,
   isJiraUserPickerField,
-  isMultiJiraUserPickerField
+  isMultiJiraUserPickerField,
+  shouldPrefillJiraCreateUserField
 } from './jira-create-field-value'
 import type { JiraCreateField } from '../../../shared/types'
 
@@ -50,6 +51,36 @@ describe('isMultiJiraUserPickerField', () => {
       true
     )
     expect(isMultiJiraUserPickerField(field({ schema: { type: 'user' } }))).toBe(false)
+  })
+})
+
+describe('shouldPrefillJiraCreateUserField', () => {
+  it('only defaults required single-user Reporter fields', () => {
+    expect(shouldPrefillJiraCreateUserField(field({ schema: { type: 'user' } }))).toBe(true)
+    expect(
+      shouldPrefillJiraCreateUserField(
+        field({ key: 'Reporter', schema: { type: 'user' }, required: true })
+      )
+    ).toBe(true)
+  })
+
+  it('keeps optional, custom, assignee, and multi-user fields explicit', () => {
+    expect(
+      shouldPrefillJiraCreateUserField(field({ required: false, schema: { type: 'user' } }))
+    ).toBe(false)
+    expect(
+      shouldPrefillJiraCreateUserField(
+        field({ key: 'assignee', name: 'Assignee', schema: { type: 'user' } })
+      )
+    ).toBe(false)
+    expect(
+      shouldPrefillJiraCreateUserField(
+        field({ key: 'customfield_10001', schema: { type: 'user' } })
+      )
+    ).toBe(false)
+    expect(
+      shouldPrefillJiraCreateUserField(field({ schema: { type: 'array', items: 'user' } }))
+    ).toBe(false)
   })
 })
 

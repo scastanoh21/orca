@@ -34,6 +34,17 @@ export function isMultiJiraUserPickerField(field: JiraCreateField): boolean {
   )
 }
 
+export function shouldPrefillJiraCreateUserField(field: JiraCreateField): boolean {
+  // Why: the token owner is semantically safe as Reporter; custom person fields
+  // may represent approvers/reviewers and should stay explicit.
+  return (
+    field.required &&
+    field.key.trim().toLowerCase() === 'reporter' &&
+    isJiraUserPickerField(field) &&
+    !isMultiJiraUserPickerField(field)
+  )
+}
+
 export function getJiraCreateAllowedValueLabel(
   value: NonNullable<JiraCreateField['allowedValues']>[number]
 ): string {

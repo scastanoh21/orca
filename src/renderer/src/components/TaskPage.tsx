@@ -239,7 +239,8 @@ import {
   getJiraCreateAllowedValueLabel,
   isJiraUserPickerField,
   isMultiJiraUserPickerField,
-  isVisibleJiraCreateField
+  isVisibleJiraCreateField,
+  shouldPrefillJiraCreateUserField
 } from '@/components/jira-create-field-value'
 import {
   GITHUB_PR_MERGE_METHOD_LABELS,
@@ -5634,8 +5635,8 @@ export default function TaskPage(): React.JSX.Element {
     [jiraCreateFields]
   )
 
-  // Why: each JiraSite carries the API-token owner's accountId; used to default
-  // required user-picker fields (e.g. Reporter) so create works with no input.
+  // Why: each JiraSite carries the API-token owner's accountId; Reporter can
+  // safely default to that authenticated user when Jira requires it.
   const newJiraIssueTokenOwner = useMemo<JiraUser | null>(() => {
     const sites = jiraStatus.sites ?? []
     const projectSiteId = newJiraIssueTargetProject?.siteId
@@ -5654,8 +5655,8 @@ export default function TaskPage(): React.JSX.Element {
     [newJiraIssueTokenOwner]
   )
 
-  // Prefill empty required user-picker fields with the token owner so a required
-  // Reporter resolves to a valid accountId without any user interaction.
+  // Prefill only Reporter; other required user-picker fields are semantically
+  // ambiguous, so the user should choose them explicitly.
   useEffect(() => {
     const ownerAccountId = newJiraIssueTokenOwner?.accountId
     if (!ownerAccountId || visibleJiraCreateFields.length === 0) {
@@ -5665,7 +5666,7 @@ export default function TaskPage(): React.JSX.Element {
       let changed = false
       const next = { ...prev }
       for (const field of visibleJiraCreateFields) {
-        if (isJiraUserPickerField(field) && !(prev[field.key] ?? '').trim()) {
+        if (shouldPrefillJiraCreateUserField(field) && !(prev[field.key] ?? '').trim()) {
           next[field.key] = ownerAccountId
           changed = true
         }
