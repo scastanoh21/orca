@@ -8,6 +8,8 @@ import {
   getManagedAgentSkillBackgroundUpdatesSearchKeywords,
   getManagedAgentSkillBackgroundUpdatesTitle
 } from './managed-agent-skill-background-updates-copy'
+import { getNativeChatExperimentalSearchEntry } from './native-chat-experimental-search-entry'
+import { getEphemeralVmsSearchEntry } from './ephemeral-vms-search'
 
 export const getExperimentalPaneSearchEntries = createLocalizedCatalog(
   (): SettingsSearchEntry[] => [
@@ -98,6 +100,7 @@ export const getExperimentalPaneSearchEntries = createLocalizedCatalog(
         )
       ]
     },
+    getNativeChatExperimentalSearchEntry(),
     {
       title: translate(
         'auto.components.settings.experimental.search.9e4ddf776d',
@@ -240,7 +243,8 @@ export const getExperimentalPaneSearchEntries = createLocalizedCatalog(
           'node_modules'
         )
       ]
-    }
+    },
+    getEphemeralVmsSearchEntry()
   ]
 )
 
@@ -260,6 +264,9 @@ export function getExperimentalSearchEntry() {
     pet: findEntry(translate('auto.components.settings.experimental.search.87d99e634b', 'Pet')),
     agentsView: findEntry(
       translate('auto.components.settings.experimental.search.ccc5548ac5', 'Agents View')
+    ),
+    nativeChat: findEntry(
+      translate('auto.components.settings.experimental.search.nativeChat.title', 'Native chat')
     ),
     terminalAttention: findEntry(
       translate('auto.components.settings.experimental.search.9e4ddf776d', 'Terminal attention')
@@ -282,6 +289,9 @@ export function getExperimentalSearchEntry() {
         'auto.components.settings.experimental.search.78c2a8dc74',
         'Shared paths on worktrees'
       )
+    ),
+    ephemeralVms: findEntry(
+      translate('auto.components.settings.ephemeralVms.search.title', 'Per-Workspace Environments')
     )
   } as const
 }

@@ -1,14 +1,24 @@
+import { z } from 'zod'
 import { defineMethod, defineStreamingMethod, type RpcAnyMethod } from '../core'
 import { discoverSkills } from '../../../skills/discovery'
 import { onManagedSkillEvent } from '../../../skills/managed-skill-events'
+
+const SkillDiscoveryParams = z.object({
+  cwd: z.string().optional().nullable()
+})
 
 let managedSkillEventsSubscriptionSeq = 0
 
 export const SKILL_METHODS: RpcAnyMethod[] = [
   defineMethod({
     name: 'skills.discover',
-    params: null,
-    handler: async (_params, { runtime }) => discoverSkills({ repos: runtime.listRepos() })
+    params: SkillDiscoveryParams,
+    handler: async (params, { runtime }) => {
+      const cwd = params.cwd?.trim() || undefined
+      return cwd
+        ? discoverSkills({ repos: [], cwd })
+        : discoverSkills({ repos: runtime.listRepos() })
+    }
   }),
   defineStreamingMethod({
     name: 'skills.managedEvents',

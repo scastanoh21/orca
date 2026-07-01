@@ -3,7 +3,7 @@
 import { act, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { getOrchestrationUsageExamples } from '@/lib/orchestration-usage-examples'
 import { OrchestrationPane } from './OrchestrationPane'
 
@@ -97,6 +97,31 @@ async function renderPane(): Promise<HTMLDivElement> {
 }
 
 describe('OrchestrationPane', () => {
+  beforeEach(() => {
+    Object.defineProperty(window, 'api', {
+      configurable: true,
+      value: {
+        ...window.api,
+        platform: {
+          get: () => ({ platform: 'win32', osRelease: 'test' })
+        },
+        wsl: {
+          isAvailable: vi.fn().mockResolvedValue(false),
+          listDistros: vi.fn().mockResolvedValue([])
+        },
+        pwsh: {
+          isAvailable: vi.fn().mockResolvedValue(false)
+        },
+        gitBash: {
+          isAvailable: vi.fn().mockResolvedValue(false)
+        },
+        runtime: {
+          getStatus: vi.fn().mockResolvedValue({ hostPlatform: 'win32' })
+        }
+      }
+    })
+  })
+
   afterEach(async () => {
     if (root) {
       await act(async () => {
