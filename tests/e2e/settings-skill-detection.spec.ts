@@ -13,14 +13,15 @@ type MockSkillDiscoveryGlobal = typeof globalThis & {
 }
 
 function makeSkill(sourceKind: SkillSourceKind, directoryPath: string): DiscoveredSkill {
+  const skillName = directoryPath.split(/[\\/]/).filter(Boolean).at(-1) ?? 'orca-orchestration'
   return {
-    id: `${sourceKind}-orca-cli`,
-    name: 'orchestration',
+    id: `${sourceKind}-${skillName}`,
+    name: skillName,
     description: null,
     providers: ['agent-skills'],
     sourceKind,
     sourceLabel: sourceKind,
-    rootPath: directoryPath.replace(/[\\/]orchestration$/, ''),
+    rootPath: directoryPath.replace(/[\\/][^\\/]+$/, ''),
     directoryPath,
     skillFilePath: `${directoryPath}/SKILL.md`,
     installed: true,
@@ -97,8 +98,8 @@ test.describe('Settings skill detection', () => {
     await installMockSkillDiscovery(
       electronApp,
       discoveryResult([
-        makeSkill('repo', '/workspace/.agents/skills/orchestration'),
-        makeSkill('plugin', '/Users/test/.codex/plugins/cache/vendor/orchestration')
+        makeSkill('repo', '/workspace/.agents/skills/orca-orchestration'),
+        makeSkill('plugin', '/Users/test/.codex/plugins/cache/vendor/orca-orchestration')
       ])
     )
 
@@ -113,7 +114,7 @@ test.describe('Settings skill detection', () => {
 
     await setMockSkillDiscovery(
       electronApp,
-      discoveryResult([makeSkill('home', '/Users/test/.agents/skills/orchestration')])
+      discoveryResult([makeSkill('home', '/Users/test/.agents/skills/orca-orchestration')])
     )
     await section.getByRole('button', { name: 'Re-check' }).click()
 

@@ -138,4 +138,4 @@ Run `orca emulator devices --json` to find a booted device, then drive it with
 `--device <serial>` while watching the emulator window.
 
 See also: `orca-emulator` (iOS, macOS-only), `orca-cli` (terminals, worktrees,
-built-in browser), `computer-use` (desktop UI outside the emulator).
+built-in browser), `orca-computer-use` (desktop UI outside the emulator).

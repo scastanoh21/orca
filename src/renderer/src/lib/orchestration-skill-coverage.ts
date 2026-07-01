@@ -1,6 +1,6 @@
 import type { DiscoveredSkill } from '../../../shared/skills'
 import type { TuiAgent } from '../../../shared/types'
-import { ORCHESTRATION_SKILL_NAME } from '@/lib/agent-feature-install-commands'
+import { ORCHESTRATION_SKILL_NAMES } from '@/lib/agent-feature-install-commands'
 import { getAgentLabel } from '@/lib/agent-catalog'
 import { TUI_AGENT_AUTO_PICK_ORDER } from '../../../shared/tui-agent-selection'
 
@@ -86,10 +86,10 @@ function isOrchestrationSkill(skill: DiscoveredSkill): boolean {
   if (!skill.installed) {
     return false
   }
-  const expected = normalizeSkillName(ORCHESTRATION_SKILL_NAME)
+  const expected = new Set(ORCHESTRATION_SKILL_NAMES.map(normalizeSkillName))
   return (
-    normalizeSkillName(skill.name) === expected ||
-    normalizeSkillName(basenameFromPath(skill.directoryPath)) === expected
+    expected.has(normalizeSkillName(skill.name)) ||
+    expected.has(normalizeSkillName(basenameFromPath(skill.directoryPath)))
   )
 }
 

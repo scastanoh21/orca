@@ -158,7 +158,15 @@ describe('hasInstalledAgentSkill', () => {
 })
 
 describe('isOrchestrationSkillName', () => {
-  it('matches only the orchestration skill name', () => {
+  it('matches canonical and legacy orchestration skill names', () => {
+    expect(
+      _installedAgentSkillDiscoveryInternalsForTests.isOrchestrationSkillName('orca-orchestration')
+    ).toBe(true)
+    expect(
+      _installedAgentSkillDiscoveryInternalsForTests.isOrchestrationSkillName(
+        ' Orca-Orchestration '
+      )
+    ).toBe(true)
     expect(
       _installedAgentSkillDiscoveryInternalsForTests.isOrchestrationSkillName('orchestration')
     ).toBe(true)

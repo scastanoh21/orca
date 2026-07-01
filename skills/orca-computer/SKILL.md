@@ -1,14 +1,16 @@
 ---
-name: computer-use
+name: orca-computer-use
 description: >-
-  Use Orca's computer-use CLI to inspect and operate local desktop app windows
+  Use Orca's `orca computer` CLI to inspect and operate local desktop app windows
   through accessibility trees, screenshots, and safe UI actions. Use for
-  desktop app interaction: list apps/windows, get app state, read visible UI,
-  click controls, type, press keys, scroll, drag, set values, or perform
-  accessibility actions. Also use for browser windows, webviews, Orca app UI,
-  or other desktop UI. Triggers include "computer use", "orca computer", "read
-  Spotify", "read Slack", "control/click/read in a desktop app", and "get app
-  state".
+  Orca Computer Use workflows: list apps/windows, get app state, read visible
+  UI, click controls, type, press keys, scroll, drag, set values, or perform
+  accessibility actions through Orca's runtime. Also use for browser windows,
+  webviews, Orca app UI, or other desktop UI when the request explicitly targets
+  Orca's computer-use surface. Triggers include "$orca-computer-use",
+  "orca computer", "Orca Computer Use", and "use Orca to control/read/click a
+  desktop app". Do not use this for generic computer-use requests that do not
+  mention Orca or the `orca computer` CLI.
 ---
 
 # Computer Use

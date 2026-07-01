@@ -19,14 +19,14 @@ describe('OrchestrationSkillAgentCoverage', () => {
         skills={[
           {
             id: 'claude-skill',
-            name: 'orchestration',
+            name: 'orca-orchestration',
             description: null,
             providers: ['claude'],
             sourceKind: 'home',
             sourceLabel: 'Claude home',
             rootPath: '/Users/test/.claude/skills',
-            directoryPath: '/Users/test/.claude/skills/orchestration',
-            skillFilePath: '/Users/test/.claude/skills/orchestration/SKILL.md',
+            directoryPath: '/Users/test/.claude/skills/orca-orchestration',
+            skillFilePath: '/Users/test/.claude/skills/orca-orchestration/SKILL.md',
             installed: true,
             fileCount: 1,
             updatedAt: null

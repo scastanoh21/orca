@@ -1308,15 +1308,15 @@ describe('web UI preload API', () => {
               result: {
                 skills: [
                   {
-                    id: 'home:computer-use',
-                    name: 'computer-use',
+                    id: 'home:orca-computer-use',
+                    name: 'orca-computer-use',
                     description: null,
                     providers: ['agent-skills'],
                     sourceKind: 'home',
                     sourceLabel: 'Home',
                     rootPath: '/skills',
-                    directoryPath: '/skills/computer-use',
-                    skillFilePath: '/skills/computer-use/SKILL.md',
+                    directoryPath: '/skills/orca-computer-use',
+                    skillFilePath: '/skills/orca-computer-use/SKILL.md',
                     installed: true,
                     fileCount: 1,
                     updatedAt: null
@@ -1380,7 +1380,7 @@ describe('web UI preload API', () => {
     await expect(
       globals.window.api.skills.discover({ cwd: '/repo/worktree' })
     ).resolves.toMatchObject({
-      skills: [{ name: 'computer-use', installed: true }],
+      skills: [{ name: 'orca-computer-use', installed: true }],
       scannedAt: 123
     })
     const permissionsStatus = await globals.window.api.computerUsePermissions.getStatus()

@@ -8,7 +8,7 @@ import { getOrchestrationUsageExamples } from '@/lib/orchestration-usage-example
 import { OrchestrationPane } from './OrchestrationPane'
 
 const INSTALL_COMMAND =
-  'npx skills add https://github.com/stablyai/orca --skill orchestration --global'
+  'npx skills add https://github.com/stablyai/orca --skill orca-orchestration --global'
 const UPDATE_COMMAND = INSTALL_COMMAND
 
 const mocks = vi.hoisted(() => ({
@@ -57,14 +57,14 @@ vi.mock('@/hooks/useInstalledAgentSkills', () => ({
     skills: [
       {
         id: 'claude',
-        name: 'orchestration',
+        name: 'orca-orchestration',
         description: null,
         providers: ['claude'],
         sourceKind: 'home',
         sourceLabel: 'Claude home',
         rootPath: '/Users/test/.claude/skills',
-        directoryPath: '/Users/test/.claude/skills/orchestration',
-        skillFilePath: '/Users/test/.claude/skills/orchestration/SKILL.md',
+        directoryPath: '/Users/test/.claude/skills/orca-orchestration',
+        skillFilePath: '/Users/test/.claude/skills/orca-orchestration/SKILL.md',
         installed: true,
         fileCount: 1,
         updatedAt: null

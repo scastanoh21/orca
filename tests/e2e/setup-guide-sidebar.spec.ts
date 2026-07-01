@@ -122,8 +122,8 @@ async function installBlockedCompletedCapabilityFakes(
       return {
         skills: [
           makeSkill('orca-cli', 'e2e-orca-cli'),
-          makeSkill('computer-use', 'e2e-computer-use'),
-          makeSkill('orchestration', 'e2e-orchestration')
+          makeSkill('orca-computer-use', 'e2e-orca-computer-use'),
+          makeSkill('orca-orchestration', 'e2e-orca-orchestration')
         ],
         sources: [],
         scannedAt: Date.now()

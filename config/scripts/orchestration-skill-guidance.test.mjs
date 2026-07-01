@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 
 const projectDir = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
-const skillPath = join(projectDir, 'skills', 'orchestration', 'SKILL.md')
+const skillPath = join(projectDir, 'skills', 'orca-orchestration', 'SKILL.md')
 
 function readSkill() {
   return readFileSync(skillPath, 'utf8')
@@ -23,6 +23,8 @@ describe('orchestration skill guidance', () => {
   it('treats long-running worker waits as liveness checkpoints, not failures', () => {
     const skill = readSkill()
 
+    expect(skill).toContain('name: orca-orchestration')
+    expect(skill).toContain('"$orca-orchestration", "orca orchestration"')
     expect(skill).toContain('Treat a `check --wait` timeout or `{count:0}` as a checkpoint')
     expect(skill).toContain('Do not stop, close, kill, or restart a worker')
     expect(skill).toContain('keep waiting instead of retrying the task')

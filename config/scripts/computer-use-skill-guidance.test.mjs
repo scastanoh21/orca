@@ -4,14 +4,16 @@ import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 
 const projectDir = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
-const skillPath = join(projectDir, 'skills', 'computer-use', 'SKILL.md')
+const skillPath = join(projectDir, 'skills', 'orca-computer-use', 'SKILL.md')
 
 describe('computer-use skill guidance', () => {
   it('keeps web-app targeting on the computer-use surface', () => {
     const skill = readFileSync(skillPath, 'utf8')
 
+    expect(skill).toContain('name: orca-computer-use')
     expect(skill).toContain('Use this skill for desktop UI through `orca computer`')
     expect(skill).toContain('operate the desktop browser app/window that contains the page')
+    expect(skill).toContain('Do not use this for generic computer-use requests')
     expect(skill).not.toContain('orca goto')
     expect(skill).not.toContain('orca snapshot')
     expect(skill).not.toContain('orca click')

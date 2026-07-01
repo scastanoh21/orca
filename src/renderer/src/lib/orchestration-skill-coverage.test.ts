@@ -8,14 +8,14 @@ import {
 function skill(overrides: Partial<DiscoveredSkill>): DiscoveredSkill {
   return {
     id: 'skill-1',
-    name: 'orchestration',
+    name: 'orca-orchestration',
     description: null,
     providers: ['agent-skills'],
     sourceKind: 'home',
     sourceLabel: 'Agent skills home',
     rootPath: '/Users/test/.agents/skills',
-    directoryPath: '/Users/test/.agents/skills/orchestration',
-    skillFilePath: '/Users/test/.agents/skills/orchestration/SKILL.md',
+    directoryPath: '/Users/test/.agents/skills/orca-orchestration',
+    skillFilePath: '/Users/test/.agents/skills/orca-orchestration/SKILL.md',
     installed: true,
     fileCount: 1,
     updatedAt: null,
@@ -30,7 +30,7 @@ describe('orchestration skill agent coverage', () => {
         providers: ['agent-skills'],
         sourceKind: 'home',
         rootPath: '/Users/test/.agents/skills',
-        directoryPath: '/Users/test/.agents/skills/orchestration'
+        directoryPath: '/Users/test/.agents/skills/orca-orchestration'
       })
     ]
 
@@ -47,7 +47,7 @@ describe('orchestration skill agent coverage', () => {
         providers: ['claude'],
         sourceKind: 'home',
         rootPath: '/Users/test/.claude/skills',
-        directoryPath: '/Users/test/.claude/skills/orchestration'
+        directoryPath: '/Users/test/.claude/skills/orca-orchestration'
       })
     ]
 
@@ -64,7 +64,7 @@ describe('orchestration skill agent coverage', () => {
           sourceKind: 'plugin',
           sourceLabel: 'Codex plugin cache',
           rootPath: '/Users/test/.codex/plugins/cache',
-          directoryPath: '/Users/test/.codex/plugins/cache/vendor/orchestration'
+          directoryPath: '/Users/test/.codex/plugins/cache/vendor/orca-orchestration'
         })
       ])
     ).toBe(true)
@@ -77,7 +77,7 @@ describe('orchestration skill agent coverage', () => {
           providers: ['agent-skills'],
           sourceKind: 'repo',
           rootPath: '/workspace/.agents/skills',
-          directoryPath: '/workspace/.agents/skills/orchestration'
+          directoryPath: '/workspace/.agents/skills/orca-orchestration'
         })
       ])
     ).toBe(false)
@@ -91,7 +91,7 @@ describe('orchestration skill agent coverage', () => {
           providers: ['claude'],
           sourceKind: 'home',
           rootPath: '/Users/test/.claude/skills',
-          directoryPath: '/Users/test/.claude/skills/orchestration'
+          directoryPath: '/Users/test/.claude/skills/orca-orchestration'
         })
       ])
     ).toBe(true)
@@ -104,7 +104,21 @@ describe('orchestration skill agent coverage', () => {
           providers: ['codex'],
           sourceKind: 'home',
           rootPath: 'C:\\Users\\test\\.codex\\skills',
-          directoryPath: 'C:\\Users\\test\\.codex\\skills\\orchestration'
+          directoryPath: 'C:\\Users\\test\\.codex\\skills\\orca-orchestration'
+        })
+      ])
+    ).toBe(true)
+  })
+
+  it('matches legacy orchestration skill installs during the rename transition', () => {
+    expect(
+      agentHasOrchestrationSkill('claude', [
+        skill({
+          name: 'orchestration',
+          providers: ['claude'],
+          sourceKind: 'home',
+          rootPath: '/Users/test/.claude/skills',
+          directoryPath: '/Users/test/.claude/skills/orchestration'
         })
       ])
     ).toBe(true)

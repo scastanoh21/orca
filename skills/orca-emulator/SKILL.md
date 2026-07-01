@@ -151,6 +151,6 @@ After changes, re-snapshot / wait as needed (analogous to browser snapshot-inter
 
 Confirm `orca status --json` and `orca emulator list --json`, then drive the emulator while the live view is visible in Orca.
 
-See also: orca-cli skill (terminals, worktrees, built-in browser), computer-use for desktop outside the simulator.
+See also: orca-cli skill (terminals, worktrees, built-in browser), orca-computer-use for desktop outside the simulator.
 
 This skill is the Orca-native replacement for raw serve-sim when you want the visual + control integrated in the IDE.

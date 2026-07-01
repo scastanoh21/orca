@@ -5,7 +5,10 @@ import type {
   SkillDiscoveryTarget,
   SkillSourceKind
 } from '../../../shared/skills'
-import { ORCHESTRATION_SKILL_NAME } from '@/lib/agent-feature-install-commands'
+import {
+  COMPUTER_USE_SKILL_NAMES,
+  ORCHESTRATION_SKILL_NAMES
+} from '@/lib/agent-feature-install-commands'
 import { markOrchestrationSetupComplete } from '@/lib/orchestration-setup-state'
 import { useMountedRef } from './useMountedRef'
 
@@ -40,8 +43,26 @@ function normalizeSkillName(value: string): string {
   return value.trim().toLowerCase()
 }
 
+function expandAcceptedSkillNames(skillNames: readonly string[]): string[] {
+  const expanded = new Set<string>()
+  for (const skillName of skillNames) {
+    const normalized = normalizeSkillName(skillName)
+    if (ORCHESTRATION_SKILL_NAMES.some((name) => normalized === name)) {
+      ORCHESTRATION_SKILL_NAMES.forEach((name) => expanded.add(name))
+      continue
+    }
+    if (COMPUTER_USE_SKILL_NAMES.some((name) => normalized === name)) {
+      COMPUTER_USE_SKILL_NAMES.forEach((name) => expanded.add(name))
+      continue
+    }
+    expanded.add(skillName)
+  }
+  return [...expanded]
+}
+
 function isOrchestrationSkillName(skillName: string): boolean {
-  return normalizeSkillName(skillName) === ORCHESTRATION_SKILL_NAME
+  const normalized = normalizeSkillName(skillName)
+  return ORCHESTRATION_SKILL_NAMES.some((name) => normalized === name)
 }
 
 function basenameFromPath(pathValue: string): string {
@@ -196,7 +217,7 @@ export function useInstalledAgentSkillNames(
   options: InstalledAgentSkillOptions = {}
 ): InstalledAgentSkillState {
   const { enabled = true, discoveryTarget, sourceKinds } = options
-  const skillNamesKey = skillNames.map(normalizeSkillName).join('\n')
+  const skillNamesKey = expandAcceptedSkillNames(skillNames).map(normalizeSkillName).join('\n')
   const candidateSkillNames = useMemo(() => skillNamesKey.split('\n'), [skillNamesKey])
   const discoveryTargetKey = getSkillDiscoveryTargetKey(discoveryTarget)
   const cachedDiscovery = cachedDiscoveryByTarget.get(discoveryTargetKey) ?? null

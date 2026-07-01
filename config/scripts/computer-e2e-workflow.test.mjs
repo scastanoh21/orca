@@ -51,7 +51,7 @@ describe('computer-use e2e workflow', () => {
         'config/scripts/computer-use-skill-guidance.test.mjs',
         'config/scripts/computer-use-smoke.mjs',
         'config/scripts/computer-use-smoke.test.mjs',
-        'skills/computer-use/SKILL.md',
+        'skills/orca-computer-use/SKILL.md',
         'src/main/computer/**',
         'src/main/runtime/rpc/dispatcher.ts',
         'src/main/runtime/rpc/errors.ts',
