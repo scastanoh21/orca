@@ -11,10 +11,9 @@
  */
 import { build } from 'esbuild'
 import { mkdirSync, writeFileSync, readFileSync, copyFileSync } from 'node:fs'
-import { join, dirname } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { join } from 'node:path'
 
-const __dirname = dirname(fileURLToPath(import.meta.url))
+const __dirname = import.meta.dirname
 const ROOT = join(__dirname, '..', '..')
 const SERVER_ENTRY = join(ROOT, 'src', 'server', 'index.ts')
 const ELECTRON_SHIM = join(ROOT, 'src', 'main', 'server', 'electron-shim.ts')
@@ -137,6 +136,8 @@ copyFileSync(
   join(ROOT, 'config', 'scripts', 'install-node-pty-prebuilt.mjs'),
   join(OUT_DIR, 'scripts', 'install-node-pty-prebuilt.mjs')
 )
-console.log(`Wrote ${join(OUT_DIR, 'package.json')} (type: commonjs, bin: orca-server, postinstall: prebuilt installer)`)
+console.log(
+  `Wrote ${join(OUT_DIR, 'package.json')} (type: commonjs, bin: orca-server, postinstall: prebuilt installer)`
+)
 
 console.log('\norca-server bundle complete.')

@@ -21,11 +21,10 @@
  */
 import { mkdirSync, writeFileSync, existsSync, copyFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { createRequire } from 'node:module'
 import { spawnSync } from 'node:child_process'
 
-const __dirname = dirname(fileURLToPath(import.meta.url))
+const __dirname = import.meta.dirname
 const ROOT = join(__dirname, '..', '..')
 const PREBUILDS_DIR = join(ROOT, 'out', 'server', 'prebuilds')
 const require = createRequire(import.meta.url)
@@ -117,4 +116,6 @@ const manifest = {
   builtSlot: slot
 }
 writeFileSync(join(PREBUILDS_DIR, 'manifest.json'), JSON.stringify(manifest, null, 2))
-console.log(`[prebuilds] manifest: node-pty ${manifest.version}, ABI ${manifest.nodeAbi}, slot ${slot}`)
+console.log(
+  `[prebuilds] manifest: node-pty ${manifest.version}, ABI ${manifest.nodeAbi}, slot ${slot}`
+)

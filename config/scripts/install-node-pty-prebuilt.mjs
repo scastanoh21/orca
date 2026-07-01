@@ -22,10 +22,9 @@
 import { existsSync, copyFileSync, mkdirSync, readFileSync, chmodSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { createRequire } from 'node:module'
-import { fileURLToPath } from 'node:url'
 
 const require = createRequire(import.meta.url)
-const here = dirname(fileURLToPath(import.meta.url))
+const here = import.meta.dirname
 
 function detectLibc() {
   // Why: musl runtimes (Alpine) have no glibc; process.report exposes
@@ -53,7 +52,10 @@ function main() {
   }
 
   const libc = process.platform === 'linux' ? detectLibc() : 'none'
-  const slot = process.platform === 'linux' ? `${process.platform}-${process.arch}-${libc}` : `${process.platform}-${process.arch}`
+  const slot =
+    process.platform === 'linux'
+      ? `${process.platform}-${process.arch}-${libc}`
+      : `${process.platform}-${process.arch}`
   const prebuilt = join(here, '..', 'prebuilds', slot, 'pty.node')
 
   if (!existsSync(prebuilt)) {
@@ -92,7 +94,9 @@ function main() {
 
   // Sanity: confirm the version matches what the manifest recorded, if present.
   try {
-    const manifest = JSON.parse(readFileSync(join(here, '..', 'prebuilds', 'manifest.json'), 'utf8'))
+    const manifest = JSON.parse(
+      readFileSync(join(here, '..', 'prebuilds', 'manifest.json'), 'utf8')
+    )
     const installed = require('node-pty/package.json').version
     if (manifest.version && manifest.version !== installed) {
       log(`WARNING: prebuilt built for node-pty ${manifest.version} but installed ${installed}`)
