@@ -20,9 +20,16 @@ export function WorktreeCardHoverIdentityHeader({
   onWorkspaceTitleEditingChange
 }: WorktreeCardHoverIdentityHeaderProps): React.JSX.Element | null {
   const [workspaceTitleEditing, setWorkspaceTitleEditing] = React.useState(false)
-  // Why: mixing the row pointer cursor with an I-beam over wrapped hover text
-  // makes the cursor flicker while crossing glyph/gap hit targets.
-  const identityCursorClassName = workspaceTitleEditing ? 'cursor-text' : 'cursor-default'
+  const hasEditableWorkspaceTitle = Boolean(
+    workspaceTitle &&
+    workspaceTitle !== branchName &&
+    onRenameWorkspaceTitle &&
+    !workspaceTitleRenameDisabled
+  )
+  // Why: the native cursor does not always refresh when the field mounts under
+  // a stationary pointer, so editable read/edit states share the I-beam cursor.
+  const identityCursorClassName =
+    workspaceTitleEditing || hasEditableWorkspaceTitle ? 'cursor-text' : 'cursor-default'
   const handleWorkspaceTitleEditingChange = React.useCallback(
     (editing: boolean): void => {
       setWorkspaceTitleEditing(editing)
@@ -50,6 +57,7 @@ export function WorktreeCardHoverIdentityHeader({
           displayName={workspaceTitle}
           disabled={workspaceTitleRenameDisabled}
           editingPresentation="field"
+          selectOnFocus={false}
           wrapTitle
           className={cn(
             'text-[13px] font-semibold leading-snug text-foreground',
@@ -57,7 +65,9 @@ export function WorktreeCardHoverIdentityHeader({
             identityOrder === 'branch-first' && 'mt-1'
           )}
           editingClassName={cn(
-            '-mx-1.5 w-[calc(100%+0.75rem)] cursor-text text-[13px] leading-snug',
+            // Why: keep field padding on the wrapper so native input padding doesn't
+            // expose arrow-cursor dead zones between glyphs and the field edge.
+            '-mx-1.5 w-[calc(100%+0.75rem)] cursor-text px-1.5 text-[13px] leading-snug',
             identityOrder === 'branch-first' && 'mt-1'
           )}
           onEditingChange={handleWorkspaceTitleEditingChange}

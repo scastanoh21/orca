@@ -206,8 +206,8 @@ describe('WorktreeCardDetailsHover interactions', () => {
     const identityHeader = container.querySelector('[data-worktree-hover-identity-header]')
     const title = container.querySelector('[data-worktree-title-inline-rename]')
 
-    expect(identityHeader?.className).toContain('cursor-default')
-    expect(title?.className).toContain('cursor-default')
+    expect(identityHeader?.className).toContain('cursor-text')
+    expect(title?.className).toContain('cursor-text')
 
     act(() => {
       title?.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true }))
@@ -220,7 +220,8 @@ describe('WorktreeCardDetailsHover interactions', () => {
     expect(identityHeader?.className).toContain('cursor-text')
     expect(input).not.toBeNull()
     expect(input?.className).toContain('cursor-text')
-    expect(input?.className).toContain('select-text')
+    expect(input?.className).toContain('select-none')
+    expect(input?.className).not.toContain('select-text')
     expect(sizingTitle?.className).toContain('pointer-events-none')
     expect(input?.getAttribute('draggable')).toBe('false')
     expect(input?.className).toContain('bg-input/40')

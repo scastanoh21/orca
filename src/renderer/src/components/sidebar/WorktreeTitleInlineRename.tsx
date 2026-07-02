@@ -43,6 +43,9 @@ type WorktreeTitleInlineRenameProps = {
   // onBeginEditingConsumed so the request fires exactly once.
   beginEditing?: boolean
   onBeginEditingConsumed?: () => void
+  // Why: fully selected rename text makes native inputs flip the OS cursor between
+  // I-beam and arrow while moving over the hovercard field editor.
+  selectOnFocus?: boolean
 }
 
 export function WorktreeTitleInlineRename({
@@ -59,7 +62,8 @@ export function WorktreeTitleInlineRename({
   onEditingChange,
   onRename,
   beginEditing = false,
-  onBeginEditingConsumed
+  onBeginEditingConsumed,
+  selectOnFocus = true
 }: WorktreeTitleInlineRenameProps): React.JSX.Element {
   const editingRef = useRef(false)
   const savingRef = useRef(false)
@@ -68,6 +72,7 @@ export function WorktreeTitleInlineRename({
   const titleElementRef = useRef<HTMLSpanElement | null>(null)
   const titleResizeObserverRef = useRef<ResizeObserver | null>(null)
   const removeTitleResizeListenerRef = useRef<(() => void) | null>(null)
+  const renameFocusFrameRef = useRef<number | null>(null)
   const [editing, setEditing] = useState(false)
   const [value, setValue] = useState(displayName)
   const [saving, setSaving] = useState(false)
@@ -131,8 +136,9 @@ export function WorktreeTitleInlineRename({
   // hovercard can use a compact field that reads more like native rename UI.
   const editingInputClassName =
     editingPresentation === 'field'
-      ? 'h-6 rounded-sm border border-input bg-input/40 px-1.5 py-0 shadow-xs selection:bg-[Highlight] selection:text-[HighlightText] focus-visible:border-ring focus-visible:ring-[1px] focus-visible:ring-ring/50 dark:bg-input/30'
+      ? 'h-6 rounded-sm border border-input bg-input/40 px-0 py-0 shadow-xs selection:bg-[Highlight] selection:text-[HighlightText] focus-visible:border-ring focus-visible:ring-[1px] focus-visible:ring-ring/50 dark:bg-input/30'
       : 'h-[1lh] rounded-none border-0 !border-transparent !bg-transparent p-0 !shadow-none focus-visible:border-transparent focus-visible:ring-0 focus-visible:outline-none dark:!bg-transparent'
+  const suppressMouseSelection = editingPresentation === 'field' && !selectOnFocus
   const savingInputClassName = editingPresentation === 'field' ? 'pr-6' : 'pr-4'
   const savingSpinnerClassName = editingPresentation === 'field' ? 'right-1.5' : 'right-0'
 
@@ -152,14 +158,38 @@ export function WorktreeTitleInlineRename({
     [measureTitleTruncated, onEditingChange]
   )
 
-  const handleInputRef = useCallback((input: HTMLInputElement | null) => {
-    if (!input) {
+  const clearRenameFocusFrame = useCallback(() => {
+    if (renameFocusFrameRef.current === null) {
       return
     }
-    input.focus()
-    // Why: double-click rename should make replacing the workspace title a one-keystroke action.
-    input.select()
+    cancelAnimationFrame(renameFocusFrameRef.current)
+    renameFocusFrameRef.current = null
   }, [])
+
+  useEffect(() => () => clearRenameFocusFrame(), [clearRenameFocusFrame])
+
+  const handleInputRef = useCallback(
+    (input: HTMLInputElement | null) => {
+      clearRenameFocusFrame()
+      if (!input) {
+        return
+      }
+      // Why: defer focus until after the opening double-click finishes so the
+      // browser doesn't leave a word/line selection that flips the OS cursor.
+      renameFocusFrameRef.current = requestAnimationFrame(() => {
+        renameFocusFrameRef.current = null
+        input.focus()
+        if (selectOnFocus) {
+          // Why: double-click rename should make replacing the workspace title a one-keystroke action.
+          input.select()
+          return
+        }
+        const caret = input.value.length
+        input.setSelectionRange(caret, caret)
+      })
+    },
+    [clearRenameFocusFrame, selectOnFocus]
+  )
 
   // Why: open the editor when a parent requests it (the workspace.rename
   // shortcut). Always consume the request so the parent's trigger can't linger;
@@ -186,6 +216,43 @@ export function WorktreeTitleInlineRename({
     event.preventDefault()
     event.stopPropagation()
   }, [])
+
+  const handleInputMouseDown = useCallback(
+    (event: React.MouseEvent<HTMLInputElement>) => {
+      if (suppressMouseSelection && event.detail > 1) {
+        // Why: native inputs select words/lines on multi-click, which makes macOS
+        // alternate arrow and I-beam cursors over the hovercard field editor.
+        event.preventDefault()
+      }
+      stopCardEvent(event)
+    },
+    [stopCardEvent, suppressMouseSelection]
+  )
+
+  const handleInputDoubleClick = useCallback(
+    (event: React.MouseEvent<HTMLInputElement>) => {
+      if (suppressMouseSelection) {
+        event.preventDefault()
+      }
+      stopCardEvent(event)
+    },
+    [stopCardEvent, suppressMouseSelection]
+  )
+
+  const handleInputSelect = useCallback(
+    (event: React.SyntheticEvent<HTMLInputElement>) => {
+      if (!suppressMouseSelection) {
+        return
+      }
+      const input = event.currentTarget
+      if (input.selectionStart === input.selectionEnd) {
+        return
+      }
+      const caret = input.value.length
+      input.setSelectionRange(caret, caret)
+    },
+    [suppressMouseSelection]
+  )
 
   const startRename = useCallback(
     (event: React.MouseEvent<HTMLElement>) => {
@@ -290,12 +357,15 @@ export function WorktreeTitleInlineRename({
           onChange={(event) => setValue(event.target.value)}
           onBlur={() => void commitRename()}
           onClick={stopCardEvent}
-          onDoubleClick={stopCardEvent}
+          onDoubleClick={handleInputDoubleClick}
           onDragStart={stopInputDragEvent}
+          onMouseDown={handleInputMouseDown}
           onPointerDown={stopCardEvent}
+          onSelect={handleInputSelect}
           onKeyDown={handleKeyDown}
           className={cn(
-            'col-start-1 row-start-1 min-w-0 cursor-text select-text truncate text-foreground outline-none',
+            'col-start-1 row-start-1 min-w-0 cursor-text truncate text-foreground outline-none',
+            suppressMouseSelection ? 'select-none' : 'select-text',
             editingInputClassName,
             saving && savingInputClassName,
             inputClassName
