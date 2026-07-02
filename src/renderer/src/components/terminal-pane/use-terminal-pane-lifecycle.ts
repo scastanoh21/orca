@@ -58,6 +58,7 @@ import {
 import { handleOsc52ClipboardRequest } from './osc52-clipboard'
 import { showOsc52ClipboardBlockedToast } from './osc52-clipboard-blocked-toast'
 import { parseOsc7 } from './parse-osc7'
+import { guardParserHandler } from './terminal-parser-handler-guard'
 import { resolveTerminalJisYenInput } from './terminal-jis-yen-input'
 import { installTerminalImeCompositionTracker } from './terminal-ime-composition-tracker'
 import {
@@ -780,12 +781,15 @@ export function useTerminalPaneLifecycle({
         // both the enabled and disabled paths so xterm doesn't fall
         // through to any other OSC 52 handler and so our intentional drop
         // in the disabled path is explicit.
-        const osc52Disposable = pane.terminal.parser.registerOscHandler(52, (data) =>
-          handleOsc52ClipboardRequest(data, {
-            allowClipboardWrite: settingsRef.current?.terminalAllowOsc52Clipboard === true,
-            writeClipboardText: window.api.ui.writeClipboardText,
-            onBlockedWrite: showOsc52ClipboardBlockedToast
-          })
+        const osc52Disposable = pane.terminal.parser.registerOscHandler(
+          52,
+          guardParserHandler('osc-52-clipboard', (data) =>
+            handleOsc52ClipboardRequest(data, {
+              allowClipboardWrite: settingsRef.current?.terminalAllowOsc52Clipboard === true,
+              writeClipboardText: window.api.ui.writeClipboardText,
+              onBlockedWrite: showOsc52ClipboardBlockedToast
+            })
+          )
         )
         osc52DisposablesRef.current.set(pane.id, osc52Disposable)
 
@@ -811,14 +815,17 @@ export function useTerminalPaneLifecycle({
             confirmed: false
           })
         }
-        const osc7Disposable = pane.terminal.parser.registerOscHandler(7, (data) => {
-          const parsedCwd = parseOsc7(data, { uncHost: osc7UncHost })
-          if (parsedCwd) {
-            const confirmed = !isPaneReplaying(replayingPanesRef, pane.id)
-            paneCwdRef.current.set(pane.id, { cwd: parsedCwd, confirmed })
-          }
-          return true
-        })
+        const osc7Disposable = pane.terminal.parser.registerOscHandler(
+          7,
+          guardParserHandler('osc-7-cwd', (data) => {
+            const parsedCwd = parseOsc7(data, { uncHost: osc7UncHost })
+            if (parsedCwd) {
+              const confirmed = !isPaneReplaying(replayingPanesRef, pane.id)
+              paneCwdRef.current.set(pane.id, { cwd: parsedCwd, confirmed })
+            }
+            return true
+          })
+        )
         osc7DisposablesRef.current.set(pane.id, osc7Disposable)
 
         // Why: let host-handled keys bypass xterm's kitty CSI-u encoder.

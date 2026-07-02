@@ -1,6 +1,27 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ManagedPane } from '@/lib/pane-manager/pane-manager'
-import { isPaneReplaying, replayIntoTerminal, type ReplayingPanesRef } from './replay-guard'
+import {
+  isPaneReplaying,
+  replayIntoTerminal,
+  replayIntoTerminalAsync,
+  type ReplayingPanesRef
+} from './replay-guard'
+
+const mocks = vi.hoisted(() => ({
+  recordRendererCrashBreadcrumb: vi.fn()
+}))
+
+vi.mock('@/lib/crash-diagnostics', () => ({
+  recordRendererCrashBreadcrumb: mocks.recordRendererCrashBreadcrumb
+}))
+
+beforeEach(() => {
+  mocks.recordRendererCrashBreadcrumb.mockClear()
+})
+
+afterEach(() => {
+  vi.useRealTimers()
+})
 
 function makeRef(): ReplayingPanesRef {
   return { current: new Map() } as ReplayingPanesRef
@@ -166,6 +187,99 @@ describe('replay-guard', () => {
     } finally {
       globalThis.requestAnimationFrame = originalRequestAnimationFrame
       globalThis.cancelAnimationFrame = originalCancelAnimationFrame
+    }
+  })
+})
+
+describe('replay-guard watchdog', () => {
+  it('force-releases the guard when xterm never completes the write (wedged pipeline repro)', () => {
+    // Why: a sync throw escaping xterm's WriteBuffer loop drops the pending
+    // write completion forever (xterm-write-buffer-stall.repro.test.ts).
+    // Without the watchdog the guard latches and pty-connection.ts onData
+    // silently eats every keystroke on a live pane.
+    vi.useFakeTimers()
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      const ref = makeRef()
+      const { pane } = makeFakePane(1)
+
+      replayIntoTerminal(pane, ref, 'restored bytes', 10_000)
+      expect(isPaneReplaying(ref, 1)).toBe(true)
+
+      vi.advanceTimersByTime(9_999)
+      expect(isPaneReplaying(ref, 1)).toBe(true)
+
+      vi.advanceTimersByTime(1)
+      expect(isPaneReplaying(ref, 1)).toBe(false)
+      expect(mocks.recordRendererCrashBreadcrumb).toHaveBeenCalledWith(
+        'terminal_replay_guard_watchdog_release',
+        { paneId: 1 }
+      )
+    } finally {
+      errorSpy.mockRestore()
+    }
+  })
+
+  it('does not double-decrement when the completion arrives after the watchdog fired', () => {
+    vi.useFakeTimers()
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      const ref = makeRef()
+      const { pane, terminal } = makeFakePane(1)
+
+      // First replay's completion is lost; second replay is healthy but slow.
+      replayIntoTerminal(pane, ref, 'lost completion', 1_000)
+      replayIntoTerminal(pane, ref, 'slow completion', 60_000)
+      terminal.pendingCallbacks.shift() // drop the first completion entirely
+      expect(isPaneReplaying(ref, 1)).toBe(true)
+
+      vi.advanceTimersByTime(1_000)
+      // Watchdog released only the lost engagement; the healthy one still holds.
+      expect(isPaneReplaying(ref, 1)).toBe(true)
+
+      terminal.flush()
+      expect(isPaneReplaying(ref, 1)).toBe(false)
+      expect(ref.current.has(1)).toBe(false)
+
+      // A very late duplicate release must be a no-op.
+      vi.advanceTimersByTime(120_000)
+      expect(ref.current.has(1)).toBe(false)
+    } finally {
+      errorSpy.mockRestore()
+    }
+  })
+
+  it('does not fire the watchdog after a normal completion', () => {
+    vi.useFakeTimers()
+    const ref = makeRef()
+    const { pane, terminal } = makeFakePane(1)
+
+    replayIntoTerminal(pane, ref, 'healthy', 1_000)
+    terminal.flush()
+    expect(isPaneReplaying(ref, 1)).toBe(false)
+
+    vi.advanceTimersByTime(60_000)
+    expect(mocks.recordRendererCrashBreadcrumb).not.toHaveBeenCalled()
+  })
+
+  it('resolves replayIntoTerminalAsync via the watchdog so restore chains cannot hang', async () => {
+    vi.useFakeTimers()
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      const ref = makeRef()
+      const { pane } = makeFakePane(1)
+
+      const replayDone = replayIntoTerminalAsync(pane, ref, 'restored bytes', 1_000)
+      let resolved = false
+      void replayDone.then(() => {
+        resolved = true
+      })
+
+      await vi.advanceTimersByTimeAsync(1_000)
+      expect(resolved).toBe(true)
+      expect(isPaneReplaying(ref, 1)).toBe(false)
+    } finally {
+      errorSpy.mockRestore()
     }
   })
 })

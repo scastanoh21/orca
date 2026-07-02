@@ -11,6 +11,7 @@ import {
   captureTerminalWriteScrollIntent,
   enforceTerminalWriteScrollIntent
 } from './terminal-scroll-intent'
+import { runGuardedWriteCompletionStep } from './xterm-write-callback-guard'
 
 type TerminalOutputTarget = ForegroundTerminalOutputTarget
 
@@ -636,26 +637,34 @@ function writeBackgroundTerminalChunk(
   data: string,
   onParsed?: TerminalOutputParsedCallback
 ): void {
+  // Why guarded: these callbacks run inside xterm's WriteBuffer loop, where an
+  // escaping throw permanently wedges the terminal (see
+  // xterm-write-callback-guard.ts).
+  const runOnParsed = onParsed
+    ? (): void => runGuardedWriteCompletionStep('background-on-parsed', onParsed)
+    : undefined
   const scrollIntent = captureTerminalWriteScrollIntent(terminal)
   if (!scrollIntent) {
-    if (!onParsed || terminal.write.length < 2) {
+    if (!runOnParsed || terminal.write.length < 2) {
       terminal.write(data)
-      onParsed?.()
+      runOnParsed?.()
       return
     }
-    terminal.write(data, onParsed)
+    terminal.write(data, runOnParsed)
     return
+  }
+  const runScrollIntentThenParsed = (): void => {
+    runGuardedWriteCompletionStep('background-scroll-intent', () =>
+      enforceTerminalWriteScrollIntent(terminal, scrollIntent)
+    )
+    runOnParsed?.()
   }
   if (terminal.write.length < 2) {
     terminal.write(data)
-    enforceTerminalWriteScrollIntent(terminal, scrollIntent)
-    onParsed?.()
+    runScrollIntentThenParsed()
     return
   }
-  terminal.write(data, () => {
-    enforceTerminalWriteScrollIntent(terminal, scrollIntent)
-    onParsed?.()
-  })
+  terminal.write(data, runScrollIntentThenParsed)
 }
 
 function writeForegroundTerminalChunkWithIntent(
