@@ -2015,6 +2015,12 @@ const api = {
     ): Promise<ManagedAgentSkillEnsureResult> =>
       ipcRenderer.invoke('skills:ensureManagedReady', request),
 
+    deferManagedReadyPrompt: (request: ManagedAgentSkillEnsureRequest): Promise<void> =>
+      ipcRenderer.invoke('skills:deferManagedReadyPrompt', request),
+
+    flushRestartPrompts: (): Promise<ManagedAgentSkillEnsureResult[]> =>
+      ipcRenderer.invoke('skills:flushRestartPrompts'),
+
     onManagedFallback: (callback: (event: ManagedAgentSkillFallback) => void): (() => void) => {
       const listener = (
         _event: Electron.IpcRendererEvent,

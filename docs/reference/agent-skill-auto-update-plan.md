@@ -2,19 +2,23 @@
 
 ## Summary
 
-Orca should keep Orca-managed agent skills current when a user or agent enters a workflow that needs the skill. The update should be automatic only when Orca can prove it is updating the same tracked install the user already has. When Orca cannot prove that but has a safe manual install/update command, the same workflow trigger should show a contextual setup/update modal instead.
+Orca should record when a user or agent enters a workflow that needs an Orca-managed agent skill,
+then ask about missing/outdated setup after the next Orca restart. The restart-time check should
+update automatically only when Orca can prove it is updating the same tracked install the user
+already has. When Orca cannot prove that but has a safe manual install/update command, the restart
+prompt should show a contextual setup/update modal instead.
 
 Settings must not trigger background skill updates. Settings may continue to show status and manual controls.
 
 Automatic managed-skill updates are experimental and off by default. Users can opt in from the
-Agents settings pane; when disabled, Orca still uses the same workflow triggers, but stale global
-managed-skill updates fall back to the contextual manual update modal instead of running in the
-background.
+Experimental settings pane; when disabled, Orca still records the same workflow triggers, but stale
+global managed-skill updates fall back to the contextual manual update modal on the next restart
+instead of running in the background.
 
 ## Goals
 
 - Avoid sending users to Settings -> CLI for routine skill maintenance.
-- Keep managed Orca skills current at the moment they are actually needed.
+- Keep managed Orca skills current without interrupting the workflow that revealed the need.
 - Avoid surprising writes to user-managed, project-managed, remote, or ambiguous skill installs.
 - Avoid repeated subprocess/network work when many agents attempt the same skill.
 - Explain any modal in the context that caused it, especially when an agent triggered the need.
@@ -23,7 +27,8 @@ background.
 
 - Do not build a generic updater for every skill on the Skills page.
 - Do not silently update bundled, plugin, hand-copied, local-path, or user-authored skills.
-- Do not run broad skill checks at app startup.
+- Do not run broad skill checks at app startup; only re-check previously recorded managed-skill
+  workflow needs.
 - Do not infer update scope from Orca's current working directory.
 
 ## Managed Skills
@@ -37,21 +42,26 @@ Initial support is limited to Orca-owned feature skills:
 
 ## Core UX Rule
 
-Auto-update and ask prompts have the same trigger.
+Auto-update and ask prompts have the same deferred trigger.
 
 ```text
 User or agent enters a workflow that needs a managed skill
--> coordinator checks whether background update is safe
+-> Orca records that managed skill need for the next launch
+-> after Orca restarts, coordinator checks whether background update is safe
 -> if safe, update in the background
 -> if unsafe or update fails and Orca has a safe manual command, show the contextual modal
 -> otherwise return fallback state without opening an unactionable modal
 ```
 
-There is no separate "ask" trigger. Asking is the fallback path for the same intent boundary.
+There is no separate "ask" trigger. Asking is the restart-time fallback path for the same recorded
+intent boundary.
 
-The automatic-updates setting does not create a new trigger. It only controls whether an eligible stale global install may be updated quietly. Because the setting is off by default, that same trigger shows the update modal each time an update is needed unless the user has explicitly enabled experimental automatic updates.
+The automatic-updates setting does not create a new trigger. It only controls whether an eligible
+stale global install may be updated quietly when the recorded request is flushed after restart.
+Because the setting is off by default, that same restart-time flush shows the update modal when an
+update is needed unless the user has explicitly enabled experimental automatic updates.
 
-## Intent Boundary Triggers
+## Deferred Intent Triggers
 
 | Skill | Trigger |
 | --- | --- |
@@ -60,16 +70,17 @@ The automatic-updates setting does not create a new trigger. It only controls wh
 | `computer-use` | User starts a Computer Use workflow, or an agent first attempts to invoke computer-use for the active task. |
 | `orca-cli` | A workflow that depends on the Orca CLI skill starts, such as Browser Use, mobile emulator agent workflows, or another feature that explicitly needs Orca CLI affordances. |
 
-Settings pages, setup guide status cards, and generic skill browsing should not trigger automatic updates. They can display status and manual actions.
+Settings pages, setup guide status cards, and generic skill browsing should not record deferred
+automatic updates. They can display status and manual actions.
 
-The Agents settings pane exposes the opt-in experimental preference as "Automatically update
+The Experimental settings pane exposes the opt-in experimental preference as "Automatically update
 verified Orca skills" with copy explaining that Orca can update verified Orca-managed global
-skills in the background only when a workflow needs them and the safe update path has been proven.
-Leaving it off means updates are reviewed manually at the same workflow boundaries.
+skills in the background only after a workflow has recorded the need and the safe update path has
+been proven on restart. Leaving it off means updates are reviewed manually after restart.
 
 ## Modal Copy Requirements
 
-When the fallback modal appears from a feature trigger, the modal must name the feature context
+When the fallback modal appears after restart, the modal must name the feature context
 and workspace. Do not claim that an agent attempted the skill unless the triggering surface can
 prove that; runtime and workflow entry points can also be initiated directly by the user.
 
@@ -151,7 +162,10 @@ Responsibilities:
 - Refresh skill discovery after success.
 - Return fallback information when auto-update is unsafe or failed.
 
-Renderer surfaces should not independently spawn update commands. They should call the coordinator and then either continue the workflow, show an actionable modal response that includes a manual command, or avoid interrupting for non-actionable fallback state.
+Renderer surfaces should not independently spawn update commands. Workflow surfaces should record a
+restart prompt request; the restart flush should call the coordinator and then either clear resolved
+requests, show an actionable modal response that includes a manual command, or avoid interrupting
+for non-actionable fallback state.
 
 ## Performance Guardrails
 
@@ -163,15 +177,16 @@ The update path must be cheap when many agents are running.
 - Share one in-flight promise across all callers.
 - Cache success for the current app version/session.
 - Back off after failure.
-- Prefer invalidating "needs check" after an Orca app update, then checking only at the next real workflow trigger.
+- Prefer invalidating "needs check" after an Orca app update, then checking only after a recorded
+  workflow need is flushed on restart.
 
 Example:
 
 ```text
 50 agents attempt orchestration
--> first attempt asks coordinator for orchestration:host:global
--> coordinator starts one update/check
--> other 49 attempts join the same in-flight result or use cached success/failure
+-> first attempt records orchestration for the next restart
+-> repeated attempts dedupe to the same restart prompt request
+-> next Orca launch flushes one update/check
 ```
 
 ## Invalidation
@@ -181,7 +196,8 @@ The default invalidation should be app-version based.
 ```text
 Orca app updates
 -> managed skill check state is invalidated
--> next workflow trigger for each skill/runtime/scope checks once
+-> next workflow trigger records a restart prompt request
+-> next Orca launch checks each recorded skill/runtime/scope once
 -> success is cached for the session/app version
 ```
 
@@ -205,9 +221,9 @@ Optional future invalidation:
 | Private repo or auth-gated source needs credentials | Do not auto-update when source/auth cannot be proven non-interactive; show a manual-review fallback rather than running a command. |
 | WSL distro unavailable or project runtime repair-required | Do not run host update commands; show runtime-context fallback guidance and allow re-check after repair. |
 | SSH/remote filesystem update writes somewhere unexpected | Do not auto-update remote/SSH skills in v1. |
-| Modal appears unexpectedly because a workflow triggered it | Modal copy must name the feature context and workspace without guessing whether an agent or user initiated it. |
+| Modal appears unexpectedly because a workflow triggered it | Workflow triggers only record restart prompts; modal copy must name the feature context and workspace without guessing whether an agent or user initiated it. |
 | 50 agents cause 50 checks | Central coordinator with in-flight dedupe, success cache, and failure cooldown. |
-| User leaves automatic updates off | Keep the same triggers, but return the manual update modal for stale global installs without cooling that disabled-path modal away. |
+| User leaves automatic updates off | Keep the same deferred triggers, but return the manual update modal for stale global installs after restart without cooling that disabled-path modal away. |
 | Update command hangs or npm/network is slow | Add timeout, cancellation on app shutdown where possible, and emit a modal only when a manual command is available. |
 | Upstream `skills` CLI lacks reliable dry-run status | Do not show stale status unless backed by coordinator evidence; use update command only after eligibility passes. |
 | Supply-chain/source surprise | Limit to Orca-managed skill names and tracked lock entries; do not update arbitrary Skills page entries. |
@@ -216,13 +232,14 @@ Optional future invalidation:
 ## User Flow
 
 1. User starts a workflow that needs a managed skill.
-2. Renderer calls the coordinator with skill name and workflow context.
-3. Coordinator returns one of:
+2. Orca records the skill name and workflow context as a restart prompt request.
+3. After Orca restarts, the renderer flushes recorded restart prompt requests.
+4. Coordinator returns one of:
    - `ready`: installed and recently checked.
    - `updated`: Orca verified and ran the single-skill global update command successfully.
    - `fallback`: return reason and optional command.
-4. Workflow continues for `ready` and `updated`.
-5. For `fallback`, show the contextual modal for actionable setup/manual-review states and keep
+5. For `ready` and `updated`, remove the persisted restart prompt request.
+6. For `fallback`, show the contextual modal for actionable setup/manual-review states and keep
    cooldown/unsupported internal states silent.
 
 ## Implementation Steps
@@ -238,7 +255,9 @@ Optional future invalidation:
    - failure cooldowns
 4. Add IPC:
    - `skills:ensureManagedReady`
-5. Wire the intent boundary triggers:
+   - `skills:deferManagedReadyPrompt`
+   - `skills:flushRestartPrompts`
+5. Wire the deferred intent boundary triggers:
    - Linear worktree-from-task and linked Linear agent workflow.
    - Orchestration workflow start.
    - Computer Use workflow start or first runtime invocation.
@@ -258,17 +277,18 @@ Optional future invalidation:
 - WSL runtime fallbacks do not open dead-end setup modals until WSL commands are supported.
 - 50 concurrent requests for one skill produce one update attempt.
 - Failure cooldown prevents repeated attempts.
-- Default-disabled automatic updates show the manual update modal on each stale-update trigger.
+- Default-disabled automatic updates show the manual update modal after restart for each recorded
+  stale-update trigger.
 - App-version invalidation re-enables a single check after update.
-- Agent-triggered fallback modal includes triggering context.
+- Agent-triggered fallback modal includes the recorded triggering context after restart.
 
 ## Recommended First Version
 
-Ship the coordinator and intent-boundary triggers with modal-first behavior by default. Keep
+Ship the coordinator and deferred intent-boundary triggers with restart-prompt behavior by default. Keep
 automatic updates available as an experimental opt-in for tracked global Orca-managed installs
 only. When enabled, the coordinator runs the explicit single-skill global update command after
-discovery and lockfile validation, then verifies the post-update install before reporting
-`updated`. Everything else uses the same trigger and returns fallback state; actionable fallback
-states open a contextual modal.
+restart-time discovery and lockfile validation, then verifies the post-update install before
+reporting `updated`. Everything else uses the same deferred trigger and returns fallback state;
+actionable fallback states open a contextual modal after restart.
 
 This covers the common setup path from Orca's own install buttons while protecting custom, project, remote, and ambiguous installs.

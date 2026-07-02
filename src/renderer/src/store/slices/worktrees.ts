@@ -180,7 +180,7 @@ function nudgeLinearManagedSkillSetup(
         : { runtime: 'host' as const, projectRootPath }
       : null
   void window.api.skills
-    .ensureManagedReady({
+    .deferManagedReadyPrompt({
       skillName: ORCA_LINEAR_SKILL_NAME,
       context: 'linear-worktree',
       ...(localDiscoveryTarget ? { discoveryTarget: localDiscoveryTarget } : {}),

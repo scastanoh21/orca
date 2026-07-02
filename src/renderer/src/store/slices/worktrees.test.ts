@@ -84,6 +84,7 @@ const mockApi = {
     get: vi.fn(() => ({ platform: 'win32' }))
   },
   skills: {
+    deferManagedReadyPrompt: vi.fn().mockResolvedValue(undefined),
     ensureManagedReady: vi.fn().mockResolvedValue({
       status: 'fallback',
       skillName: 'orca-linear',
@@ -2865,7 +2866,7 @@ describe('createWorktree base status merge', () => {
         'ENG-123'
       )
 
-    expect(mockApi.skills.ensureManagedReady).toHaveBeenCalledWith({
+    expect(mockApi.skills.deferManagedReadyPrompt).toHaveBeenCalledWith({
       skillName: 'orca-linear',
       context: 'linear-worktree',
       remoteRuntime: true
@@ -2908,7 +2909,7 @@ describe('createWorktree base status merge', () => {
         'ENG-123'
       )
 
-    expect(mockApi.skills.ensureManagedReady).toHaveBeenCalledWith({
+    expect(mockApi.skills.deferManagedReadyPrompt).toHaveBeenCalledWith({
       skillName: 'orca-linear',
       context: 'linear-worktree',
       discoveryTarget: expect.objectContaining({
@@ -2954,7 +2955,7 @@ describe('createWorktree base status merge', () => {
         'ENG-123'
       )
 
-    expect(mockApi.skills.ensureManagedReady).toHaveBeenCalledWith({
+    expect(mockApi.skills.deferManagedReadyPrompt).toHaveBeenCalledWith({
       skillName: 'orca-linear',
       context: 'linear-worktree',
       discoveryTarget: {

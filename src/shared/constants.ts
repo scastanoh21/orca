@@ -325,6 +325,7 @@ export function getDefaultSettings(homedir: string): GlobalSettings {
     agentYoloDefaultsMigrated: true,
     agentStatusHooksEnabled: true,
     managedAgentSkillSetupPromptsEnabled: true,
+    managedAgentSkillRestartPromptRequests: [],
     // Why: keep silent skill mutation opt-in while the verified updater is experimental.
     managedAgentSkillBackgroundUpdatesEnabled: false,
     tabAutoGenerateTitle: false,

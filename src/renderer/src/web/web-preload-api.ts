@@ -2606,6 +2606,8 @@ function createSkillsApi(): NonNullable<Partial<PreloadApi>['skills']> {
       }
       return Promise.resolve(result satisfies ManagedAgentSkillEnsureResult)
     },
+    deferManagedReadyPrompt: () => Promise.resolve(),
+    flushRestartPrompts: () => Promise.resolve([]),
     onManagedFallback: (callback) => {
       fallbackCallbacks.add(callback)
       ensureManagedEventSubscription()

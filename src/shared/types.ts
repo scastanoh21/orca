@@ -40,6 +40,7 @@ import type {
   GlobalWindowsRuntimeDefault,
   LocalWindowsRuntimePreference
 } from './project-execution-runtime'
+import type { ManagedAgentSkillEnsureRequest } from './skills'
 
 // Re-exported for backward compat with renderer call sites that import
 // `WorkspaceCreateTelemetrySource` from '../../../shared/types'.
@@ -2762,6 +2763,9 @@ export type GlobalSettings = {
   /** Why: users can silence managed-skill setup prompts from the modal, but
    *  the prompt should be easy to restore from normal Agents settings. */
   managedAgentSkillSetupPromptsEnabled?: boolean
+  /** Why: workflow-triggered skill setup nudges should surface after restart,
+   *  not while the user is entering the workflow that caused the check. */
+  managedAgentSkillRestartPromptRequests?: ManagedAgentSkillEnsureRequest[]
   /** Why: verified background updates mutate user skill files, so this remains
    *  opt-in while experimental; off makes updates manual. */
   managedAgentSkillBackgroundUpdatesEnabled?: boolean

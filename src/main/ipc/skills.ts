@@ -14,6 +14,10 @@ import {
   publishManagedSkillFallback,
   publishManagedSkillUpdated
 } from '../skills/managed-skill-events'
+import {
+  flushManagedSkillRestartPromptRequests,
+  recordManagedSkillRestartPromptRequest
+} from '../skills/managed-skill-restart-prompts'
 
 type SkillDiscoveryRuntimeTarget =
   | { runtime: 'host' }
@@ -82,6 +86,29 @@ export function registerSkillsHandlers(store: Store): void {
         sendManagedSkillUpdated(result)
       }
       return result
+    }
+  )
+
+  ipcMain.handle(
+    'skills:deferManagedReadyPrompt',
+    (_event, request: ManagedAgentSkillEnsureRequest): void => {
+      recordManagedSkillRestartPromptRequest(store, request)
+    }
+  )
+
+  ipcMain.handle(
+    'skills:flushRestartPrompts',
+    async (event): Promise<ManagedAgentSkillEnsureResult[]> => {
+      const results = await flushManagedSkillRestartPromptRequests(store)
+      for (const result of results) {
+        if (shouldEmitManagedAgentSkillFallback(result)) {
+          publishManagedSkillFallback(result)
+          event.sender.send('skills:managedFallback', result)
+        } else if (result.status === 'updated') {
+          sendManagedSkillUpdated(result)
+        }
+      }
+      return results
     }
   )
 }

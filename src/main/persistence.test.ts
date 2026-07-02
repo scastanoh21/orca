@@ -506,6 +506,7 @@ describe('Store', () => {
     expect(settings.experimentalTerminalAttention).toBe(false)
     expect(settings.experimentalNewWorktreeCardStyle).toBe(true)
     expect(settings.managedAgentSkillSetupPromptsEnabled).toBe(true)
+    expect(settings.managedAgentSkillRestartPromptRequests).toEqual([])
     expect(settings.managedAgentSkillBackgroundUpdatesEnabled).toBe(false)
     expect(settings.floatingTerminalEnabled).toBe(true)
     expect(settings.floatingTerminalDefaultedForAllUsers).toBe(true)

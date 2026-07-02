@@ -2033,6 +2033,8 @@ export type PreloadApi = {
     ensureManagedReady: (
       request: ManagedAgentSkillEnsureRequest
     ) => Promise<ManagedAgentSkillEnsureResult>
+    deferManagedReadyPrompt: (request: ManagedAgentSkillEnsureRequest) => Promise<void>
+    flushRestartPrompts: () => Promise<ManagedAgentSkillEnsureResult[]>
     onManagedFallback: (callback: (event: ManagedAgentSkillFallback) => void) => () => void
     onManagedUpdated: (callback: (event: ManagedAgentSkillUpdated) => void) => () => void
   }

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { getDefaultSettings } from '../../shared/constants'
+import type { GlobalSettings } from '../../shared/types'
 
 const { handleMock, discoverSkillsMock, getDefaultWslDistroMock, getWslHomeMock } = vi.hoisted(
   () => ({
@@ -33,9 +34,14 @@ import { registerSkillsHandlers } from './skills'
 describe('registerSkillsHandlers', () => {
   const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform')
   const repos = [{ id: 'repo-1', path: 'C:\\Users\\alice\\repo' }]
+  let settings = getDefaultSettings('C:\\Users\\alice')
   const store = {
     getRepos: vi.fn(() => repos),
-    getSettings: vi.fn(() => getDefaultSettings('C:\\Users\\alice'))
+    getSettings: vi.fn(() => settings),
+    updateSettings: vi.fn((updates: Partial<GlobalSettings>) => {
+      settings = { ...settings, ...updates }
+      return settings
+    })
   }
 
   beforeEach(() => {
@@ -43,8 +49,10 @@ describe('registerSkillsHandlers', () => {
     discoverSkillsMock.mockReset()
     getDefaultWslDistroMock.mockReset()
     getWslHomeMock.mockReset()
+    settings = getDefaultSettings('C:\\Users\\alice')
     store.getRepos.mockClear()
     store.getSettings.mockClear()
+    store.updateSettings.mockClear()
     discoverSkillsMock.mockResolvedValue({ skills: [], sources: [], scannedAt: 1 })
     getWslHomeMock.mockReturnValue('\\\\wsl.localhost\\Ubuntu\\home\\alice')
     Object.defineProperty(process, 'platform', {
@@ -80,6 +88,28 @@ describe('registerSkillsHandlers', () => {
       event: { sender: { send: ReturnType<typeof vi.fn> } },
       request: unknown
     ) => Promise<unknown>
+  }
+
+  function getDeferHandler() {
+    registerSkillsHandlers(store as never)
+    const call = handleMock.mock.calls.find(
+      (entry: unknown[]) => entry[0] === 'skills:deferManagedReadyPrompt'
+    )
+    if (!call) {
+      throw new Error('skills:deferManagedReadyPrompt handler was not registered')
+    }
+    return call[1] as (_event: unknown, request: unknown) => Promise<unknown>
+  }
+
+  function getFlushHandler() {
+    registerSkillsHandlers(store as never)
+    const call = handleMock.mock.calls.find(
+      (entry: unknown[]) => entry[0] === 'skills:flushRestartPrompts'
+    )
+    if (!call) {
+      throw new Error('skills:flushRestartPrompts handler was not registered')
+    }
+    return call[1] as (event: { sender: { send: ReturnType<typeof vi.fn> } }) => Promise<unknown>
   }
 
   it('uses host skill discovery when resolved project runtime overrides stale WSL target state', async () => {
@@ -189,6 +219,68 @@ describe('registerSkillsHandlers', () => {
     })
     expect(send).toHaveBeenCalledWith('skills:managedFallback', result)
     expect(discoverSkillsMock).not.toHaveBeenCalled()
+  })
+
+  it('defers managed setup prompts into settings without emitting immediately', async () => {
+    const handler = getDeferHandler()
+
+    await handler(null, {
+      skillName: 'orca-linear',
+      context: 'linear-worktree',
+      discoveryTarget: { runtime: 'host', projectRootPath: '/workspace/current' }
+    })
+
+    expect(store.updateSettings).toHaveBeenCalledWith({
+      managedAgentSkillRestartPromptRequests: [
+        {
+          skillName: 'orca-linear',
+          context: 'linear-worktree',
+          discoveryTarget: { runtime: 'host', projectRootPath: '/workspace/current' }
+        }
+      ]
+    })
+  })
+
+  it('flushes restart prompts through managed ensure and emits actionable fallbacks', async () => {
+    const handler = getFlushHandler()
+    const send = vi.fn()
+    settings = {
+      ...settings,
+      managedAgentSkillRestartPromptRequests: [
+        {
+          skillName: 'computer-use',
+          context: 'agent-computer-use',
+          remoteRuntime: true
+        }
+      ]
+    }
+
+    const results = await handler({ sender: { send } })
+
+    expect(results).toMatchObject([
+      {
+        status: 'fallback',
+        skillName: 'computer-use',
+        context: 'agent-computer-use',
+        reason: 'remote-runtime'
+      }
+    ])
+    expect(send).toHaveBeenCalledWith(
+      'skills:managedFallback',
+      expect.objectContaining({
+        status: 'fallback',
+        skillName: 'computer-use',
+        context: 'agent-computer-use',
+        reason: 'remote-runtime'
+      })
+    )
+    expect(settings.managedAgentSkillRestartPromptRequests).toEqual([
+      {
+        skillName: 'computer-use',
+        context: 'agent-computer-use',
+        remoteRuntime: true
+      }
+    ])
   })
 
   it('does not emit managed fallback events for cooldown results', async () => {

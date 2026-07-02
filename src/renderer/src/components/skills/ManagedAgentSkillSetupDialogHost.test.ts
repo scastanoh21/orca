@@ -260,6 +260,9 @@ describe('ManagedAgentSkillSetupDialogHost rendering', () => {
     let fallbackListener: ((event: ManagedAgentSkillFallback) => void) | null = null
     window.api = {
       skills: {
+        ensureManagedReady: vi.fn(),
+        deferManagedReadyPrompt: vi.fn(),
+        flushRestartPrompts: vi.fn().mockResolvedValue([]),
         onManagedFallback: vi.fn((listener) => {
           fallbackListener = listener
           return vi.fn()
@@ -318,6 +321,29 @@ describe('ManagedAgentSkillSetupDialogHost rendering', () => {
       repoId: null
     })
     expect(storeMocks.state.openSettingsPage).toHaveBeenCalledOnce()
+    root.unmount()
+  })
+
+  it('flushes deferred restart prompts once after settings hydrate', async () => {
+    const { root } = await renderHost()
+
+    await vi.waitFor(() => {
+      expect(window.api.skills.flushRestartPrompts).toHaveBeenCalledOnce()
+    })
+
+    root.unmount()
+  })
+
+  it('does not flush deferred restart prompts when prompts are disabled at startup', async () => {
+    storeMocks.state.settings = {
+      ...getDefaultSettings('/tmp'),
+      managedAgentSkillSetupPromptsEnabled: false
+    }
+    const { root } = await renderHost()
+
+    await Promise.resolve()
+
+    expect(window.api.skills.flushRestartPrompts).not.toHaveBeenCalled()
     root.unmount()
   })
 

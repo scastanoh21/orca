@@ -1,21 +1,14 @@
 import type { Store } from '../persistence'
-import { shouldEmitManagedAgentSkillFallback } from '../../shared/skills'
 import type { RuntimeManagedSkillNudgeHandler } from '../runtime/rpc/managed-skill-nudge'
-import { getManagedSkillUpdateCoordinator } from '../skills/managed-skill-update-coordinator-registry'
-import { sendManagedSkillFallback, sendManagedSkillUpdated } from './skills'
+import { recordManagedSkillRestartPromptRequest } from '../skills/managed-skill-restart-prompts'
 
 export function createRuntimeManagedSkillNudge(store: Store): RuntimeManagedSkillNudgeHandler {
   return async ({ skillName, context, remoteRuntime, discoveryTarget }) => {
-    const result = await getManagedSkillUpdateCoordinator(store).ensureManagedReady({
+    recordManagedSkillRestartPromptRequest(store, {
       skillName,
       context,
       ...(remoteRuntime ? { remoteRuntime } : {}),
       ...(!remoteRuntime && discoveryTarget ? { discoveryTarget } : {})
     })
-    if (shouldEmitManagedAgentSkillFallback(result)) {
-      sendManagedSkillFallback(result)
-    } else if (result.status === 'updated') {
-      sendManagedSkillUpdated(result)
-    }
   }
 }

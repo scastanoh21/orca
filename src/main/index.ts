@@ -14,7 +14,6 @@ import {
   getCanonicalUserDataPath,
   migrateMobilePairingDataToCanonicalUserDataPath
 } from './persistence'
-import { shouldEmitManagedAgentSkillFallback } from '../shared/skills'
 import { applyAppIcon } from './app-icon'
 import { StatsCollector, initStatsPath } from './stats/collector'
 import { ClaudeUsageStore, initClaudeUsagePath } from './claude-usage/store'
@@ -28,7 +27,7 @@ import { registerCoreHandlers } from './ipc/register-core-handlers'
 import { initObservability, shutdownObservability } from './observability'
 import { startSpan } from './observability/tracer'
 import { registerMobileHandlers } from './ipc/mobile'
-import { sendManagedSkillFallback, sendManagedSkillUpdated } from './ipc/skills'
+import { recordManagedSkillRestartPromptRequest } from './skills/managed-skill-restart-prompts'
 import { initTelemetry, shutdownTelemetry, trackAppOpenedOnce } from './telemetry/client'
 import { runManagedHookInstallers } from './agent-hooks/install-telemetry'
 import {
@@ -43,7 +42,6 @@ import { triggerStartupNotificationRegistration } from './ipc/notifications'
 import { OrcaRuntimeService } from './runtime/orca-runtime'
 import { OrcaRuntimeRpcServer } from './runtime/runtime-rpc'
 import { abortManagedSkillUpdateProcesses } from './skills/managed-skill-updates'
-import { getManagedSkillUpdateCoordinator } from './skills/managed-skill-update-coordinator-registry'
 import { awaitRuntimeFileWatcherUnsubscribes } from './runtime/orca-runtime-files'
 import { clearRuntimeMetadataIfOwned } from './runtime/runtime-metadata'
 import { ensureMainI18n, setMainUiLanguage } from './i18n/main-i18n'
@@ -1941,17 +1939,12 @@ app.whenReady().then(async () => {
     managedSkillDiscoveryTarget: { runtime: 'host' },
     managedSkillRemoteRuntime: isServeMode,
     nudgeManagedSkill: async ({ skillName, context, remoteRuntime, discoveryTarget }) => {
-      const result = await getManagedSkillUpdateCoordinator(store!).ensureManagedReady({
+      recordManagedSkillRestartPromptRequest(store!, {
         skillName,
         context,
         ...(remoteRuntime ? { remoteRuntime } : {}),
         ...(!remoteRuntime && discoveryTarget ? { discoveryTarget } : {})
       })
-      if (result.status === 'fallback' && shouldEmitManagedAgentSkillFallback(result)) {
-        sendManagedSkillFallback(result)
-      } else if (result.status === 'updated') {
-        sendManagedSkillUpdated(result)
-      }
     }
   })
   registerMobileHandlers(runtimeRpc)

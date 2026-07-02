@@ -45,7 +45,9 @@ export function ManagedAgentSkillSetupDialogHost(): React.JSX.Element | null {
   })
   const queuedKeysRef = useRef(new Set<string>())
   const snoozedKeysRef = useRef(new Set<string>())
+  const flushedRestartPromptsRef = useRef(false)
   const [rechecking, setRechecking] = useState(false)
+  const settings = useAppStore((state) => state.settings)
   const setupPromptsEnabled = useAppStore(
     (state) => state.settings?.managedAgentSkillSetupPromptsEnabled !== false
   )
@@ -104,6 +106,18 @@ export function ManagedAgentSkillSetupDialogHost(): React.JSX.Element | null {
       unsubscribeUpdated()
     }
   }, [enqueueFallback])
+
+  useEffect(() => {
+    if (!settings || flushedRestartPromptsRef.current) {
+      return
+    }
+    flushedRestartPromptsRef.current = true
+    if (!setupPromptsEnabled) {
+      return
+    }
+    // Why: workflow-triggered setup nudges are persisted and surfaced only after restart.
+    void window.api.skills.flushRestartPrompts().catch(() => {})
+  }, [settings, setupPromptsEnabled])
 
   const contextActionLabel =
     active?.manualCommand?.kind === 'install'
