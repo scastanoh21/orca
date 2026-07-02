@@ -206,7 +206,51 @@ describe('fetchViaPty', () => {
         usedPercent: 82,
         resetDescription: '2h 10m'
       },
+      weekly: null,
+      fableWeekly: {
+        usedPercent: 42,
+        resetDescription: '3d 2h'
+      },
+      error: null
+    })
+  })
+
+  it('parses generic weekly and Fable weekly limits as separate windows', async () => {
+    const term = makeMockTerm()
+    spawnMock.mockReturnValue(term)
+
+    const resultPromise = fetchViaPty()
+
+    await vi.advanceTimersByTimeAsync(2_000)
+    term.emitData(`
+      Plan usage limits
+
+      Current session
+      18% remaining
+      Resets in 2h 10m
+
+      Current week (all models)
+      84% left
+      Resets in 5d 4h
+
+      Fable
+      42% consumed
+      Resets in 3d 2h
+    `)
+    await vi.advanceTimersByTimeAsync(2_000)
+
+    await expect(resultPromise).resolves.toMatchObject({
+      provider: 'claude',
+      status: 'ok',
+      session: {
+        usedPercent: 82,
+        resetDescription: '2h 10m'
+      },
       weekly: {
+        usedPercent: 16,
+        resetDescription: '5d 4h'
+      },
+      fableWeekly: {
         usedPercent: 42,
         resetDescription: '3d 2h'
       },

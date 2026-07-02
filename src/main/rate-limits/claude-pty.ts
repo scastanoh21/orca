@@ -20,6 +20,7 @@ const MAX_OUTPUT_LENGTH = 100_000 // 100KB buffer limit
 // Weekly labels have varied between "Current week" and "Weekly limits".
 const SESSION_RE = /current\s*session/i
 const WEEKLY_RE = /(?:current\s*week|weekly\s*(?:limits?|usage|rate\s*limits?)|7\s*[- ]?\s*day)/i
+const FABLE_RE = /\bfable\b/i
 const PERCENT_RE = /(\d{1,3})(?:\.\d+)?\s*%\s*(used|consumed|left|remaining|available)/i
 const RESET_LINE_RE = /resets?\s+(?:at\s+|in\s+)?(.+)/i
 const ESC = String.fromCharCode(27)
@@ -35,13 +36,20 @@ function stripTerminalControlSequences(output: string): string {
  * Extract percent-left from lines following a label match.
  * Scans up to 12 lines after the label to find the associated percent.
  */
-function extractPercentAfterLabel(lines: string[], labelRe: RegExp): number | null {
+function extractPercentAfterLabel(
+  lines: string[],
+  labelRe: RegExp,
+  options: { stopAtFable?: boolean } = {}
+): number | null {
   for (let i = 0; i < lines.length; i++) {
     if (!labelRe.test(lines[i])) {
       continue
     }
     // Scan next 12 lines for a percent
     for (let j = i; j < Math.min(i + 12, lines.length); j++) {
+      if (j > i && options.stopAtFable === true && FABLE_RE.test(lines[j])) {
+        break
+      }
       const m = PERCENT_RE.exec(lines[j])
       if (m) {
         const pct = parseFloat(m[1])
@@ -54,12 +62,19 @@ function extractPercentAfterLabel(lines: string[], labelRe: RegExp): number | nu
   return null
 }
 
-function extractResetAfterLabel(lines: string[], labelRe: RegExp): string | null {
+function extractResetAfterLabel(
+  lines: string[],
+  labelRe: RegExp,
+  options: { stopAtFable?: boolean } = {}
+): string | null {
   for (let i = 0; i < lines.length; i++) {
     if (!labelRe.test(lines[i])) {
       continue
     }
     for (let j = i; j < Math.min(i + 14, lines.length); j++) {
+      if (j > i && options.stopAtFable === true && FABLE_RE.test(lines[j])) {
+        break
+      }
       const m = RESET_LINE_RE.exec(lines[j])
       if (m) {
         return m[1].trim().replace(/[)]+$/, '')
@@ -72,11 +87,13 @@ function extractResetAfterLabel(lines: string[], labelRe: RegExp): string | null
 function parsePtyUsage(output: string): {
   session: RateLimitWindow | null
   weekly: RateLimitWindow | null
+  fableWeekly: RateLimitWindow | null
 } {
   const lines = output.split(/\r\n|\n|\r/)
 
   const sessionPct = extractPercentAfterLabel(lines, SESSION_RE)
-  const weeklyPct = extractPercentAfterLabel(lines, WEEKLY_RE)
+  const weeklyPct = extractPercentAfterLabel(lines, WEEKLY_RE, { stopAtFable: true })
+  const fableWeeklyPct = extractPercentAfterLabel(lines, FABLE_RE)
 
   const session: RateLimitWindow | null =
     sessionPct !== null
@@ -94,11 +111,21 @@ function parsePtyUsage(output: string): {
           usedPercent: Math.min(100, Math.max(0, weeklyPct)),
           windowMinutes: 10080,
           resetsAt: null,
-          resetDescription: extractResetAfterLabel(lines, WEEKLY_RE)
+          resetDescription: extractResetAfterLabel(lines, WEEKLY_RE, { stopAtFable: true })
         }
       : null
 
-  return { session, weekly }
+  const fableWeekly: RateLimitWindow | null =
+    fableWeeklyPct !== null
+      ? {
+          usedPercent: Math.min(100, Math.max(0, fableWeeklyPct)),
+          windowMinutes: 10080,
+          resetsAt: null,
+          resetDescription: extractResetAfterLabel(lines, FABLE_RE)
+        }
+      : null
+
+  return { session, weekly, fableWeekly }
 }
 
 // Why: these substrings indicate the /usage TUI panel has finished
@@ -113,6 +140,7 @@ const STOP_SUBSTRINGS = [
   'Weekly limit',
   'Weekly usage',
   '7-day',
+  'Fable',
   'Current session',
   'Failed to load usage data',
   'failed to load usage data'
@@ -241,12 +269,13 @@ export async function fetchViaPty(options?: {
         cleanupHiddenRateLimitPty(term, termDisposables, { kill: true })
         // Even on timeout, try to parse whatever we collected
         const clean = stripTerminalControlSequences(output)
-        const { session, weekly } = parsePtyUsage(clean)
-        if (session || weekly) {
+        const { session, weekly, fableWeekly } = parsePtyUsage(clean)
+        if (session || weekly || fableWeekly) {
           resolve({
             provider: 'claude',
             session,
             weekly,
+            fableWeekly,
             updatedAt: Date.now(),
             error: null,
             status: 'ok'
@@ -292,9 +321,9 @@ export async function fetchViaPty(options?: {
       cleanupHiddenRateLimitPty(term, termDisposables, { kill: true })
 
       const clean = stripTerminalControlSequences(output)
-      const { session, weekly } = parsePtyUsage(clean)
+      const { session, weekly, fableWeekly } = parsePtyUsage(clean)
 
-      if (!session && !weekly) {
+      if (!session && !weekly && !fableWeekly) {
         resolve({
           provider: 'claude',
           session: null,
@@ -308,6 +337,7 @@ export async function fetchViaPty(options?: {
           provider: 'claude',
           session,
           weekly,
+          fableWeekly,
           updatedAt: Date.now(),
           error: null,
           status: 'ok'
@@ -389,17 +419,18 @@ export async function fetchViaPty(options?: {
         resolved = true
         clearTimeout(timeout)
         const clean = stripTerminalControlSequences(output)
-        const { session, weekly } = parsePtyUsage(clean)
+        const { session, weekly, fableWeekly } = parsePtyUsage(clean)
         resolve({
           provider: 'claude',
           session,
           weekly,
+          fableWeekly,
           updatedAt: Date.now(),
           error:
-            session || weekly
+            session || weekly || fableWeekly
               ? null
               : withMacTailscaleDnsHint('CLI exited before /usage rendered', clean),
-          status: session || weekly ? 'ok' : 'error'
+          status: session || weekly || fableWeekly ? 'ok' : 'error'
         })
       }
     })

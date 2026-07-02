@@ -189,7 +189,8 @@ describe('fetchClaudeRateLimits', () => {
       new Response(
         JSON.stringify({
           five_hour: { used_percentage: 23.5, resets_at: 1770000000 },
-          seven_day: { used_percentage: 41.2, resets_at: 1770604800 }
+          seven_day: { used_percentage: 41.2, resets_at: 1770604800 },
+          fable_weekly: { used_percentage: 12.3, resets_at: 1770691200 }
         }),
         { status: 200 }
       )
@@ -199,7 +200,8 @@ describe('fetchClaudeRateLimits', () => {
       provider: 'claude',
       status: 'ok',
       session: { usedPercent: 23.5, resetsAt: 1770000000000 },
-      weekly: { usedPercent: 41.2, resetsAt: 1770604800000 }
+      weekly: { usedPercent: 41.2, resetsAt: 1770604800000 },
+      fableWeekly: { usedPercent: 12.3, resetsAt: 1770691200000 }
     })
   })
 

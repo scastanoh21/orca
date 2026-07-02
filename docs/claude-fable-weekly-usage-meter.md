@@ -2,7 +2,7 @@
 
 ## Problem
 
-Claude Code now exposes weekly subscription usage alongside the 5-hour window. Anthropic documents `rate_limits.five_hour` and `rate_limits.seven_day` in Claude Code statusline JSON, with weekly data present for Claude.ai subscribers after the first API response. The existing Orca Claude meter already has a weekly slot in shared state, but the hidden CLI fallback only recognizes older `/usage` copy.
+Claude Code now exposes weekly subscription usage alongside the 5-hour window, and its live `/usage` panel can also show a Fable-specific weekly bucket. Anthropic documents `rate_limits.five_hour` and `rate_limits.seven_day` in Claude Code statusline JSON, with weekly data present for Claude.ai subscribers after the first API response. The existing Orca Claude meter already has a weekly slot in shared state, but it needs a distinct Fable weekly slot so the status bar can show all three visible meters when Claude reports them.
 
 Relevant code:
 
@@ -20,35 +20,36 @@ Research:
 
 ## Goal
 
-Make Orca's existing Claude status-bar meter show the weekly Fable/Claude usage window whenever Claude Code reports it, including newer `/usage` panel wording such as `Weekly limits` or `7-day`.
+Make Orca's existing Claude status-bar meter show the weekly Claude and Fable usage windows whenever Claude Code reports them, including newer `/usage` panel wording such as `Weekly limits`, `Fable`, or `7-day`.
 
 ## Non-goals
 
 - Do not infer subscription quota from token logs.
-- Do not add a separate Fable-only quota unless Claude exposes a stable, separate field.
 - Do not spend user Claude quota during automated verification.
 - Do not change provider account switching, polling cadence, or OAuth credential handling.
 
 ## Design
 
-1. Keep `ProviderRateLimits.weekly` as the canonical UI field. OAuth already maps `seven_day` to `weekly`, and the status bar already renders it next to the 5-hour window.
-2. Accept both OAuth `utilization` windows and Claude Code-style `used_percentage` windows with epoch-second `resets_at` values.
-3. Broaden the hidden Claude CLI parser so the weekly label accepts both old `Current week` wording and newer usage/statusline wording: `Weekly limits`, `Weekly usage`, `weekly rate limit`, and `7-day`.
-4. Broaden percent parsing to treat `consumed` like `used`, because Anthropic describes rate-limit percentages as consumed.
-5. Add focused tests for the new weekly wording and retain existing old-copy coverage.
+1. Keep `ProviderRateLimits.weekly` as the canonical generic 7-day UI field. OAuth already maps `seven_day` to `weekly`, and the status bar already renders it next to the 5-hour window.
+2. Add `ProviderRateLimits.fableWeekly` as a distinct optional Claude window so the chip and popover can render Session, Weekly, and Fable simultaneously.
+3. Accept both OAuth `utilization` windows and Claude Code-style `used_percentage` windows with epoch-second `resets_at` values.
+4. Broaden the hidden Claude CLI parser so the generic weekly label accepts both old `Current week` wording and newer usage/statusline wording: `Weekly limits`, `Weekly usage`, `weekly rate limit`, and `7-day`.
+5. Parse an explicit `Fable` label into `fableWeekly` instead of collapsing it into generic `weekly`.
+6. Broaden percent parsing to treat `consumed` like `used`, because Anthropic describes rate-limit percentages as consumed.
+7. Add focused tests for the new weekly wording and retain existing old-copy coverage.
 
 ## Edge Cases
 
 - Weekly data may be absent for API-key users or before the first Claude API response; keep `weekly: null`.
 - The hidden PTY fallback may still only return session data; the status bar should continue showing the 5-hour meter without error.
 - Reset timestamps/descriptions may be absent from CLI output; keep `resetsAt: null` and parse only visible reset text.
-- Fable currently draws from Claude plan usage surfaced as the 7-day window; if Anthropic adds a stable distinct Fable bucket later, model it separately instead of guessing from labels.
+- Fable data may be absent from the documented statusline payload even when the interactive `/usage` panel shows it; keep `fableWeekly: null` unless a distinct field or explicit `Fable` label is present.
 
 ## Rollout
 
-1. Update OAuth window mapping for statusline-style percentages and reset timestamps.
-2. Update `claude-pty` weekly label and percent parsing.
-3. Add focused tests for statusline-style OAuth data, `Weekly limits`, and `7-day` wording.
+1. Update OAuth window mapping for statusline-style percentages, reset timestamps, and distinct Fable weekly fields when present.
+2. Update `claude-pty` weekly label, Fable label, and percent parsing.
+3. Add focused tests for statusline-style OAuth data, `Weekly limits`, `Fable`, and `7-day` wording.
 4. Run focused tests, then typecheck/lint.
-5. Validate in Electron by injecting a Claude provider state with both 5-hour and weekly data and capturing status-bar screenshots.
+5. Validate in Electron by injecting a Claude provider state with 5-hour, generic weekly, and Fable weekly data and capturing status-bar screenshots.
 6. Commit, push, open a PR, and attach screenshots in a PR comment.
