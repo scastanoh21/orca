@@ -15,6 +15,7 @@ type WorktreeTitleFieldRenameProps = {
   className?: string
   editingClassName?: string
   inputClassName?: string
+  wrapTitle: boolean
   suppressMouseSelection: boolean
   rootRef: React.RefCallback<HTMLSpanElement>
   inputRef: React.RefCallback<HTMLInputElement>
@@ -32,7 +33,7 @@ type WorktreeTitleFieldRenameProps = {
 const fieldEditingInputClassName =
   'h-6 rounded-sm border border-input bg-input/40 px-0 py-0 shadow-xs selection:bg-[Highlight] selection:text-[HighlightText] focus-visible:border-ring focus-visible:ring-[1px] focus-visible:ring-ring/50 dark:bg-input/30'
 const fieldReadInputClassName =
-  'h-[1lh] rounded-none border-0 !border-transparent !bg-transparent p-0 !shadow-none focus-visible:border-transparent focus-visible:ring-0 focus-visible:outline-none dark:!bg-transparent'
+  'absolute inset-0 h-full min-h-[1lh] rounded-none border-0 !border-transparent !bg-transparent p-0 !text-transparent !shadow-none caret-transparent selection:bg-transparent selection:text-transparent focus-visible:border-transparent focus-visible:ring-0 focus-visible:outline-none dark:!bg-transparent'
 
 export function WorktreeTitleFieldRename({
   titleElementKey,
@@ -45,6 +46,7 @@ export function WorktreeTitleFieldRename({
   className,
   editingClassName,
   inputClassName,
+  wrapTitle,
   suppressMouseSelection,
   rootRef,
   inputRef,
@@ -65,7 +67,7 @@ export function WorktreeTitleFieldRename({
       key={`field:${titleElementKey}`}
       ref={rootRef}
       className={cn(
-        'relative grid min-w-0 truncate leading-tight text-foreground',
+        'relative grid min-w-0 leading-tight text-foreground',
         showUnreadEmphasis ? 'font-semibold' : 'font-normal',
         className,
         editing && editingClassName
@@ -74,7 +76,14 @@ export function WorktreeTitleFieldRename({
       onDoubleClick={editing ? undefined : onStartRename}
     >
       <span
-        className="pointer-events-none invisible col-start-1 row-start-1 min-w-0 truncate whitespace-pre"
+        className={cn(
+          'pointer-events-none col-start-1 row-start-1 min-w-0',
+          editing
+            ? 'invisible truncate whitespace-pre'
+            : wrapTitle
+              ? 'break-words whitespace-normal'
+              : 'truncate whitespace-nowrap'
+        )}
         aria-hidden="true"
       >
         {displayName}

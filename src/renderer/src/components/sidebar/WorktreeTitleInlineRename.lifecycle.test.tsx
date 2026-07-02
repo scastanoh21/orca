@@ -153,13 +153,20 @@ describe('WorktreeTitleInlineRename lifecycle', () => {
           displayName="Feature workspace"
           editingPresentation="field"
           selectOnFocus={false}
+          wrapTitle
           onRename={vi.fn()}
         />
       )
     })
 
     const readInput = nextContainer.querySelector('input')
+    const readSizingTitle = nextContainer.querySelector(
+      '[data-worktree-title-inline-rename] [aria-hidden="true"]'
+    )
     expect(readInput?.readOnly).toBe(true)
+    expect(readInput?.className).toContain('!text-transparent')
+    expect(readSizingTitle?.className).toContain('break-words')
+    expect(readSizingTitle?.className).toContain('whitespace-normal')
     expect(readInput?.getAttribute('data-worktree-title-rename-input')).toBeNull()
 
     act(() => {

@@ -333,6 +333,7 @@ export function WorktreeTitleInlineRename({
         className={className}
         editingClassName={editingClassName}
         inputClassName={inputClassName}
+        wrapTitle={wrapTitle}
         suppressMouseSelection={suppressMouseSelection}
         rootRef={handleRootRef}
         inputRef={handleInputRef}
