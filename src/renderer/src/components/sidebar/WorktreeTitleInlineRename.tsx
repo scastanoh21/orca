@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useRef, useState } from 'react'
 import { LoaderCircle } from 'lucide-react'
 import { toast } from 'sonner'
 import { Input } from '@/components/ui/input'
@@ -25,50 +25,6 @@ export function isWorktreeTitleTruncated(
   return element.scrollWidth > element.clientWidth
 }
 
-const FIELD_RENAME_CURSOR_LOCK_ATTR = 'data-worktree-title-rename-cursor-lock'
-const FIELD_RENAME_CURSOR_LOCK_STYLE_ID = 'worktree-title-rename-cursor-lock-style'
-const useCursorLockEffect = typeof window === 'undefined' ? useEffect : useLayoutEffect
-
-let fieldRenameCursorLockCount = 0
-
-function acquireFieldRenameCursorLock(): () => void {
-  if (typeof document === 'undefined') {
-    return () => {}
-  }
-
-  fieldRenameCursorLockCount += 1
-  document.documentElement.setAttribute(FIELD_RENAME_CURSOR_LOCK_ATTR, '')
-
-  if (!document.getElementById(FIELD_RENAME_CURSOR_LOCK_STYLE_ID)) {
-    const style = document.createElement('style')
-    style.id = FIELD_RENAME_CURSOR_LOCK_STYLE_ID
-    // Why: Chromium can leave the native cursor stale after a stationary pointer
-    // swaps from wrapped text to an input. Lock cursor only while field editing.
-    style.textContent = `
-html[${FIELD_RENAME_CURSOR_LOCK_ATTR}],
-html[${FIELD_RENAME_CURSOR_LOCK_ATTR}] body,
-html[${FIELD_RENAME_CURSOR_LOCK_ATTR}] body * {
-  cursor: text !important;
-}
-`
-    document.head.append(style)
-  }
-
-  let released = false
-  return () => {
-    if (released) {
-      return
-    }
-    released = true
-    fieldRenameCursorLockCount = Math.max(0, fieldRenameCursorLockCount - 1)
-    if (fieldRenameCursorLockCount > 0) {
-      return
-    }
-    document.documentElement.removeAttribute(FIELD_RENAME_CURSOR_LOCK_ATTR)
-    document.getElementById(FIELD_RENAME_CURSOR_LOCK_STYLE_ID)?.remove()
-  }
-}
-
 type WorktreeTitleInlineRenameProps = {
   displayName: string
   disabled?: boolean
@@ -87,8 +43,9 @@ type WorktreeTitleInlineRenameProps = {
   // onBeginEditingConsumed so the request fires exactly once.
   beginEditing?: boolean
   onBeginEditingConsumed?: () => void
-  // Why: parent-triggered rename can place the caret without selecting, while
-  // double-click rename keeps the native one-keystroke replacement behavior.
+  // Why: the inline text row selects all for a one-keystroke replace; the hovercard
+  // field defaults to caret-at-end. A pointer parked over a fresh selection makes
+  // macOS flip between the I-beam and the drag-selection arrow. Callers can override.
   selectOnFocus?: boolean
 }
 
@@ -107,7 +64,7 @@ export function WorktreeTitleInlineRename({
   onRename,
   beginEditing = false,
   onBeginEditingConsumed,
-  selectOnFocus = true
+  selectOnFocus = editingPresentation !== 'field'
 }: WorktreeTitleInlineRenameProps): React.JSX.Element {
   const editingRef = useRef(false)
   const savingRef = useRef(false)
@@ -184,13 +141,6 @@ export function WorktreeTitleInlineRename({
       : 'h-[1lh] rounded-none border-0 !border-transparent !bg-transparent p-0 !shadow-none focus-visible:border-transparent focus-visible:ring-0 focus-visible:outline-none dark:!bg-transparent'
   const savingInputClassName = editingPresentation === 'field' ? 'pr-6' : 'pr-4'
   const savingSpinnerClassName = editingPresentation === 'field' ? 'right-1.5' : 'right-0'
-
-  useCursorLockEffect(() => {
-    if (!editing || editingPresentation !== 'field') {
-      return
-    }
-    return acquireFieldRenameCursorLock()
-  }, [editing, editingPresentation])
 
   const setEditingMode = useCallback(
     (nextEditing: boolean) => {
