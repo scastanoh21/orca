@@ -509,6 +509,34 @@ is 29.7 ms — users cannot perceive it.
 Caveat: measured on the user's live app (this session active in it);
 idle p99 118 ms reflects that activity, not the terminal path.
 
+### 2026-07-03 — Same-engine reference: VS Code head-to-head (same machine, same rig)
+
+| metric | Orca v1.4.121-rc.0 | VS Code | verdict |
+|---|---|---|---|
+| DSR idle p50 | **0.44 ms** | 7.00 ms | Orca 16x faster |
+| DSR load p50 | 18.6 ms | **7.18 ms** | VS Code 2.6x faster |
+| DSR load p99 | **29.7 ms** | 43.4 ms | Orca 1.5x better tail |
+| ascii-log | **11.0 MB/s** | 9.0 | Orca +22% |
+| cjk-emoji | 12.2 | 11.3 | tie |
+| agent-tui | 11.2 | 11.7 | tie |
+| styles-stress | **10.4 MB/s** | 2.0 | Orca 5.2x |
+
+Orca now beats or ties the best-known xterm.js terminal on 5 of 6
+metrics — including 16x at idle (what users feel all day) and 5x on
+SGR-heavy output — and holds a better p99 tail under load. Throughput
+sits at the shared engine ceiling (~9-12 MB/s), confirming the class
+limit.
+
+The one loss (load p50) has a clean mechanism: VS Code's producer flow
+control caps unacked output at ~100KB, so its standing queue is
+~100KB / 11.7 MB/s ≈ 8.5 ms — matching its 7.18. Our standing queue
+(18.6 ms ≈ ~200KB at 11 MB/s) is set by the main→renderer ACK window
+(512KB/pty high water) + drain re-arm cadence (Chromium clamps nested
+setTimeout to ~4ms). Two levers, both cheap to test: (1) MessageChannel
+drain scheduling (sub-ms re-arm; also raises the throughput ceiling);
+(2) tighter effective in-flight window on the renderer delivery path.
+Target: VS Code's ~7ms class or below without giving back throughput.
+
 ## Success criteria (baseline-relative; finalize after task 1)
 
 - DSR-under-load p90 in Orca within striking distance of iTerm2 on the same
