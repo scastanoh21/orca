@@ -26,6 +26,8 @@ export type HeadlessEmulatorOptions = {
    *  stays write-only forever (contract invariant: the daemon never
    *  answers). */
   onQueryReply?: (reply: string) => void
+  pathFlavor?: 'posix' | 'win32'
+  remotePosixFileUriAuthority?: boolean
 }
 
 export type HeadlessEmulatorWriteOptions = {
@@ -54,8 +56,10 @@ const CONPTY_DA1_RESPONSE = '\x1b[?61;4c'
 export class HeadlessEmulator {
   private terminal: Terminal
   private serializer: SerializeAddon
-  private oscText = new TerminalOscCwdTitleScanner()
+  private oscText: TerminalOscCwdTitleScanner
   private mouseModes = new TerminalMouseModeMirror()
+  private readonly pathFlavor?: 'posix' | 'win32'
+  private readonly remotePosixFileUriAuthority: boolean
   private restoredOscLinks: TerminalOscLinkRange[] = []
   private disposed = false
   private onQueryReply: ((reply: string) => void) | null
@@ -68,6 +72,12 @@ export class HeadlessEmulator {
   private queryReplyForwardingDepth = 0
 
   constructor(opts: HeadlessEmulatorOptions) {
+    this.pathFlavor = opts.pathFlavor
+    this.remotePosixFileUriAuthority = opts.remotePosixFileUriAuthority === true
+    this.oscText = new TerminalOscCwdTitleScanner({
+      pathFlavor: this.pathFlavor,
+      remotePosixAuthority: this.remotePosixFileUriAuthority
+    })
     this.terminal = new Terminal({
       cols: opts.cols,
       rows: opts.rows,

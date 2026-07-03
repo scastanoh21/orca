@@ -9,6 +9,8 @@ import {
   normalizeTerminalTitle
 } from '../../shared/agent-detection'
 import { extractOscTitleScanTail } from '../../shared/osc-title-scan-tail'
+import { extractLastOsc7Uri, extractOscScanTail } from '../daemon/osc7-uri-extraction'
+import { parseFileUriPathParts } from '../daemon/osc7-file-uri'
 import type { AgentStatus } from '../../shared/agent-detection'
 import type { TerminalOscLinkRange } from '../../shared/terminal-osc-link-ranges'
 import {
@@ -680,7 +682,7 @@ import {
 } from './terminal-view-attribute-store'
 import { killAllProcessesForWorktree } from './worktree-teardown'
 import { MOBILE_SUBSCRIBE_SCROLLBACK_ROWS } from './scrollback-limits'
-import type { IFilesystemProvider, IPtyProvider } from '../providers/types'
+import type { IFilesystemProvider, IPtyProvider, PtyProcessInfo } from '../providers/types'
 import { getSshFilesystemProvider } from '../providers/ssh-filesystem-dispatch'
 import {
   assertFolderWorkspacePathUsable,
@@ -1082,11 +1084,12 @@ type RuntimePtyController = {
   write(ptyId: string, data: string): boolean
   kill(ptyId: string): boolean
   stopAndWait?(ptyId: string, opts?: { keepHistory?: boolean }): Promise<boolean>
+  getCwd?(ptyId: string): Promise<string | null>
   getForegroundProcess(ptyId: string): Promise<string | null>
   hasChildProcesses?(ptyId: string): Promise<boolean>
   clearBuffer?(ptyId: string): Promise<void>
   resize?(ptyId: string, cols: number, rows: number): boolean
-  listProcesses?(): Promise<{ id: string; cwd: string; title: string }[]>
+  listProcesses?(): Promise<PtyProcessInfo[]>
   serializeBuffer?(
     ptyId: string,
     opts?: { scrollbackRows?: number; altScreenForcesZeroRows?: boolean }
@@ -1132,7 +1135,10 @@ const BRACKETED_PASTE_QUIET_MS = 1500
 const DRAFT_PASTE_READY_TIMEOUT_MS = 8000
 const MOBILE_TERMINAL_SURFACE_TIMEOUT_MS = 10_000
 const MOBILE_TERMINAL_READY_FALLBACK_MS = 1000
-const RECENT_PTY_OUTPUT_LIMIT = 4096
+const RECENT_PTY_OUTPUT_LIMIT = 64 * 1024
+const RECENT_PTY_PATH_CANDIDATE_LIMIT = 1024
+const RECENT_PTY_PATH_CANDIDATE_MAX_BYTES = 4 * 1024
+const RECENT_PTY_PATH_CANDIDATE_TOTAL_BYTES = 64 * 1024
 
 function createTerminalRevealWarning(handle: string, error?: unknown): string {
   const reason =
@@ -1979,7 +1985,7 @@ export class OrcaRuntimeService {
   // without polling. Keyed by ptyId for O(1) lookup per data event.
   private dataListeners = new Map<
     string,
-    Set<(data: string, meta?: { seq?: number; rawLength?: number }) => void>
+    Set<(data: string, meta?: { seq?: number; rawLength?: number; cwd?: string }) => void>
   >()
   // Why: startup draft paste can subscribe after the agent already emitted its
   // ready marker. Keep a bounded raw buffer so fast startup output is replayed.
@@ -2016,6 +2022,7 @@ export class OrcaRuntimeService {
   private titleObservationSequence = 0
   private headlessTerminals = new Map<string, RuntimeHeadlessTerminal>()
   private ptyOutputSequenceById = new Map<string, number>()
+  private recentPtyPathCandidatesById = new Map<string, string[]>()
   // Why: OSC 9999 status can span PTY chunks. Keeping parser state in the
   // runtime lets hidden/model-owned terminals observe agent state without a
   // mounted xterm view.
@@ -2053,6 +2060,11 @@ export class OrcaRuntimeService {
   // SSH/relay buffering. Keep a small raw scan tail and feed reconstructed
   // chunks into the title tracker instead of falling back to last-title scans.
   private oscTitleScanTailByPtyId = new Map<string, string>()
+  // Why: mobile file taps resolve relative paths on the host. OSC 7 is the
+  // terminal-owned cwd signal, and it can arrive in live output between snapshots.
+  private osc7ScanTailByPtyId = new Map<string, string>()
+  private terminalCwdByPtyId = new Map<string, string>()
+  private terminalFileUriHostnameByPtyId = new Map<string, string>()
   // Why: latest agent-status payload per pane, retained so worktree.ps can serve
   // mobile the same inline agent rows the desktop sidebar renders. Cleared on pty
   // teardown so dead agents don't linger. See RuntimeAgentRowSnapshot.
@@ -4903,6 +4915,12 @@ export class OrcaRuntimeService {
     requireStore: () => this.requireStore(),
     resolveWorktreeSelector: (selector) => this.resolveWorktreeSelector(selector),
     resolveRuntimeFileTarget: (selector) => this.resolveRuntimeFileTarget(selector),
+    resolveTerminalCwd: (terminalHandle) => this.resolveTerminalCwd(terminalHandle),
+    resolveTerminalContext: (terminalHandle) => this.resolveTerminalContext(terminalHandle),
+    resolveTerminalFileUriHostname: (terminalHandle) =>
+      this.resolveTerminalFileUriHostname(terminalHandle),
+    hasRecentTerminalOutputPath: (terminalHandle, pathText, absolutePath) =>
+      this.hasRecentTerminalOutputPath(terminalHandle, pathText, absolutePath),
     resolveRuntimeGitTarget: (selector) => this.resolveRuntimeGitTarget(selector),
     openFile: (worktreeId, filePath, relativePath, runtimeEnvironmentId) => {
       if (!this.notifier?.openFile) {
@@ -4932,6 +4950,14 @@ export class OrcaRuntimeService {
   )
   resolveTerminalPath: RuntimeFileCommands['resolveTerminalPath'] =
     this.fileCommands.resolveTerminalPath.bind(this.fileCommands)
+  readTerminalArtifactFile: RuntimeFileCommands['readTerminalArtifactFile'] =
+    this.fileCommands.readTerminalArtifactFile.bind(this.fileCommands)
+  readTerminalArtifactPreview: RuntimeFileCommands['readTerminalArtifactPreview'] =
+    this.fileCommands.readTerminalArtifactPreview.bind(this.fileCommands)
+  writeTerminalArtifactFile: RuntimeFileCommands['writeTerminalArtifactFile'] =
+    this.fileCommands.writeTerminalArtifactFile.bind(this.fileCommands)
+  revokeTerminalFileGrantsForClient: RuntimeFileCommands['revokeTerminalFileGrantsForClient'] =
+    this.fileCommands.revokeTerminalFileGrantsForClient.bind(this.fileCommands)
   readFileExplorerDir: RuntimeFileCommands['readFileExplorerDir'] =
     this.fileCommands.readFileExplorerDir.bind(this.fileCommands)
   watchFileExplorer: RuntimeFileCommands['watchFileExplorer'] =
@@ -5118,6 +5144,46 @@ export class OrcaRuntimeService {
     }
   }
 
+  private adoptControllerTerminalHandle(ptyId: string, handle: string | undefined): void {
+    const trimmed = handle?.trim()
+    if (!trimmed || !trimmed.startsWith('term_')) {
+      return
+    }
+    if (this.isTerminalHandleAdoptionBlocked(ptyId, trimmed)) {
+      return
+    }
+    // Why: after an app/runtime restart, the live PTY child still has its
+    // original ORCA_TERMINAL_HANDLE, but the runtime's in-memory map is gone.
+    this.registerPreAllocatedHandleForPty(ptyId, trimmed)
+  }
+
+  // Why: adoption is best-effort restart recovery and must be first-wins.
+  // Re-keying a pty that already has a handle this session would strand
+  // waiters registered under the old handle, and provider-reported values
+  // are not trusted to be collision-free — a handle bound to a different
+  // pty must never be stolen by a later report.
+  private isTerminalHandleAdoptionBlocked(ptyId: string, handle: string): boolean {
+    if (this.handleByPtyId.get(ptyId) ?? this.findHandleForPtyRecord(ptyId)) {
+      return true
+    }
+    for (const leaf of this.getLeavesForPty(ptyId)) {
+      const issued = this.handleByLeafKey.get(this.getLeafKey(leaf.tabId, leaf.leafId))
+      if (issued && issued !== handle) {
+        return true
+      }
+    }
+    const existingRecord = this.handles.get(handle)
+    if (existingRecord && existingRecord.ptyId !== ptyId) {
+      return true
+    }
+    for (const [otherPtyId, otherHandle] of this.handleByPtyId) {
+      if (otherHandle === handle && otherPtyId !== ptyId) {
+        return true
+      }
+    }
+    return false
+  }
+
   onPtySpawned(ptyId: string): void {
     const pty = this.getOrCreatePtyWorktreeRecord(ptyId)
     if (pty) {
@@ -5152,11 +5218,11 @@ export class OrcaRuntimeService {
   onPtyData(ptyId: string, data: string, at: number): number {
     const outputSequence = (this.ptyOutputSequenceById.get(ptyId) ?? 0) + data.length
     this.ptyOutputSequenceById.set(ptyId, outputSequence)
+    const osc7Metadata = this.recordOsc7MetadataForPty(ptyId, data)
+    const cwd = osc7Metadata.cwd
+    const cwdChanged = osc7Metadata.cwdChanged
     const agentStatusChunk = this.processAgentStatusOscForPty(ptyId, data)
-    this.recentPtyOutputById.set(
-      ptyId,
-      appendRecentPtyOutput(this.recentPtyOutputById.get(ptyId), data)
-    )
+    this.recordRecentPtyOutputForPathProvenance(ptyId, data)
     // Agent detection runs on raw data before leaf processing, since the
     // tail buffer logic normalizes away the OSC sequences we need.
     this.agentDetector?.onData(ptyId, data, at)
@@ -5329,7 +5395,11 @@ export class OrcaRuntimeService {
 
     const listeners = this.dataListeners.get(ptyId)
     if (listeners) {
-      const meta = { seq: outputSequence, rawLength: data.length }
+      const meta = {
+        seq: outputSequence,
+        rawLength: data.length,
+        ...(cwdChanged && cwd !== null ? { cwd } : {})
+      }
       for (const listener of listeners) {
         listener(data, meta)
       }
@@ -5764,6 +5834,61 @@ export class OrcaRuntimeService {
     this.ptyTitleTrackersByPtyId.delete(ptyId)
   }
 
+  private extractLastOsc7CwdForPty(
+    ptyId: string,
+    data: string
+  ): { path: string; hostname: string } | null {
+    const previousTail = this.osc7ScanTailByPtyId.get(ptyId)
+    if (!previousTail && !data.includes('\x1b]7;')) {
+      return null
+    }
+    const input = `${previousTail ?? ''}${data}`
+    const scanTail = extractOscScanTail(input, 4096)
+    if (scanTail.length > 0) {
+      this.osc7ScanTailByPtyId.set(ptyId, scanTail)
+    } else {
+      this.osc7ScanTailByPtyId.delete(ptyId)
+    }
+    const uri = extractLastOsc7Uri(input)
+    const pty = this.ptysById.get(ptyId)
+    const pathFlavor = this.pathFlavorForPty(pty)
+    return uri
+      ? parseFileUriPathParts(uri, {
+          pathFlavor,
+          remotePosixAuthority: !!pty?.connectionId && pathFlavor !== 'win32'
+        })
+      : null
+  }
+
+  private recordOsc7MetadataForPty(
+    ptyId: string,
+    data: string
+  ): { cwd: string | null; cwdChanged: boolean } {
+    const osc7 = this.extractLastOsc7CwdForPty(ptyId, data)
+    const cwd = osc7?.path ?? null
+    const cwdChanged =
+      cwd !== null && cwd.trim().length > 0 && this.terminalCwdByPtyId.get(ptyId) !== cwd
+    if (cwdChanged) {
+      this.terminalCwdByPtyId.set(ptyId, cwd)
+    }
+    if (osc7) {
+      if (osc7.hostname) {
+        this.terminalFileUriHostnameByPtyId.set(ptyId, osc7.hostname)
+      } else {
+        this.terminalFileUriHostnameByPtyId.delete(ptyId)
+      }
+    }
+    return { cwd, cwdChanged }
+  }
+
+  private pathFlavorForPty(pty?: RuntimePtyWorktreeRecord | null): 'posix' | 'win32' {
+    if (!pty?.connectionId) {
+      return process.platform === 'win32' ? 'win32' : 'posix'
+    }
+    const worktreePath = splitWorktreeIdForFilesystem(pty.worktreeId)?.worktreePath
+    return worktreePath && isWindowsAbsolutePathLike(worktreePath) ? 'win32' : 'posix'
+  }
+
   private emitTerminalAgentStatusEvents(ptyId: string, chunk: ProcessedAgentStatusChunk): void {
     // Why: snapshot retention (for mobile worktree.ps) must run even when no
     // renderer listener is attached, so we don't early-return on a missing
@@ -5866,7 +5991,7 @@ export class OrcaRuntimeService {
 
   subscribeToTerminalData(
     ptyId: string,
-    listener: (data: string, meta?: { seq?: number; rawLength?: number }) => void
+    listener: (data: string, meta?: { seq?: number; rawLength?: number; cwd?: string }) => void
   ): () => void {
     return addListenerToMap(this.dataListeners, ptyId, listener)
   }
@@ -6043,6 +6168,8 @@ export class OrcaRuntimeService {
     const dims = size ?? this.getTerminalSize(ptyId) ?? { cols: 80, rows: 24 }
     const state = this.createPtyHeadlessTerminalState(ptyId, dims)
     this.headlessTerminals.set(ptyId, state)
+    this.recordOsc7MetadataForPty(ptyId, data)
+    this.recordRecentPtyOutputForPathProvenance(ptyId, data)
     state.writeChain = state.writeChain
       .then(async () => {
         // Why: seed writes never set forwardQueryReplies — the main-side
@@ -6114,6 +6241,8 @@ export class OrcaRuntimeService {
         if (!rendered || rendered.data.length === 0) {
           return
         }
+        this.recordOsc7MetadataForPty(ptyId, rendered.data)
+        this.recordRecentPtyOutputForPathProvenance(ptyId, rendered.data)
         // Resize to renderer's dims so the seed reflows correctly into the
         // emulator's grid, then resize back to PTY dims (if known) so live
         // writes use the correct cell layout.
@@ -6216,9 +6345,13 @@ export class OrcaRuntimeService {
     dims: { cols: number; rows: number }
   ): RuntimeHeadlessTerminal {
     let state: RuntimeHeadlessTerminal | null = null
+    const pathFlavor = this.pathFlavorForPty(this.ptysById.get(ptyId))
     const emulator = new HeadlessEmulator({
       cols: dims.cols,
       rows: dims.rows,
+      pathFlavor,
+      remotePosixFileUriAuthority:
+        !!this.ptysById.get(ptyId)?.connectionId && pathFlavor !== 'win32',
       // Why: replies take the provider input path (same entry as pty:write —
       // daemon shell-ready gating and the SSH relay write apply unchanged),
       // NOT writePtyInput, so renderer interactive-output metering never
@@ -6272,7 +6405,21 @@ export class OrcaRuntimeService {
   }
 
   private resizeHeadlessTerminal(ptyId: string, cols: number, rows: number): void {
-    this.headlessTerminals.get(ptyId)?.emulator.resize(cols, rows)
+    const state = this.headlessTerminals.get(ptyId)
+    if (!state) {
+      return
+    }
+    // Why: terminal reflow is a parser operation. It must sit in the same
+    // per-PTY stream as output bytes or restore snapshots can bake in wraps
+    // from the wrong terminal width.
+    state.writeChain = state.writeChain
+      .then(() => {
+        state.emulator.resize(cols, rows)
+      })
+      .catch(() => {
+        // Best-effort mirror tracking; live PTY streaming must continue even
+        // if xterm rejects a raced resize during teardown.
+      })
   }
 
   private async clearHeadlessTerminalBuffer(ptyId: string): Promise<void> {
@@ -6343,7 +6490,11 @@ export class OrcaRuntimeService {
       // their existing null fallback paths.
     }
     return rendererSnapshot
-      ? this.preferTrackedLastTitle(ptyId, { ...rendererSnapshot, source: 'renderer' as const })
+      ? this.preferTrackedLastTitle(ptyId, {
+          ...rendererSnapshot,
+          cwd: rendererSnapshot.cwd ?? this.terminalCwdByPtyId.get(ptyId),
+          source: 'renderer' as const
+        })
       : null
   }
 
@@ -6436,7 +6587,7 @@ export class OrcaRuntimeService {
           data,
           cols: snapshot.cols,
           rows: snapshot.rows,
-          cwd: snapshot.cwd,
+          cwd: snapshot.cwd ?? this.terminalCwdByPtyId.get(ptyId),
           lastTitle: snapshot.lastTitle,
           seq: state.outputSequence,
           source: 'headless' as const,
@@ -6476,6 +6627,59 @@ export class OrcaRuntimeService {
       return null
     }
     return { ptyId: leaf.ptyId }
+  }
+
+  async resolveTerminalCwd(handle: string): Promise<string | null> {
+    const ptyId = this.resolveLeafForHandle(handle)?.ptyId
+    if (!ptyId) {
+      return null
+    }
+    const tracked = this.terminalCwdByPtyId.get(ptyId)
+    if (tracked) {
+      return tracked
+    }
+    try {
+      const cwd = await this.ptyController?.getCwd?.(ptyId)
+      return cwd && cwd.trim().length > 0 ? cwd : null
+    } catch {
+      return null
+    }
+  }
+
+  resolveTerminalFileUriHostname(handle: string): string | null {
+    const ptyId = this.resolveLeafForHandle(handle)?.ptyId
+    return ptyId ? (this.terminalFileUriHostnameByPtyId.get(ptyId) ?? null) : null
+  }
+
+  private recordRecentPtyOutputForPathProvenance(ptyId: string, data: string): void {
+    this.recentPtyOutputById.set(
+      ptyId,
+      appendRecentPtyOutput(this.recentPtyOutputById.get(ptyId), data)
+    )
+    this.recentPtyPathCandidatesById.set(
+      ptyId,
+      appendRecentPtyPathCandidates(this.recentPtyPathCandidatesById.get(ptyId), data)
+    )
+  }
+
+  resolveTerminalContext(
+    handle: string
+  ): { worktreeId: string; connectionId: string | null } | null {
+    const ptyId = this.resolveLeafForHandle(handle)?.ptyId
+    const pty = ptyId ? this.ptysById.get(ptyId) : null
+    return pty ? { worktreeId: pty.worktreeId, connectionId: pty.connectionId } : null
+  }
+
+  hasRecentTerminalOutputPath(handle: string, pathText: string, absolutePath: string): boolean {
+    const ptyId = this.resolveLeafForHandle(handle)?.ptyId
+    const recentOutput = ptyId ? this.recentPtyOutputById.get(ptyId) : null
+    if (recentOutput && recentTerminalOutputIncludesPath(recentOutput, pathText, absolutePath)) {
+      return true
+    }
+    const candidates = ptyId ? this.recentPtyPathCandidatesById.get(ptyId) : null
+    return candidates
+      ? recentTerminalPathCandidatesIncludePath(candidates, pathText, absolutePath)
+      : false
   }
 
   registerSubscriptionCleanup(
@@ -7113,6 +7317,7 @@ export class OrcaRuntimeService {
   }
 
   onClientDisconnected(clientId: string): void {
+    this.revokeTerminalFileGrantsForClient(clientId)
     this.cancelMobileDictationForClient(clientId)
 
     // (1) Cancel pending restore-debounce timers owned by this client.
@@ -7270,11 +7475,15 @@ export class OrcaRuntimeService {
     this.lastRendererSizes.delete(ptyId)
     this.recentPtyOutputById.delete(ptyId)
     this.clearWaitBlockedCheckState(ptyId)
+    this.recentPtyPathCandidatesById.delete(ptyId)
     this.ptyOutputSequenceById.delete(ptyId)
     this.agentStatusOscProcessorsByPtyId.delete(ptyId)
     this.terminalSpawnCommandsByPtyId.delete(ptyId)
     this.disposePtyTitleTracker(ptyId)
     this.oscTitleScanTailByPtyId.delete(ptyId)
+    this.osc7ScanTailByPtyId.delete(ptyId)
+    this.terminalCwdByPtyId.delete(ptyId)
+    this.terminalFileUriHostnameByPtyId.delete(ptyId)
     this.clearAgentRowSnapshotsForPty(ptyId)
     // Why: a Claude agent-team leader whose PTY exits naturally (agent finished,
     // process died, renderer reload) must release its team + nested panes map.
@@ -7497,7 +7706,6 @@ export class OrcaRuntimeService {
     if (!resized) {
       return false
     }
-    this.resizeHeadlessTerminal(ptyId, cols, rows)
     this.onExternalPtyResize(ptyId, cols, rows)
     return true
   }
@@ -8325,12 +8533,9 @@ export class OrcaRuntimeService {
     }
   }
 
-  // Why: called from the pty:resize IPC handler whenever the desktop renderer
-  // resizes a PTY (e.g. via safeFit after window resize, split, or desktop-mode
-  // restore). Stores the renderer-reported size so handleMobileSubscribe can use
-  // the actual pane geometry instead of a stale PTY size for previousCols.
-  // This is a passive geometry report — it does NOT call applyLayout; the
-  // PTY is already at the reported size.
+  // Why: called after a desktop renderer path has successfully resized the
+  // PTY (local IPC or remote desktop viewport). The runtime mirror must take
+  // the same accepted geometry so hidden-output restore parses at PTY width.
   onExternalPtyResize(ptyId: string, cols: number, rows: number): void {
     // The pty:resize IPC handler is supposed to gate via `isResizeSuppressed`
     // before calling here, but defend against callers that don't.
@@ -8350,6 +8555,7 @@ export class OrcaRuntimeService {
     if (activeOverride && activeOverride.cols === cols && activeOverride.rows === rows) {
       return
     }
+    this.resizeHeadlessTerminal(ptyId, cols, rows)
     this.refreshRendererGeometry(ptyId, cols, rows)
   }
 
@@ -18223,6 +18429,7 @@ export class OrcaRuntimeService {
     const sessions = sessionsResult.value
     const livePtyIds = new Set(sessions.map((session) => session.id))
     for (const session of sessions) {
+      this.adoptControllerTerminalHandle(session.id, session.terminalHandle)
       const worktreeId =
         inferWorktreeIdFromPtyId(session.id) ??
         findResolvedWorktreeIdForPath(resolvedWorktrees, session.cwd)
@@ -18282,11 +18489,15 @@ export class OrcaRuntimeService {
     this.ptysById.delete(ptyId)
     this.recentPtyOutputById.delete(ptyId)
     this.clearWaitBlockedCheckState(ptyId)
+    this.recentPtyPathCandidatesById.delete(ptyId)
     this.ptyOutputSequenceById.delete(ptyId)
     this.agentStatusOscProcessorsByPtyId.delete(ptyId)
     this.terminalSpawnCommandsByPtyId.delete(ptyId)
     this.disposePtyTitleTracker(ptyId)
     this.oscTitleScanTailByPtyId.delete(ptyId)
+    this.osc7ScanTailByPtyId.delete(ptyId)
+    this.terminalCwdByPtyId.delete(ptyId)
+    this.terminalFileUriHostnameByPtyId.delete(ptyId)
     this.clearAgentRowSnapshotsForPty(ptyId)
     const handle = this.handleByPtyId.get(ptyId)
     if (handle) {
@@ -22750,6 +22961,271 @@ export function appendRecentPtyOutput(previous: string | undefined, data: string
     return data.slice(-RECENT_PTY_OUTPUT_LIMIT)
   }
   return `${previous ?? ''}${data}`.slice(-RECENT_PTY_OUTPUT_LIMIT)
+}
+
+export function appendRecentPtyPathCandidates(
+  previous: string[] | undefined,
+  data: string
+): string[] {
+  const next = previous ? previous.slice() : []
+  for (const candidate of extractTerminalOutputPathCandidates(data)) {
+    if (Buffer.byteLength(candidate, 'utf8') > RECENT_PTY_PATH_CANDIDATE_MAX_BYTES) {
+      continue
+    }
+    next.push(candidate)
+  }
+  return pruneRecentPtyPathCandidates(next)
+}
+
+export function recentTerminalPathCandidatesIncludePath(
+  recentCandidates: readonly string[],
+  pathText: string,
+  absolutePath: string
+): boolean {
+  const candidates = new Set(
+    [
+      pathText,
+      absolutePath,
+      ...wslTerminalOutputAliases(pathText),
+      ...wslTerminalOutputAliases(absolutePath)
+    ]
+      .map((candidate) => candidate.trim())
+      .filter((candidate) => candidate.length > 0)
+  )
+  for (const recent of recentCandidates) {
+    if (candidates.has(recent)) {
+      return true
+    }
+  }
+  return false
+}
+
+function pruneRecentPtyPathCandidates(candidates: string[]): string[] {
+  const countBounded =
+    candidates.length > RECENT_PTY_PATH_CANDIDATE_LIMIT
+      ? candidates.slice(-RECENT_PTY_PATH_CANDIDATE_LIMIT)
+      : candidates
+  let totalBytes = 0
+  let startIndex = countBounded.length
+  for (let index = countBounded.length - 1; index >= 0; index -= 1) {
+    const nextTotal = totalBytes + Buffer.byteLength(countBounded[index]!, 'utf8')
+    if (nextTotal > RECENT_PTY_PATH_CANDIDATE_TOTAL_BYTES) {
+      break
+    }
+    totalBytes = nextTotal
+    startIndex = index
+  }
+  return startIndex === 0 ? countBounded : countBounded.slice(startIndex)
+}
+
+export function recentTerminalOutputIncludesPath(
+  recentOutput: string,
+  pathText: string,
+  absolutePath: string
+): boolean {
+  const candidates = new Set(
+    [pathText, absolutePath]
+      .map((candidate) => candidate.trim())
+      .filter((candidate) => candidate.length > 0)
+  )
+  if (candidates.size === 0) {
+    return false
+  }
+  for (const candidate of candidates) {
+    if (outputContainsPathCandidate(recentOutput, candidate)) {
+      return true
+    }
+  }
+  const decodedOutput = decodeTerminalOutputPercentEscapes(recentOutput)
+  if (decodedOutput !== recentOutput) {
+    for (const candidate of candidates) {
+      if (outputContainsPathCandidate(decodedOutput, candidate)) {
+        return true
+      }
+    }
+  }
+  return false
+}
+
+function outputContainsPathCandidate(output: string, candidate: string): boolean {
+  let start = output.indexOf(candidate)
+  while (start !== -1) {
+    const end = start + candidate.length
+    if (isPathCandidateStartBoundary(output, start) && isPathCandidateEndBoundary(output, end)) {
+      return true
+    }
+    start = output.indexOf(candidate, start + 1)
+  }
+  return false
+}
+
+function isPathCandidateStartBoundary(output: string, start: number): boolean {
+  if (start === 0) {
+    return true
+  }
+  if (output.slice(0, start).endsWith('file://')) {
+    return true
+  }
+  if (
+    /^[A-Za-z]:[\\/]/.test(output.slice(start)) &&
+    /file:\/\/(?:localhost|127\.0\.0\.1|\[?::1\]?)?\/$/i.test(output.slice(0, start))
+  ) {
+    return true
+  }
+  if (/file:\/\/(?:localhost|127\.0\.0\.1|\[?::1\]?)$/i.test(output.slice(0, start))) {
+    return true
+  }
+  return !isPathCandidateContinuationChar(output[start - 1]!)
+}
+
+function isPathCandidateEndBoundary(output: string, end: number): boolean {
+  const next = output[end]
+  if (!next) {
+    return true
+  }
+  if (next === ':' && /^\d+(?::\d+)?(?:\D|$)/.test(output.slice(end + 1))) {
+    return true
+  }
+  return !isPathCandidateContinuationChar(next)
+}
+
+function isPathCandidateContinuationChar(char: string): boolean {
+  return /[A-Za-z0-9._~/%+@\\()[\]-]/.test(char)
+}
+
+function decodeTerminalOutputPercentEscapes(value: string): string {
+  return value.replace(/(?:%[0-9a-f]{2})+/gi, (match) => {
+    try {
+      return decodeURIComponent(match)
+    } catch {
+      return match
+    }
+  })
+}
+
+// Why: extraction runs on the PTY hot path for every chunk, and the extension
+// regex backtracks quadratically on pathological separator runs. No candidate
+// can cross a newline (the regex classes exclude \r\n), so scan per line and
+// skip lines already too long to yield a storable candidate —
+// appendRecentPtyPathCandidates drops oversized candidates anyway, and the raw
+// recent-output buffer still covers provenance inside oversized lines.
+function extractTerminalOutputPathCandidates(data: string): string[] {
+  const candidates: string[] = []
+  const add = (value: string): void => {
+    const candidate = trimTerminalOutputPathCandidate(value)
+    if (candidate.length > 0) {
+      candidates.push(candidate)
+      const drivePath = normalizeTerminalOutputFileUriDrivePath(candidate)
+      if (drivePath) {
+        candidates.push(drivePath)
+      }
+    }
+  }
+  for (const line of data.split(/[\r\n]+/)) {
+    if (line.length === 0 || line.length > RECENT_PTY_PATH_CANDIDATE_MAX_BYTES) {
+      continue
+    }
+    collectTerminalOutputLinePathCandidates(line, add)
+  }
+  return candidates
+}
+
+function collectTerminalOutputLinePathCandidates(line: string, add: (value: string) => void): void {
+  for (const match of line.matchAll(/file:\/\/([^/\s]*)(\/[^\s\x1b"'<>)]*)/gi)) {
+    const authority = match[1] ?? ''
+    const uriPath = match[2]
+    if (uriPath) {
+      const decoded = decodeTerminalOutputPercentEscapes(uriPath)
+      add(isTerminalOutputLoopbackAuthority(authority) ? decoded : `//${authority}${decoded}`)
+    }
+  }
+  for (const match of line.matchAll(
+    /(?:\/(?:tmp|private\/tmp)\/|[A-Za-z]:[\\/])[^\r\n\x1b"'<>]+/g
+  )) {
+    if (isInsideNonLocalFileUri(line, match.index)) {
+      continue
+    }
+    add(match[0])
+  }
+  for (const match of line.matchAll(
+    /\/[^\r\n\x1b"'<>]*\.[A-Za-z0-9_+-]+(?:[#:\s][^\r\n\x1b"'<>]*)?/g
+  )) {
+    if (isInsideNonLocalFileUri(line, match.index)) {
+      continue
+    }
+    add(match[0])
+  }
+}
+
+function normalizeTerminalOutputFileUriDrivePath(candidate: string): string | null {
+  return /^\/[A-Za-z]:[\\/]/.test(candidate) ? candidate.slice(1) : null
+}
+
+function trimTerminalOutputPathCandidate(value: string): string {
+  let candidate = value.trim().replace(/[),;.]+$/g, '')
+  if (Buffer.byteLength(candidate, 'utf8') > RECENT_PTY_PATH_CANDIDATE_MAX_BYTES) {
+    return ''
+  }
+  let selected: string | null = null
+  for (const match of candidate.matchAll(
+    /.+?\.[A-Za-z0-9_+-]+(?:#L\d+(?:C\d+)?|(?::\d+)?(?::\d+)?)?(?=\s+|$)/gi
+  )) {
+    const end = match.index + match[0].length
+    const text = candidate.slice(0, end)
+    if (countTerminalOutputPathStarts(text) > 1) {
+      continue
+    }
+    // Same rule as the tap parsers: a line-end extension token only extends
+    // the candidate when the added segment is path-like, so trailing prose
+    // ending in a filename is not swallowed into the candidate.
+    if (
+      end < candidate.length ||
+      selected === null ||
+      /[\\/]/.test(candidate.slice(selected.length, end))
+    ) {
+      selected = text
+    }
+  }
+  return trimTerminalOutputPathLocator(selected ?? candidate)
+}
+
+function isTerminalOutputLoopbackAuthority(authority: string): boolean {
+  const normalized = authority.toLowerCase()
+  return (
+    normalized === '' ||
+    normalized === 'localhost' ||
+    normalized === '127.0.0.1' ||
+    normalized === '::1' ||
+    normalized === '[::1]'
+  )
+}
+
+function isInsideNonLocalFileUri(output: string, pathStart: number): boolean {
+  const prefix = output.slice(0, pathStart)
+  const match = /file:\/\/([^/\s]*)$/i.exec(prefix)
+  return !!match && !isTerminalOutputLoopbackAuthority(match[1] ?? '')
+}
+
+function countTerminalOutputPathStarts(value: string): number {
+  let count = 0
+  for (const match of value.matchAll(/(?:^|\s)(?:~[\\/]|[\\/]|\.{1,2}[\\/]|[A-Za-z]:[\\/])/g)) {
+    void match
+    count += 1
+  }
+  return count
+}
+
+function trimTerminalOutputPathLocator(value: string): string {
+  return value.replace(/#L\d+(?:C\d+)?$/i, '').replace(/:\d+(?::\d+)?$/, '')
+}
+
+function wslTerminalOutputAliases(value: string): string[] {
+  const match = /^\\\\wsl(?:\.localhost|\$)\\[^\\]+(\\.*)$/i.exec(value)
+  if (!match) {
+    return []
+  }
+  const linuxPath = match[1]!.replace(/\\/g, '/')
+  return linuxPath.startsWith('/') ? [linuxPath] : [`/${linuxPath}`]
 }
 
 export function buildPreview(lines: string[], partialLine: string): string {

@@ -433,21 +433,12 @@ describe('terminal subscribe buffering', () => {
         (frame) => frame.opcode === TerminalStreamOpcode.SnapshotStart
       )
       const decodedStarts = snapshotStarts.map((frame) => decodeTerminalStreamJson(frame.payload))
-      // Why: shipped mobile clients only apply a mid-session snapshot when it
-      // arrives as a resized frame; a second scrollback frame is dropped.
-      // Why seq 0: the merged stream prefers the snapshot's own output seq
-      // (post-restore live-chunk reconciliation) over the layout seq.
-      expect(decodedStarts).toEqual([
-        expect.objectContaining({ kind: 'scrollback', seq: 0 }),
-        expect.objectContaining({
-          kind: 'resized',
-          reason: 'pending-output-overflow',
-          source: 'headless'
-        })
-      ])
-      // Why: output-byte sequences must not pollute the client layout-seq
-      // staleness filter.
-      expect(decodedStarts[1]).not.toHaveProperty('seq')
+      // Why one snapshot: overflow during the initial serialize is recovered
+      // INLINE (drop pending, re-read, re-serialize) before anything is sent,
+      // so the client's first scrollback snapshot is already current. The
+      // 'resized'/pending-output-overflow follow-up path remains only for
+      // overflow that begins after the initial snapshot went out.
+      expect(decodedStarts).toEqual([expect.objectContaining({ kind: 'scrollback', seq })])
       const snapshotText = decodedFrames
         .filter((frame) => frame.opcode === TerminalStreamOpcode.SnapshotChunk)
         .map((frame) => decodeTerminalStreamText(frame.payload))
@@ -586,7 +577,7 @@ describe('terminal subscribe buffering', () => {
     await dispatchPromise
   })
 
-  it('keeps bounded replay when overflow recovery has no output seq', async () => {
+  it('applies inline overflow recovery when the snapshot has no output seq', async () => {
     vi.useFakeTimers()
     try {
       const messages: string[] = []
@@ -663,8 +654,9 @@ describe('terminal subscribe buffering', () => {
       await vi.waitFor(() => expect(runtime.serializeTerminalBuffer).toHaveBeenCalled())
       snapshotResolvers[0]?.({ data: '', cols: 120, rows: 40, seq: 0, source: 'headless' })
       await vi.waitFor(() => expect(runtime.serializeTerminalBuffer).toHaveBeenCalledTimes(2))
-      // Why: renderer-source snapshots carry no output seq, so covered chunks
-      // cannot be trimmed and the recovery snapshot must not be applied.
+      // Why applying is safe without a seq here: inline recovery serialized
+      // AFTER dropping the overflowed pending queue, so the snapshot covers
+      // those chunks by construction — no seq-based trimming is needed.
       snapshotResolvers[1]?.({
         data: 'renderer fallback snapshot\r\n',
         cols: 120,
@@ -682,18 +674,24 @@ describe('terminal subscribe buffering', () => {
       const snapshotStarts = decodedFrames.filter(
         (frame) => frame.opcode === TerminalStreamOpcode.SnapshotStart
       )
-      // Why seq 0: the merged stream prefers the snapshot's own output seq
-      // (post-restore live-chunk reconciliation) over the layout seq.
+      // Why seq 1 (layout seq): a no-output-seq snapshot falls back to the
+      // layout seq on the wire; the recovered data still ships as the first
+      // and only scrollback snapshot.
       expect(snapshotStarts.map((frame) => decodeTerminalStreamJson(frame.payload))).toEqual([
-        expect.objectContaining({ kind: 'scrollback', seq: 0 })
+        expect.objectContaining({ kind: 'scrollback', seq: 1 })
       ])
+      const snapshotText = decodedFrames
+        .filter((frame) => frame.opcode === TerminalStreamOpcode.SnapshotChunk)
+        .map((frame) => decodeTerminalStreamText(frame.payload))
+        .join('')
+      expect(snapshotText).toContain('renderer fallback snapshot')
       const output = decodedFrames
         .filter((frame) => frame.opcode === TerminalStreamOpcode.Output)
         .map((frame) => decodeTerminalStreamText(frame.payload))
         .join('')
-      expect(output.length).toBeLessThanOrEqual(256 * 1024)
-      expect(output).not.toContain('000')
-      expect(output).toContain('399')
+      // Why empty: the overflowed pending queue was dropped before the
+      // covering snapshot was serialized; nothing needs replay.
+      expect(output).toBe('')
 
       runtime.cleanupSubscription('terminal-1:desktop-1')
       await dispatchPromise

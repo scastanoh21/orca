@@ -1009,6 +1009,7 @@ export function connectPanePty(
   let unregisterDocumentVisibilityRecovery: (() => void) | null = null
   let cleanupHiddenOutputRestoreDeferredRetry = (): void => {}
   let cleanupHiddenOutputRestoreForegroundDeadline = (): void => {}
+  let resetRendererOrderedSeqForPtyExit: (exitedPtyId: string) => void = () => {}
   let cleanupStartupDraftPasteTimers = (): void => {}
   let unregisterE2ePtyDataInjection = (): void => {}
   let startupInjectTimer: ReturnType<typeof setTimeout> | null = null
@@ -1727,6 +1728,7 @@ export function connectPanePty(
     if (handledExitPtyId === ptyId) {
       return
     }
+    resetRendererOrderedSeqForPtyExit(ptyId)
     const currentPaneTransport = deps.paneTransportsRef.current.get(pane.id)
     if (currentPaneTransport && currentPaneTransport !== transport) {
       // Why: an old transport can deliver a late exit after this pane has
@@ -2651,6 +2653,14 @@ export function connectPanePty(
       return
     }
     forwardPtyResize(cols, rows)
+  })
+
+  // Why: a rewrite chunk can enter AND exit the alternate screen in one parse
+  // (fast-quitting TUI), netting buffer.active.type back to 'normal'; counting
+  // switches keeps those redraws visible to the atlas-recovery check.
+  let alternateScreenBufferSwitches = 0
+  const onBufferChangeDisposable = pane.terminal.buffer.onBufferChange?.(() => {
+    alternateScreenBufferSwitches += 1
   })
 
   // Why: renderer resize forwarding is fire-and-forget. A visible pane can
@@ -3800,6 +3810,10 @@ export function connectPanePty(
     let hiddenSynchronizedOutputMarkerTail = ''
     let hiddenRewriteChunkEndedWithCarriageReturn = false
     let hiddenRewriteCsiScanTail = ''
+    let rendererOrderedPtyId: string | null = null
+    let rendererOrderedSeq: number | null = null
+    let rendererChannelSeqPtyId: string | null = null
+    let rendererChannelSeq: number | null = null
 
     function canUseMainBufferSnapshot(ptyId: string | null): ptyId is string {
       return Boolean(ptyId) && !isRemoteRuntimePtyId(ptyId)
@@ -4014,6 +4028,25 @@ export function connectPanePty(
       return decision.prefersRenderRefresh
     }
 
+    // Why: Vim-style TUI redraws are plain-ASCII in-place rewrites whose erased
+    // cells can keep stale WebGL glyphs until the shared atlas rebuilds. Whether
+    // a rewrite touched the alternate screen is only authoritative once xterm
+    // parses the chunk (enter/exit sequences can split across PTY chunks), so
+    // capture the pre-parse state and decide the rest at parse completion.
+    function alternateScreenRewriteAtlasRecoveryOnParsed(): () => void {
+      const wasAlternateScreenBuffer = pane.terminal.buffer.active.type === 'alternate'
+      const switchesBeforeParse = alternateScreenBufferSwitches
+      return () => {
+        if (
+          wasAlternateScreenBuffer ||
+          alternateScreenBufferSwitches !== switchesBeforeParse ||
+          pane.terminal.buffer.active.type === 'alternate'
+        ) {
+          scheduleTerminalWebglAtlasRecovery()
+        }
+      }
+    }
+
     function shouldForceForegroundRenderRefresh(data: string): {
       refresh: boolean
       inPlaceRewrite: boolean
@@ -4122,6 +4155,13 @@ export function connectPanePty(
         !foregroundOutput && hiddenOutputNeedsAtlasRecoveryAfterParse(data)
       const recoverWebglAtlasAfterParse =
         renderRefreshDecision.recoverWebglAtlasAfterParse || recoverHiddenWebglAtlasAfterParse
+      // Why: atlas recovery must repaint from the parsed xterm buffer, not a
+      // pre-write snapshot that a late TUI redraw can immediately stale.
+      const onParsedAtlasRecovery = recoverWebglAtlasAfterParse
+        ? scheduleTerminalWebglAtlasRecovery
+        : renderRefreshDecision.inPlaceRewrite
+          ? alternateScreenRewriteAtlasRecoveryOnParsed()
+          : undefined
       const foregroundRenderRefreshNeeded = renderRefreshDecision.refresh
       // Why: see nativeWindowsRewriteNeedsFollowupRenderRefresh — Claude Code's
       // in-place prompt redraws on Windows ConPTY can paint one frame late, so a
@@ -4168,9 +4208,7 @@ export function connectPanePty(
             foregroundRenderRefreshNeeded),
         followupForegroundRefresh:
           nativeWindowsCursorRestore || nativeWindowsInPlaceRewriteFollowup,
-        // Why: atlas recovery must repaint from the parsed xterm buffer, not
-        // a pre-write snapshot that a late TUI redraw can immediately stale.
-        onParsed: recoverWebglAtlasAfterParse ? scheduleTerminalWebglAtlasRecovery : undefined,
+        onParsed: onParsedAtlasRecovery,
         stripTransientCursorShows: shouldProtectNativeWindowsSynchronizedOutput && foreground,
         coalesceForeground: synchronizedForegroundOutput && synchronizedOutputEnded,
         holdForeground: synchronizedForegroundOutput && nextSynchronizedForegroundOutputActive
@@ -4453,6 +4491,85 @@ export function connectPanePty(
       }
     }
 
+    function recordRendererOrderedSeq(meta?: Pick<PtyDataMeta, 'seq'>): void {
+      if (typeof meta?.seq !== 'number') {
+        return
+      }
+      const ptyId = transport.getPtyId()
+      if (!ptyId) {
+        return
+      }
+      if (rendererOrderedPtyId !== ptyId) {
+        rendererOrderedPtyId = ptyId
+        rendererOrderedSeq = meta.seq
+        return
+      }
+      rendererOrderedSeq = Math.max(rendererOrderedSeq ?? 0, meta.seq)
+    }
+
+    resetRendererOrderedSeqForPtyExit = (exitedPtyId: string): void => {
+      // Why: an exit ends this ptyId's seq domain. A revived session can reuse
+      // the id with a restarted main-side counter, and a stale high-water mark
+      // would wrongly cover — and silently drop — every hidden byte it emits.
+      // The restored-snapshot baseline is a seq high-water mark too and must
+      // die at the same boundary, or reconcile drops revived chunks as
+      // duplicates.
+      if (restoredSnapshotBaselinePtyId === exitedPtyId) {
+        clearRestoredSnapshotBaseline()
+      }
+      if (rendererOrderedPtyId === exitedPtyId) {
+        rendererOrderedPtyId = null
+        rendererOrderedSeq = null
+      }
+      if (rendererChannelSeqPtyId === exitedPtyId) {
+        rendererChannelSeqPtyId = null
+        rendererChannelSeq = null
+      }
+    }
+
+    function observeRendererOrderedSeqRegression(meta: PtyDataMeta | undefined): void {
+      if (typeof meta?.seq !== 'number') {
+        return
+      }
+      const ptyId = transport.getPtyId()
+      if (!ptyId) {
+        return
+      }
+      if (rendererChannelSeqPtyId !== ptyId) {
+        rendererChannelSeqPtyId = ptyId
+        rendererChannelSeq = meta.seq
+        return
+      }
+      if (rendererChannelSeq !== null && meta.seq < rendererChannelSeq) {
+        // Why: pty:data delivery is FIFO per pty, so seq only moves backwards
+        // when the session was revived without an observed exit and restarted
+        // its counter. Drop the stale ordered baseline instead of letting it
+        // cover the new stream's bytes.
+        if (rendererOrderedPtyId === ptyId) {
+          rendererOrderedPtyId = null
+          rendererOrderedSeq = null
+        }
+      }
+      rendererChannelSeq = meta.seq
+    }
+
+    function getHiddenRendererDataAfterOrderedSeq(
+      data: string,
+      meta: PtyDataMeta | undefined
+    ): string | null {
+      if (
+        rendererOrderedPtyId === null ||
+        rendererOrderedSeq === null ||
+        transport.getPtyId() !== rendererOrderedPtyId
+      ) {
+        return data
+      }
+      return getChunkDataAfterSnapshot(
+        { data, seq: meta?.seq, rawLength: meta?.rawLength },
+        rendererOrderedSeq
+      )
+    }
+
     function drainPendingLiveChunksAfterSnapshot(snapshotSeq: number | undefined): boolean {
       if (hiddenOutputRestorePendingOverflow) {
         hiddenOutputRestorePendingOverflow = false
@@ -4482,6 +4599,7 @@ export function connectPanePty(
           }
           if (data) {
             writePtyOutputToXterm(data, true)
+            recordRendererOrderedSeq(chunk)
           }
         }
         if (hiddenOutputRestorePendingOverflow) {
@@ -4744,6 +4862,7 @@ export function connectPanePty(
       writeReplayData(snapshot.data)
       writeReplayData(POST_REPLAY_LIVE_SNAPSHOT_RESET)
       hiddenRendererStateDirty = false
+      recordRendererOrderedSeq(snapshot)
       resetHiddenRendererRiskState()
       recordTerminalOutput(pane.terminal)
       const currentPtyId = transport.getPtyId()
@@ -5022,6 +5141,21 @@ export function connectPanePty(
         meta,
         pendingForegroundQuery?.consumedCurrentChars ?? 0
       )
+      observeRendererOrderedSeqRegression(meta)
+      const orderedRendererData = foreground
+        ? rendererData
+        : getHiddenRendererDataAfterOrderedSeq(rendererData, rendererMeta)
+      if (orderedRendererData === null) {
+        // Why: renderer-side filtering cannot map cleaned text back onto raw
+        // sequence offsets. Rebuild from main instead of risking stale bytes.
+        markHiddenOutputRestoreNeeded()
+        schedulePendingStartupCommandDelivery()
+        return
+      }
+      if (!foreground && orderedRendererData.length === 0) {
+        schedulePendingStartupCommandDelivery()
+        return
+      }
       if (pendingForegroundQuery?.statelessQueryData) {
         writePtyOutputToXterm(pendingForegroundQuery.statelessQueryData, true, {
           hiddenStartupRendererQuery: true
@@ -5040,11 +5174,11 @@ export function connectPanePty(
         meta?.background === true &&
         shouldWritePtyOutputForeground(deps.isVisibleRef.current) &&
         pane.terminal.buffer.active.type === 'alternate' &&
-        !containsStatefulRendererQuery(data)
+        !containsStatefulRendererQuery(orderedRendererData)
       if (skipBackgroundAlternateScreenFrame) {
-        skipBackgroundAlternateScreenOutput(data)
-      } else if (shouldSkipHiddenRendererOutput(foreground, data)) {
-        skipHiddenRendererOutput(data)
+        skipBackgroundAlternateScreenOutput(orderedRendererData)
+      } else if (shouldSkipHiddenRendererOutput(foreground, orderedRendererData)) {
+        skipHiddenRendererOutput(orderedRendererData)
       } else if (
         (hiddenOutputRestoreNeeded || hiddenOutputRestoreInFlight) &&
         restoreAppliesToCurrentPty
@@ -5053,7 +5187,7 @@ export function connectPanePty(
           if (pendingForegroundQuery?.statefulQueryData) {
             queueLiveChunkDuringRestore(pendingForegroundQuery.statefulQueryData)
           }
-          queueLiveChunkDuringRestore(rendererData, rendererMeta)
+          queueLiveChunkDuringRestore(orderedRendererData, rendererMeta)
           requestHiddenOutputRestoreIfNeeded()
         } else if (hiddenOutputRestoreInFlight) {
           resetSkippedHiddenRendererRiskState()
@@ -5074,7 +5208,10 @@ export function connectPanePty(
             hiddenStartupRendererQuery: true
           })
         }
-        writePtyOutputToXterm(rendererData, foreground)
+        writePtyOutputToXterm(orderedRendererData, foreground)
+        if (foreground) {
+          recordRendererOrderedSeq(rendererMeta)
+        }
       }
 
       schedulePendingStartupCommandDelivery()
@@ -5954,6 +6091,7 @@ export function connectPanePty(
       onDataDisposable.dispose()
       terminalCapabilityRepliesDisposable.dispose()
       onResizeDisposable.dispose()
+      onBufferChangeDisposable?.dispose()
       pane.container.removeEventListener(PANE_PTY_RESIZE_HOLD_FLUSH_EVENT, onHeldPtyResizeFlush)
       geometryReportObserver?.disconnect()
       if (pendingGeometryReportRaf !== null) {
