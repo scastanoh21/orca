@@ -281,6 +281,26 @@ prefix shared by reference; differential fuzz test proves output equality
 against the original implementation. Worst case (pathological full-height
 cursor-up) falls back to today's cost.
 
+### 2026-07-03 — windowed-tail fix: partial end-to-end win; next suspect queued
+
+Dev-build bench after the windowed redraw-tail fix (label dev-tailfix, same
+protocol as dev-parseclock): agent-tui **0.7 → 1.0 MB/s (+43%)**, DSR-under-
+load **p50 161 → 108 ms, p99 624 → 154 ms (4×)**. Real movement for the
+first time, but the pipeline is still far from the renderer's 27–117 MB/s
+capacity — another main-side consumer remains hot.
+
+Next cycle (exact recipe): re-apply the whole-method main probe
+(`onPtyDataMs` sampler in `pty.ts` bindProviderListeners) on the fixed
+build. If onPtyData still dominates, the remaining O(tail)/per-chunk
+suspects in priority order: (1) `buildTerminalWaitText` ×2 per chunk (full
+tail join, 0.116 ms/chunk in prod-node isolation — likely 2-4× that in
+dev); (2) `normalizeTerminalChunk` (regex over every chunk, never measured);
+(3) the per-leaf duplicate tail path when `tailStateMatches` fails. If
+onPtyData no longer dominates, probe the main→renderer delivery batching
+next. The probe/bench cycle is mechanical: relaunch dev
+(`ELECTRON_ENABLE_LOGGING=1 pnpm dev`), `orca-dev terminal create --command
+"<bench> --label X --size-mb 3 --dsr-timeout-ms 120000"`, grep the log.
+
 ## Success criteria (baseline-relative; finalize after task 1)
 
 - DSR-under-load p90 in Orca within striking distance of iTerm2 on the same
