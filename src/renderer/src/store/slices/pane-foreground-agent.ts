@@ -19,6 +19,10 @@ export type PaneForegroundAgentSlice = {
   paneForegroundAgentByPaneKey: Record<string, PaneForegroundAgentEntry>
   setPaneForegroundAgent: (paneKey: string, entry: PaneForegroundAgentEntry) => void
   clearPaneForegroundAgent: (paneKey: string) => void
+  /** Wholesale teardown sweeps (tab close, worktree sleep/remove) retire pane
+   *  keys without per-pane close events — clear their entries too. */
+  clearPaneForegroundAgentByTabPrefix: (tabIdPrefix: string) => void
+  clearPaneForegroundAgentByWorktree: (worktreeId: string) => void
 }
 
 export const createPaneForegroundAgentSlice: StateCreator<
@@ -52,5 +56,34 @@ export const createPaneForegroundAgentSlice: StateCreator<
       delete next[paneKey]
       return { paneForegroundAgentByPaneKey: next }
     })
+  },
+  clearPaneForegroundAgentByTabPrefix: (tabIdPrefix) => {
+    set((s) => clearEntriesByTabPrefixes(s.paneForegroundAgentByPaneKey, [`${tabIdPrefix}:`]) ?? s)
+  },
+  clearPaneForegroundAgentByWorktree: (worktreeId) => {
+    set((s) => {
+      const prefixes = (s.tabsByWorktree[worktreeId] ?? []).map((tab) => `${tab.id}:`)
+      return clearEntriesByTabPrefixes(s.paneForegroundAgentByPaneKey, prefixes) ?? s
+    })
   }
 })
+
+function clearEntriesByTabPrefixes(
+  entries: Record<string, PaneForegroundAgentEntry>,
+  tabPrefixes: string[]
+): Pick<PaneForegroundAgentSlice, 'paneForegroundAgentByPaneKey'> | null {
+  if (tabPrefixes.length === 0) {
+    return null
+  }
+  const staleKeys = Object.keys(entries).filter((paneKey) =>
+    tabPrefixes.some((prefix) => paneKey.startsWith(prefix))
+  )
+  if (staleKeys.length === 0) {
+    return null
+  }
+  const next = { ...entries }
+  for (const paneKey of staleKeys) {
+    delete next[paneKey]
+  }
+  return { paneForegroundAgentByPaneKey: next }
+}
