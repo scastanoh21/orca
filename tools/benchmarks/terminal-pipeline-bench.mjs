@@ -218,7 +218,7 @@ function stylesStressFixture(targetBytes, cols) {
   return parts.join('')
 }
 
-function buildFixture(name, targetBytes, cols, rows) {
+export function buildFixture(name, targetBytes, cols, rows) {
   switch (name) {
     case 'ascii-log':
       return asciiLogFixture(targetBytes)
@@ -551,8 +551,14 @@ async function main() {
   process.exit(0)
 }
 
-main().catch((err) => {
-  restoreTerminal()
-  console.error(err)
-  process.exit(1)
-})
+// Why the guard: buildFixture is imported by sibling analysis scripts
+// (headless parse decomposition); importing must not start a benchmark run.
+const invokedDirectly =
+  process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href
+if (invokedDirectly) {
+  main().catch((err) => {
+    restoreTerminal()
+    console.error(err)
+    process.exit(1)
+  })
+}
