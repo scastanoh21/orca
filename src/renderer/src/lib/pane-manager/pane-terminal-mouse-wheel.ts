@@ -6,6 +6,8 @@ const DOM_DELTA_PIXEL = 0
 const DOM_DELTA_LINE = 1
 const DISCRETE_PIXEL_WHEEL_DELTA_MIN = 50
 const LEGACY_MOUSE_WHEEL_DELTA_MIN = 100
+const TUI_WHEEL_ACCELERATION_WINDOW_MS = 140
+const TUI_WHEEL_REPORTS_PER_FRAME = 4
 
 export const TERMINAL_TUI_MOUSE_WHEEL_MULTIPLIER = 1
 export const TERMINAL_TUI_MOUSE_WHEEL_MULTIPLIER_MIN = 1
@@ -15,6 +17,7 @@ type TerminalWheelTarget = Pick<Terminal, 'attachCustomWheelEventHandler' | 'ele
 
 type TerminalMouseWheelMultiplierOptions = {
   getTuiMouseWheelMultiplier?: () => number | undefined
+  scheduleWheelReplayFrame?: (callback: () => void) => void
 }
 
 type ReplayedWheelEvent = WheelEvent & {
@@ -24,6 +27,40 @@ type ReplayedWheelEvent = WheelEvent & {
 type WheelEventWithLegacyDelta = WheelEvent & {
   wheelDelta?: number
   wheelDeltaY?: number
+}
+
+export type TerminalTuiMouseWheelAccelerationState = {
+  lastDirection: -1 | 0 | 1
+  lastInputAt: number | null
+  streak: number
+}
+
+type TerminalTuiMouseWheelReplayState = {
+  acceleration: TerminalTuiMouseWheelAccelerationState
+  drainScheduled: boolean
+  pendingDirection: -1 | 0 | 1
+  pendingEvent: WheelEvent | null
+  pendingReports: number
+  pendingTarget: EventTarget | null
+}
+
+export function createTerminalTuiMouseWheelAccelerationState(): TerminalTuiMouseWheelAccelerationState {
+  return {
+    lastDirection: 0,
+    lastInputAt: null,
+    streak: 0
+  }
+}
+
+function createTerminalTuiMouseWheelReplayState(): TerminalTuiMouseWheelReplayState {
+  return {
+    acceleration: createTerminalTuiMouseWheelAccelerationState(),
+    drainScheduled: false,
+    pendingDirection: 0,
+    pendingEvent: null,
+    pendingReports: 0,
+    pendingTarget: null
+  }
 }
 
 function isReplayedWheelEvent(event: WheelEvent): boolean {
@@ -61,6 +98,21 @@ function isDiscreteWheelEvent(event: WheelEvent): boolean {
   return legacyDelta !== null && Math.abs(legacyDelta) >= LEGACY_MOUSE_WHEEL_DELTA_MIN
 }
 
+function wheelDirection(event: Pick<WheelEvent, 'deltaY'>): -1 | 1 {
+  return event.deltaY < 0 ? -1 : 1
+}
+
+function wheelInputTime(event: Pick<WheelEvent, 'timeStamp'>): number {
+  if (typeof event.timeStamp === 'number' && Number.isFinite(event.timeStamp)) {
+    return event.timeStamp
+  }
+  return performance.now()
+}
+
+function easeOutCubic(value: number): number {
+  return 1 - Math.pow(1 - value, 3)
+}
+
 function cloneWheelReportEvent(event: WheelEvent): WheelEvent {
   const clone = new WheelEvent(event.type, {
     bubbles: event.bubbles,
@@ -86,6 +138,34 @@ function cloneWheelReportEvent(event: WheelEvent): WheelEvent {
   })
   markReplayedWheelEvent(clone)
   return clone
+}
+
+export function resolveTerminalTuiMouseWheelReportCount(
+  event: Pick<WheelEvent, 'deltaY' | 'timeStamp'>,
+  maxReports: number,
+  state: TerminalTuiMouseWheelAccelerationState
+): number {
+  const normalizedMaxReports = normalizeTerminalTuiMouseWheelMultiplier(maxReports)
+  const direction = wheelDirection(event)
+  const currentInputAt = wheelInputTime(event)
+  const elapsedMs = state.lastInputAt === null ? null : currentInputAt - state.lastInputAt
+  const isAccelerating =
+    state.lastDirection === direction &&
+    elapsedMs !== null &&
+    elapsedMs >= 0 &&
+    elapsedMs <= TUI_WHEEL_ACCELERATION_WINDOW_MS
+
+  state.streak = isAccelerating ? state.streak + 1 : 0
+  state.lastDirection = direction
+  state.lastInputAt = currentInputAt
+
+  if (!isAccelerating || normalizedMaxReports <= 1 || elapsedMs === null) {
+    return 1
+  }
+
+  const cadence = 1 - elapsedMs / TUI_WHEEL_ACCELERATION_WINDOW_MS
+  const acceleratedReports = 1 + Math.round((normalizedMaxReports - 1) * easeOutCubic(cadence))
+  return Math.min(normalizedMaxReports, Math.max(1, acceleratedReports))
 }
 
 export function shouldMultiplyTerminalMouseWheel(
@@ -117,10 +197,79 @@ export function normalizeTerminalTuiMouseWheelMultiplier(value: number | undefin
   )
 }
 
+function defaultScheduleWheelReplayFrame(callback: () => void): void {
+  if (typeof requestAnimationFrame === 'function') {
+    requestAnimationFrame(() => callback())
+    return
+  }
+  setTimeout(callback, 0)
+}
+
+function drainTerminalTuiWheelReports(
+  state: TerminalTuiMouseWheelReplayState,
+  scheduleWheelReplayFrame: (callback: () => void) => void,
+  reportsThisFrame: number
+): void {
+  const target = state.pendingTarget
+  const event = state.pendingEvent
+  if (!target || !event || state.pendingReports <= 0) {
+    state.drainScheduled = false
+    return
+  }
+
+  const reportsToDispatch = Math.min(reportsThisFrame, state.pendingReports)
+  for (let i = 0; i < reportsToDispatch; i++) {
+    target.dispatchEvent(cloneWheelReportEvent(event))
+  }
+  state.pendingReports -= reportsToDispatch
+
+  if (state.pendingReports <= 0) {
+    state.drainScheduled = false
+    state.pendingDirection = 0
+    state.pendingEvent = null
+    state.pendingTarget = null
+    return
+  }
+
+  scheduleWheelReplayFrame(() => {
+    drainTerminalTuiWheelReports(state, scheduleWheelReplayFrame, TUI_WHEEL_REPORTS_PER_FRAME)
+  })
+}
+
+function queueTerminalTuiWheelReports(
+  state: TerminalTuiMouseWheelReplayState,
+  target: EventTarget,
+  event: WheelEvent,
+  reportCount: number,
+  scheduleWheelReplayFrame: (callback: () => void) => void
+): void {
+  const direction = wheelDirection(event)
+  if (state.pendingDirection !== 0 && state.pendingDirection !== direction) {
+    state.pendingReports = 0
+  }
+
+  state.pendingDirection = direction
+  state.pendingEvent = event
+  state.pendingTarget = target
+  state.pendingReports += reportCount
+
+  if (state.drainScheduled) {
+    return
+  }
+
+  state.drainScheduled = true
+  // Why: the first report should land immediately, while larger accelerated
+  // batches are paced across frames so fast scrolling does not feel bursty.
+  queueMicrotask(() => {
+    drainTerminalTuiWheelReports(state, scheduleWheelReplayFrame, 1)
+  })
+}
+
 export function attachTerminalMouseWheelMultiplier(
   terminal: TerminalWheelTarget,
   options: TerminalMouseWheelMultiplierOptions = {}
 ): void {
+  const replayState = createTerminalTuiMouseWheelReplayState()
   terminal.attachCustomWheelEventHandler((event) => {
     if (!shouldMultiplyTerminalMouseWheel(event, terminal.element)) {
       return true
@@ -134,14 +283,18 @@ export function attachTerminalMouseWheelMultiplier(
 
     // Why: xterm dampens small pixel deltas before emitting mouse reports;
     // line-mode replays make each notched wheel tick produce immediate reports.
-    queueMicrotask(() => {
-      const multiplier = normalizeTerminalTuiMouseWheelMultiplier(
-        options.getTuiMouseWheelMultiplier?.()
-      )
-      for (let i = 0; i < multiplier; i++) {
-        target.dispatchEvent(cloneWheelReportEvent(event))
-      }
-    })
+    const reportCount = resolveTerminalTuiMouseWheelReportCount(
+      event,
+      normalizeTerminalTuiMouseWheelMultiplier(options.getTuiMouseWheelMultiplier?.()),
+      replayState.acceleration
+    )
+    queueTerminalTuiWheelReports(
+      replayState,
+      target,
+      event,
+      reportCount,
+      options.scheduleWheelReplayFrame ?? defaultScheduleWheelReplayFrame
+    )
 
     return false
   })

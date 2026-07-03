@@ -2,7 +2,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   TERMINAL_TUI_MOUSE_WHEEL_MULTIPLIER,
   attachTerminalMouseWheelMultiplier,
+  createTerminalTuiMouseWheelAccelerationState,
   normalizeTerminalTuiMouseWheelMultiplier,
+  resolveTerminalTuiMouseWheelReportCount,
   shouldMultiplyTerminalMouseWheel
 } from './pane-terminal-mouse-wheel'
 
@@ -86,6 +88,49 @@ describe('terminal mouse wheel multiplier', () => {
     expect(normalizeTerminalTuiMouseWheelMultiplier(0)).toBe(1)
     expect(normalizeTerminalTuiMouseWheelMultiplier(4.4)).toBe(4)
     expect(normalizeTerminalTuiMouseWheelMultiplier(20)).toBe(10)
+  })
+
+  it('keeps deliberate TUI wheel ticks precise even with a fast max', () => {
+    const state = createTerminalTuiMouseWheelAccelerationState()
+
+    const reports = [0, 200, 400, 600].map((timeStamp) =>
+      resolveTerminalTuiMouseWheelReportCount({ deltaY: 12, timeStamp }, 5, state)
+    )
+
+    expect(reports).toEqual([1, 1, 1, 1])
+  })
+
+  it('keeps the one-report setting precise even during fast TUI wheel bursts', () => {
+    const state = createTerminalTuiMouseWheelAccelerationState()
+
+    const reports = [0, 50, 100, 150, 200, 250].map((timeStamp) =>
+      resolveTerminalTuiMouseWheelReportCount({ deltaY: 12, timeStamp }, 1, state)
+    )
+
+    expect(reports).toEqual([1, 1, 1, 1, 1, 1])
+  })
+
+  it('accelerates repeated same-direction TUI wheel ticks with a front-loaded curve', () => {
+    const state = createTerminalTuiMouseWheelAccelerationState()
+
+    const reports = [0, 50, 100, 150, 200, 250].map((timeStamp) =>
+      resolveTerminalTuiMouseWheelReportCount({ deltaY: 12, timeStamp }, 5, state)
+    )
+
+    expect(reports).toEqual([1, 5, 5, 5, 5, 5])
+  })
+
+  it('resets TUI wheel acceleration when the user changes direction', () => {
+    const state = createTerminalTuiMouseWheelAccelerationState()
+
+    const reports = [
+      resolveTerminalTuiMouseWheelReportCount({ deltaY: 12, timeStamp: 0 }, 5, state),
+      resolveTerminalTuiMouseWheelReportCount({ deltaY: 12, timeStamp: 50 }, 5, state),
+      resolveTerminalTuiMouseWheelReportCount({ deltaY: -12, timeStamp: 100 }, 5, state),
+      resolveTerminalTuiMouseWheelReportCount({ deltaY: -12, timeStamp: 150 }, 5, state)
+    ]
+
+    expect(reports).toEqual([1, 5, 1, 5])
   })
 
   it('multiplies discrete wheel events when mouse reporting is active', () => {
@@ -182,5 +227,70 @@ describe('terminal mouse wheel multiplier', () => {
     expect(dispatched.map((entry) => entry.deltaMode)).toEqual([DOM_DELTA_LINE])
     expect(dispatched.map((entry) => entry.deltaY)).toEqual([1])
     expect(shouldMultiplyTerminalMouseWheel(dispatched[0]!, target)).toBe(false)
+  })
+
+  it('paces accelerated TUI wheel reports after the immediate first report', async () => {
+    vi.stubGlobal('WheelEvent', TestWheelEvent)
+    const handlers: ((event: WheelEvent) => boolean)[] = []
+    const scheduledFrames: (() => void)[] = []
+    const target = Object.assign(new EventTarget(), {
+      classList: {
+        contains: (className: string) => className === 'enable-mouse-events'
+      }
+    }) as unknown as EventTarget & HTMLElement
+    const dispatched: WheelEvent[] = []
+    target.addEventListener('wheel', (event) => dispatched.push(event as WheelEvent))
+    attachTerminalMouseWheelMultiplier(
+      {
+        attachCustomWheelEventHandler: (handler) => {
+          handlers.push(handler)
+        },
+        element: target
+      },
+      {
+        getTuiMouseWheelMultiplier: () => 3,
+        scheduleWheelReplayFrame: (callback) => scheduledFrames.push(callback)
+      }
+    )
+    const firstEvent = new TestWheelEvent('wheel', {
+      bubbles: true,
+      cancelable: true,
+      deltaMode: DOM_DELTA_PIXEL,
+      deltaY: 12
+    }) as WheelEvent
+    Object.defineProperty(firstEvent, 'wheelDeltaY', {
+      configurable: true,
+      value: -120
+    })
+    Object.defineProperty(firstEvent, 'timeStamp', {
+      configurable: true,
+      value: 0
+    })
+    const secondEvent = new TestWheelEvent('wheel', {
+      bubbles: true,
+      cancelable: true,
+      deltaMode: DOM_DELTA_PIXEL,
+      deltaY: 12
+    }) as WheelEvent
+    Object.defineProperty(secondEvent, 'wheelDeltaY', {
+      configurable: true,
+      value: -120
+    })
+    Object.defineProperty(secondEvent, 'timeStamp', {
+      configurable: true,
+      value: 50
+    })
+
+    expect(handlers[0]?.(firstEvent)).toBe(false)
+    await Promise.resolve()
+    expect(dispatched).toHaveLength(1)
+
+    expect(handlers[0]?.(secondEvent)).toBe(false)
+    await Promise.resolve()
+    expect(dispatched).toHaveLength(2)
+    expect(scheduledFrames).toHaveLength(1)
+
+    scheduledFrames.shift()?.()
+    expect(dispatched).toHaveLength(4)
   })
 })
