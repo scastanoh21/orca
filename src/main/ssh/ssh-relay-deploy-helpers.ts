@@ -296,7 +296,9 @@ export async function execCommand(
       if (abortRequested) {
         settle(reject, createSshOperationAbortError())
       } else if (code !== 0) {
-        const output = stderr.trim() || stdout.trim()
+        // Why: on the system-ssh transport channel.stderr carries local OpenSSH
+        // client noise; preferring it masks the real failure in stdout (2>&1).
+        const output = [stderr.trim(), stdout.trim()].filter(Boolean).join('\n')
         settle(reject, new Error(`Command "${command}" failed (exit ${code}): ${output}`))
       } else {
         settle(resolve, stdout)
