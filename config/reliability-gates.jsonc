@@ -2134,6 +2134,106 @@
         "Buffer-clean, pixels-stale variants are otherwise invisible to every buffer oracle in the manifest."
       ],
       "demotionRule": "Drop from the golden suite back to nightly diagnostic if diff thresholds cannot be kept stable across CI runners."
+    },
+    {
+      "id": "terminal-session.hidden-view-parking-byte-mode",
+      "title": "Parked hidden terminal panes keep side effects alive in byte mode",
+      "maturity": "experimental",
+      "protection": "partial",
+      "owner": "terminal-runtime",
+      "layer": "renderer-unit",
+      "surfaces": [
+        "terminal lifecycle",
+        "hidden-to-visible resume",
+        "notifications"
+      ],
+      "platforms": [
+        "macos",
+        "linux",
+        "windows"
+      ],
+      "providers": [
+        "local",
+        "daemon"
+      ],
+      "coveredPlatforms": [
+        "macos"
+      ],
+      "coveredProviders": [],
+      "coverageNotes": "Local macOS evidence on the standalone byte-mode extraction of PR #7214's hidden-view parking. Three Electron e2e specs (terminal-hidden-view-parking, terminal-parked-memory, terminal-sleep-wake-restore) passed locally but live in the scheduled E2E suite, not PR-blocking CI.",
+      "motivatingLinks": [
+        "https://github.com/stablyai/orca/issues/7175",
+        "https://github.com/stablyai/orca/pull/7214"
+      ],
+      "invariant": "A cold-parked hidden terminal tab keeps bell, title, and agent-completion side effects firing while unmounted, restores its view from the session snapshot on reveal, and the parked watcher never selects fact mode in a build whose preload lacks the pty:sideEffect channel.",
+      "oracle": "The byte-mode guard test asserts all four parking/authority defaults ship false, that the authority predicate selects byte mode under those defaults, and that park coverage is refused when authority is configured on without the channel; the watcher suites assert parked-side-effect policy parity with the mounted path.",
+      "commands": [
+        "pnpm exec vitest run --config config/vitest.config.ts src/renderer/src/components/terminal-pane/terminal-parking-byte-mode-guard.test.ts src/renderer/src/components/terminal-pane/terminal-hidden-view-parking.test.ts src/renderer/src/components/terminal-pane/terminal-parked-tab-watchers.test.ts src/renderer/src/components/terminal-pane/parked-terminal-byte-watcher.test.ts src/renderer/src/components/terminal-pane/terminal-side-effect-facts-handler.test.ts"
+      ],
+      "testFiles": [
+        "src/renderer/src/components/terminal-pane/terminal-parking-byte-mode-guard.test.ts",
+        "src/renderer/src/components/terminal-pane/terminal-hidden-view-parking.test.ts",
+        "src/renderer/src/components/terminal-pane/terminal-parked-tab-watchers.test.ts",
+        "src/renderer/src/components/terminal-pane/parked-terminal-byte-watcher.test.ts",
+        "src/renderer/src/components/terminal-pane/terminal-side-effect-facts-handler.test.ts"
+      ],
+      "assertionRefs": [
+        {
+          "file": "src/renderer/src/components/terminal-pane/terminal-parking-byte-mode-guard.test.ts",
+          "assertions": [
+            "getDefaultSettings ships terminalHiddenViewParking, terminalMainSideEffectAuthority, terminalHiddenDeliveryGate, and terminalModelQueryAuthority all false",
+            "the side-effect authority predicate selects byte-parser mode under the shipped defaults",
+            "park coverage is refused when authority is configured on without window.api.pty.onSideEffect",
+            "park coverage is allowed in byte mode without any channel"
+          ]
+        },
+        {
+          "file": "src/renderer/src/components/terminal-pane/parked-terminal-byte-watcher.test.ts",
+          "assertions": [
+            "a parked watcher fires bell unread and grace-delayed OS notification from raw bytes exactly like the mounted path",
+            "a working agent seeded via initialAgentTitle still produces its working-to-idle completion while parked",
+            "dispose clears watcher-written runtime title slots and stops all side effects"
+          ]
+        }
+      ],
+      "evidenceRuns": [
+        {
+          "date": "2026-07-04",
+          "runner": "local",
+          "platform": "macos",
+          "command": "pnpm exec vitest run --config config/vitest.config.ts src/renderer/src/components/terminal-pane/terminal-parking-byte-mode-guard.test.ts src/renderer/src/components/terminal-pane/terminal-hidden-view-parking.test.ts src/renderer/src/components/terminal-pane/terminal-parked-tab-watchers.test.ts src/renderer/src/components/terminal-pane/parked-terminal-byte-watcher.test.ts src/renderer/src/components/terminal-pane/terminal-side-effect-facts-handler.test.ts",
+          "result": "passed",
+          "durationSeconds": 2,
+          "summary": "All parking unit suites plus the byte-mode guard passed on the extraction branch; the three parking Electron e2e specs also passed locally the same day (8 parked tabs collapsed to 1 live xterm)."
+        }
+      ],
+      "runtimeBudget": {
+        "p95Seconds": 10,
+        "scope": "local unit test"
+      },
+      "flakeHistory": {
+        "status": "unknown",
+        "evidence": "New gate registered with the extraction PR; needs soak history before blocking promotion."
+      },
+      "redGreenEvidence": {
+        "status": "partial",
+        "evidence": "The guard test fails if any of the four defaults flips true or the coverage tripwire is removed; the parked-side-effect suites fail if watcher policy diverges from the mounted path. Needs a saved intentional-break artifact before blocking promotion."
+      },
+      "performanceBudget": {
+        "required": true,
+        "evidence": "Default-off ships zero parking timers and zero watchers (policy returns null recheck delays when disabled, pinned by terminal-hidden-view-parking.test.ts). The terminal-parked-memory e2e spec measures the parked-vs-retained xterm counts and heap when the flag is on."
+      },
+      "promotionCriteria": [
+        "Run in soak for at least 100 consecutive passes or 14 days across required CI platforms.",
+        "Confirm the memory relief and notification correctness on a real Windows multi-agent workspace with parking opted in.",
+        "Land the three parking e2e specs in the scheduled E2E suite with green history before flipping terminalHiddenViewParking on by default."
+      ],
+      "knownGaps": [
+        "The three Electron e2e specs are scheduled-suite only, not PR-blocking CI.",
+        "Windows and Linux runs pending; parking itself ships default-off until the soak completes.",
+        "Fact mode (main-process side-effect authority) is intentionally absent until PR #7214 lands its emitter; the guard pins byte mode until then."
+      ],
+      "demotionRule": "Demote or quarantine if the gate flakes once without a product bug or harness bug filed to the owner."
     }
   ]
 }

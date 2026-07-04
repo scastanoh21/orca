@@ -2708,24 +2708,28 @@ export type GlobalSettings = {
   terminalScopeHistoryByWorktree: boolean
   /** Kill switch for hidden terminal view parking — unmounting long-hidden
    *  terminal panes while a pane-less watcher keeps PTY side effects alive.
-   *  Defaults to true; `false` disables parking entirely.
+   *  `false` disables parking entirely. This build ships it false (opt-in
+   *  until the memory win soaks; see constants.ts — PR #7214 flips it true).
    *  See docs/reference/terminal-hidden-view-parking.md. */
   terminalHiddenViewParking?: boolean
-  /** Kill switch for main-process terminal side-effect authority: when true
-   *  (default), local-daemon/SSH PTY title/bell/agent facts are consumed from
-   *  the `pty:sideEffect` channel and renderer byte parsers stay unregistered
-   *  for those PTYs; `false` restores renderer byte parsing.
+  /** Kill switch for main-process terminal side-effect authority: when true,
+   *  local-daemon/SSH PTY title/bell/agent facts are consumed from the
+   *  `pty:sideEffect` channel and renderer byte parsers stay unregistered for
+   *  those PTYs; `false` restores renderer byte parsing. This build ships it
+   *  false — no main emitter exists until PR #7214 (see constants.ts).
    *  See docs/reference/terminal-side-effect-authority.md. */
   terminalMainSideEffectAuthority?: boolean
-  /** Kill switch for main's hidden-delivery gate (Phase 4): when true
-   *  (default) AND terminalMainSideEffectAuthority is on, main drops PTY byte
-   *  delivery to hidden renderer views after model ingestion; reveal restores
-   *  from the model snapshot. `false` restores hidden byte delivery. */
+  /** Kill switch for main's hidden-delivery gate (Phase 4): when true AND
+   *  terminalMainSideEffectAuthority is on, main drops PTY byte delivery to
+   *  hidden renderer views after model ingestion; reveal restores from the
+   *  model snapshot. `false` restores hidden byte delivery. This build ships
+   *  it false — the gate arrives with PR #7214 (see constants.ts). */
   terminalHiddenDeliveryGate?: boolean
-  /** Kill switch for the main model query responder (Phase 5): when true
-   *  (default) AND both Phase-4 gate switches are on, main answers terminal
-   *  queries (DA1/CPR/DECRPM, …) embedded in hidden-dropped chunks from the
-   *  runtime emulator. `false` silences the responder without changing drops.
+  /** Kill switch for the main model query responder (Phase 5): when true AND
+   *  both Phase-4 gate switches are on, main answers terminal queries
+   *  (DA1/CPR/DECRPM, …) embedded in hidden-dropped chunks from the runtime
+   *  emulator. `false` silences the responder without changing drops. This
+   *  build ships it false — the responder arrives with PR #7214.
    *  See docs/reference/terminal-query-authority.md. */
   terminalModelQueryAuthority?: boolean
   /** Which agent to pre-select in the new-workspace composer.
