@@ -4,6 +4,7 @@
  * touching the developer's repos. Extracted from orca-app.ts (fixture host).
  */
 import { execSync } from 'node:child_process'
+import { TEST_REPO_PATH_FILE } from '../global-setup'
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import os from 'node:os'
@@ -64,12 +65,3 @@ export function createSeededTestRepo(): string {
   writeFileSync(TEST_REPO_PATH_FILE, testRepoDir)
   return testRepoDir
 }
-
-/**
- * Extended Playwright test with Orca-specific fixtures.
- *
- * `orcaPage` — the main Orca renderer window.
- *
- * Test-scoped: each test gets a fresh Electron instance and isolated
- * userData directory so state cannot leak across specs through persistence.
- */

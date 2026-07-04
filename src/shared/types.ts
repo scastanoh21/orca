@@ -2717,7 +2717,7 @@ export type GlobalSettings = {
    *  `pty:sideEffect` channel and renderer byte parsers stay unregistered for
    *  those PTYs; `false` restores renderer byte parsing. This build ships it
    *  false — no main emitter exists until PR #7214 (see constants.ts).
-   *  See docs/reference/terminal-side-effect-authority.md. */
+   *  See docs/reference/terminal-side-effect-authority.md (ships with #7214). */
   terminalMainSideEffectAuthority?: boolean
   /** Kill switch for main's hidden-delivery gate (Phase 4): when true AND
    *  terminalMainSideEffectAuthority is on, main drops PTY byte delivery to
@@ -2730,7 +2730,7 @@ export type GlobalSettings = {
    *  (DA1/CPR/DECRPM, …) embedded in hidden-dropped chunks from the runtime
    *  emulator. `false` silences the responder without changing drops. This
    *  build ships it false — the responder arrives with PR #7214.
-   *  See docs/reference/terminal-query-authority.md. */
+   *  See docs/reference/terminal-query-authority.md (ships with #7214). */
   terminalModelQueryAuthority?: boolean
   /** Which agent to pre-select in the new-workspace composer.
    *  - null: auto (first detected agent)
