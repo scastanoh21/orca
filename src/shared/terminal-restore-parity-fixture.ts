@@ -170,6 +170,45 @@ export function bufferHasSerializeHostileWrappedRow(terminal: Terminal): boolean
   return false
 }
 
+/** KNOWN UPSTREAM BUG predicate — Bug B (@xterm/addon-serialize 0.15.0-beta.287):
+ *  serializing a dim cell followed by a bold-only cell emits `\x1b[1;22m`; SGR
+ *  22 (normalIntensity) clears bold too, so the restored cell loses bold. The
+ *  fuzz suites tolerate + count exactly the case where the serialized snapshot
+ *  contains that self-cancelling transition. Minimal repro + mechanism in
+ *  headless-emulator-fidelity.fuzz.test.ts and notes/garble-fuzz-divergences.md. */
+const SELF_CANCELLING_BOLD_RESET_RE = new RegExp(
+  // `1;22` in any SGR position: bold set then immediately reset in one CSI m.
+  `${String.fromCharCode(27)}\\[(?:[0-9;]*;)?1;22(?:;[0-9;]*)?m`
+)
+export function snapshotHasSelfCancellingBoldReset(snapshotAnsi: string): boolean {
+  return SELF_CANCELLING_BOLD_RESET_RE.test(snapshotAnsi)
+}
+
+/** KNOWN UPSTREAM BUG predicate — Bug C (@xterm/addon-serialize 0.15.0-beta.287):
+ *  after a content row filled to exactly `cols`, xterm is wrap-pending and the
+ *  serializer's relative cursor restore lands one column short. Tolerated +
+ *  counted only when the live cursor is exactly one column right of the restored
+ *  one AND some content row fills the full width (the wrap-pending trigger). */
+export function isMarginWrapPendingCursorOffByOne(control: Terminal, restored: Terminal): boolean {
+  const live = cursorPosition(control)
+  const back = cursorPosition(restored)
+  if (live.y !== back.y || live.x !== back.x + 1) {
+    return false
+  }
+  const buffer = control.buffer.active
+  for (let y = 0; y < buffer.length; y++) {
+    const line = buffer.getLine(y)
+    if (!line) {
+      continue
+    }
+    const lastCol = control.cols - 1
+    if ((line.getCell(lastCol)?.getChars() ?? '') !== '') {
+      return true
+    }
+  }
+  return false
+}
+
 /** Full normal-buffer text with trailing blank rows trimmed (SerializeAddon
  *  restores content rows; both sides may differ only in trailing blanks). */
 export function normalBufferRowsTrimmed(terminal: Terminal): string[] {

@@ -39,13 +39,21 @@ same bytes. Any such diff is a user-visible garble on reveal.
 | D — DECSC saved-cursor lost across reveal | reconciliation (suite 2) | seed 3 | (a) real snapshot limitation — garbles a DECRC-in-tail reveal |
 | E — snapshot boundary mid-escape-sequence | reconciliation (suite 2) | seed 4 (+~24% of corpus) | (a) real snapshot limitation — continuation renders literal |
 
-The suite-1 default corpus runs seeds 1..300, so it only hits Bug A in range
-(31, 157, 171, 207) — all tolerated — which is why it passes green. All five
-bug *classes* are reproduced by dedicated minimal `test.skip` repros so they
-cannot silently regress. `FUZZ_ITERATIONS=2000` (or higher) surfaces Bugs B and
-C as live corpus divergences; because they lack a cheap buffer-state predicate
-(unlike Bug A's wrap predicate) they are pinned as standalone skipped repros and
-kept out of range by the default 300 corpus. See "Corpus vs deep mode" below.
+All five bug classes are reproduced by dedicated minimal `test.skip` repros so
+they cannot silently regress, AND each is tolerated + counted by its suite's
+corpus loop so deep mode surfaces only genuinely NEW divergences:
+
+- Suite 1 (fidelity): Bug A via `bufferHasSerializeHostileWrappedRow`, Bug B via
+  `snapshotHasSelfCancellingBoldReset` (matches the `1;22` in the serialized
+  snapshot), Bug C via `isMarginWrapPendingCursorOffByOne` (cursor x-1 with a
+  full-width content row). Green at the default 300 and at `FUZZ_ITERATIONS=2000`.
+- Suite 2 (reconciliation): Bug E via `prefixEndsMidSequence`. Bug D and the
+  Bug-C cursor cascade are kept out of the corpus by an append-only racing tail
+  (no DECSC/cursor motion) and pinned only as standalone repros. Green at the
+  default 200 and at `FUZZ_ITERATIONS=1000`.
+
+Each tolerance has a `< max(3, ITERATIONS*0.5)` guard so a predicate that starts
+tripping on most seeds fails the suite instead of silently swallowing it.
 
 Seed 113 (called out in the handoff as a "DECSC/DECRC detour writing colored
 text mid-line") does not diverge on the current harness. It is a `savedCursor
@@ -107,7 +115,8 @@ line is bold; after a hide→reveal snapshot restore it renders normal-weight.
 The seed-1321 live row `⠦ bash: pnpm typecheck` is bold live, non-bold restored.
 
 **Repro test:** `headless-emulator-fidelity.fuzz.test.ts` →
-`it.skip('drops bold when serializing a dim cell followed by a bold-only cell …')`.
+`it.skip('preserves bold when serializing a dim cell followed by a bold-only cell')`.
+Tolerated + counted in the corpus via `snapshotHasSelfCancellingBoldReset`.
 
 ---
 
@@ -146,7 +155,8 @@ cell left of where the live pane had it — visible as a mispositioned prompt
 caret or spinner, and subsequent input can overwrite the wrong cell.
 
 **Repro test:** `headless-emulator-fidelity.fuzz.test.ts` →
-`it.skip('restores the cursor one column short when the last row fills the margin …')`.
+`it.skip('restores the cursor exactly when the last content row fills the right margin')`.
+Tolerated + counted in the corpus via `isMarginWrapPendingCursorOffByOne`.
 
 ---
 
@@ -262,14 +272,12 @@ snapshot to a parser-clean boundary.
 
 ## Corpus vs deep mode
 
-- Default `FUZZ_ITERATIONS=300`: <60s combined with suite 2. Hits only tolerated
-  Bug-A seeds in range → green.
-- `FUZZ_ITERATIONS=2000`: surfaces Bugs B and C as live corpus divergences. They
-  are NOT auto-tolerated (unlike Bug A, which has a structural buffer predicate);
-  a dim→bold-only transition or a margin-filling final row is not cheaply
-  detectable from buffer state alone without re-deriving the serializer's pen
-  diff. They are instead pinned as standalone `test.skip` repros. If you raise
-  the default corpus past ~430 you must either add the same
-  `test.skip`-with-predicate tolerance or the suite will (correctly) fail on the
-  first Bug-B/Bug-C seed.
-- `FUZZ_SEED=<n>`: re-run exactly one seed for a repro.
+- **Suite 1** (`headless-emulator-fidelity.fuzz.test.ts`): default
+  `FUZZ_ITERATIONS=300` (~17s). `FUZZ_ITERATIONS=2000` (~113s) is green — Bugs A,
+  B, and C are each tolerated + counted by a predicate, so the corpus fails only
+  on a genuinely new divergence.
+- **Suite 2** (`hidden-reveal-reconciliation.fuzz.test.ts`): default
+  `FUZZ_ITERATIONS=200` (~5s). `FUZZ_ITERATIONS=1000` is green — the racing tail
+  is append-only, so the only tolerated class is Bug E (`prefixEndsMidSequence`).
+- Combined default runtime is ~19s (well under the 60s gate).
+- `FUZZ_SEED=<n>`: re-run exactly one seed for a repro (both suites).

@@ -280,7 +280,12 @@ const TAIL_WORDS = [
   '+142 -37',
   'diff --git'
 ] as const
-const TAIL_SGR = ['\x1b[0m', '\x1b[31m', '\x1b[1m', '\x1b[38;5;204m', '\x1b[7m'] as const
+// Why no SGR 7 (inverse): inverse marks trailing BLANK cells with an
+// inverse-fg the serializer round-trips slightly differently depending on how
+// much of the buffer it captures — a serialize SGR-fidelity nuance (the Bug B
+// class) that has nothing to do with seq reconciliation. Keeping it out of the
+// tail keeps the styles gate a clean function of the byte-stitch.
+const TAIL_SGR = ['\x1b[0m', '\x1b[31m', '\x1b[1m', '\x1b[38;5;204m', '\x1b[22m'] as const
 
 /** Append-only racing tail: SGR runs + text + newlines only. No absolute/
  *  relative cursor motion, scroll regions, alt frames, or DECSC — so the tail

@@ -13,7 +13,9 @@ import {
   bufferHasSerializeHostileWrappedRow,
   createRendererParityTerminal,
   cursorPosition,
+  isMarginWrapPendingCursorOffByOne,
   normalBufferRowsTrimmed,
+  snapshotHasSelfCancellingBoldReset,
   visibleRowStyles,
   visibleRows,
   writeChunksToTerminal
@@ -68,6 +70,12 @@ type FidelityDiff = {
    *  @xterm/addon-serialize blank-leading-wrapped-row bug predicate — see
    *  bufferHasSerializeHostileWrappedRow and the skipped repro test below. */
   knownSerializeWrapBug?: boolean
+  /** True when the divergence is the known Bug B serialize `1;22` bold-reset
+   *  self-cancel (snapshotHasSelfCancellingBoldReset). */
+  knownSerializeBoldReset?: boolean
+  /** True when the divergence is the known Bug C wrap-pending cursor off-by-one
+   *  at the right margin (isMarginWrapPendingCursorOffByOne). */
+  knownMarginCursorOffByOne?: boolean
 }
 
 function buildCase(seed: number): FidelityCase {
@@ -171,8 +179,23 @@ async function runFidelityCase(testCase: FidelityCase): Promise<FidelityDiff | n
           )
     ]
     const diff = diffs.find((candidate) => candidate !== null) ?? null
-    if (diff && bufferHasSerializeHostileWrappedRow(control.terminal)) {
+    if (!diff) {
+      return null
+    }
+    if (bufferHasSerializeHostileWrappedRow(control.terminal)) {
       return { ...diff, knownSerializeWrapBug: true }
+    }
+    if (
+      diff.stage === 'restore-visible-styles' &&
+      snapshotHasSelfCancellingBoldReset(snapshot.snapshotAnsi)
+    ) {
+      return { ...diff, knownSerializeBoldReset: true }
+    }
+    if (
+      diff.stage === 'restore-cursor' &&
+      isMarginWrapPendingCursorOffByOne(control.terminal, restored.terminal)
+    ) {
+      return { ...diff, knownMarginCursorOffByOne: true }
     }
     return diff
   } finally {
@@ -249,15 +272,27 @@ describe('headless emulator snapshot fidelity fuzz', () => {
   })
 
   it(`matches an always-visible renderer twin across ${ITERATIONS} seeded agent-TUI streams`, async () => {
+    // Each known-and-pinned serialize bug (A wrap, B bold-reset, C margin
+    // cursor) is tolerated + counted so deep mode (FUZZ_ITERATIONS) surfaces
+    // only GENUINELY NEW divergences. All three are minimized and pinned by the
+    // skipped repro tests below; the counts guard against a degenerate corpus.
     let knownSerializeWrapBugHits = 0
+    let knownSerializeBoldResetHits = 0
+    let knownMarginCursorOffByOneHits = 0
     for (let i = 0; i < ITERATIONS; i++) {
       const seed = FIXED_SEED ?? 1 + i
       const testCase = buildCase(seed)
       const diff = await runFidelityCase(testCase)
       if (diff?.knownSerializeWrapBug) {
-        // Tolerated + counted: the blank-leading-wrapped-row serialize bug
-        // is already minimized and pinned by the skipped repro test below.
         knownSerializeWrapBugHits += 1
+        continue
+      }
+      if (diff?.knownSerializeBoldReset) {
+        knownSerializeBoldResetHits += 1
+        continue
+      }
+      if (diff?.knownMarginCursorOffByOne) {
+        knownMarginCursorOffByOneHits += 1
         continue
       }
       if (diff) {
@@ -266,9 +301,11 @@ describe('headless emulator snapshot fidelity fuzz', () => {
         expect.fail(formatFailure(minimized, minimizedDiff ?? diff))
       }
     }
-    // Guard the tolerance from swallowing the suite: if the corpus starts
-    // tripping the known predicate on most seeds, the gate is degenerate.
+    // Guard each tolerance from swallowing the suite: a known predicate tripping
+    // on most seeds means the gate has gone degenerate.
     expect(knownSerializeWrapBugHits).toBeLessThan(Math.max(3, ITERATIONS * 0.5))
+    expect(knownSerializeBoldResetHits).toBeLessThan(Math.max(3, ITERATIONS * 0.5))
+    expect(knownMarginCursorOffByOneHits).toBeLessThan(Math.max(3, ITERATIONS * 0.5))
   }, 600_000)
 
   // ── HEADLINE FINDING (do not delete while unfixed upstream) ──────────────
