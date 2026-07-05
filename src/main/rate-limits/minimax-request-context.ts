@@ -1,4 +1,4 @@
-import { net, session } from 'electron'
+import { session, type Session } from 'electron'
 
 export const MINIMAX_USAGE_ENDPOINT =
   'https://platform.minimax.io/v1/api/openplatform/coding_plan/remains'
@@ -101,6 +101,14 @@ export function makeMiniMaxRequestHeaders(groupId: string | null): Record<string
   return headers
 }
 
+async function clearMiniMaxSessionCookieJarForSession(miniMaxSession: Session): Promise<void> {
+  await miniMaxSession.clearStorageData({ origin: MINIMAX_ORIGIN, storages: ['cookies'] })
+}
+
+export async function clearMiniMaxSessionCookieJar(): Promise<void> {
+  await clearMiniMaxSessionCookieJarForSession(session.fromPartition(MINIMAX_SESSION_PARTITION))
+}
+
 export async function fetchMiniMaxWithSessionCookieJar(args: {
   cookie: string
   endpoint: string
@@ -109,28 +117,34 @@ export async function fetchMiniMaxWithSessionCookieJar(args: {
 }): Promise<MiniMaxFetchResponse> {
   const miniMaxSession = session.fromPartition(MINIMAX_SESSION_PARTITION)
   const cookiePairs = parseCookiePairs(args.cookie)
-  await miniMaxSession.clearStorageData({ origin: MINIMAX_ORIGIN, storages: ['cookies'] })
-  await Promise.all(
-    cookiePairs.map((pair) =>
-      miniMaxSession.cookies.set({
-        url: MINIMAX_ORIGIN,
-        name: pair.name,
-        value: pair.value,
-        secure: true,
-        path: '/'
-      })
+  try {
+    await clearMiniMaxSessionCookieJarForSession(miniMaxSession)
+    await Promise.all(
+      cookiePairs.map((pair) =>
+        miniMaxSession.cookies.set({
+          url: MINIMAX_ORIGIN,
+          name: pair.name,
+          value: pair.value,
+          secure: true,
+          path: '/'
+        })
+      )
     )
-  )
-  const headers = makeMiniMaxRequestHeaders(args.groupId)
-  return {
-    response: await miniMaxSession.fetch(args.endpoint, {
-      method: 'GET',
-      headers,
-      signal: args.signal
-    }),
-    requestHeaderNames: Object.keys(headers),
-    cookieNames: getUniqueMiniMaxCookieNames(args.cookie),
-    transport: 'session-cookie-jar'
+    const headers = makeMiniMaxRequestHeaders(args.groupId)
+    return {
+      response: await miniMaxSession.fetch(args.endpoint, {
+        method: 'GET',
+        headers,
+        signal: args.signal
+      }),
+      requestHeaderNames: Object.keys(headers),
+      cookieNames: getUniqueMiniMaxCookieNames(args.cookie),
+      transport: 'session-cookie-jar'
+    }
+  } finally {
+    await clearMiniMaxSessionCookieJarForSession(miniMaxSession).catch((error: unknown) => {
+      console.warn('[minimax] failed to clear session cookie jar after fetch', error)
+    })
   }
 }
 
@@ -140,19 +154,27 @@ export async function fetchMiniMaxWithManualCookieHeader(args: {
   groupId: string | null
   signal: AbortSignal
 }): Promise<MiniMaxFetchResponse> {
-  const headers = {
-    ...makeMiniMaxRequestHeaders(args.groupId),
-    Cookie: args.cookie
-  }
-  return {
-    response: await net.fetch(args.endpoint, {
-      method: 'GET',
-      headers,
-      signal: args.signal
-    }),
-    requestHeaderNames: Object.keys(headers),
-    cookieNames: getUniqueMiniMaxCookieNames(args.cookie),
-    transport: 'manual-cookie-header'
+  const miniMaxSession = session.fromPartition(MINIMAX_SESSION_PARTITION)
+  try {
+    await clearMiniMaxSessionCookieJarForSession(miniMaxSession)
+    const headers = {
+      ...makeMiniMaxRequestHeaders(args.groupId),
+      Cookie: normalizeMiniMaxCookieHeader(args.cookie)
+    }
+    return {
+      response: await miniMaxSession.fetch(args.endpoint, {
+        method: 'GET',
+        headers,
+        signal: args.signal
+      }),
+      requestHeaderNames: Object.keys(headers),
+      cookieNames: getUniqueMiniMaxCookieNames(args.cookie),
+      transport: 'manual-cookie-header'
+    }
+  } finally {
+    await clearMiniMaxSessionCookieJarForSession(miniMaxSession).catch((error: unknown) => {
+      console.warn('[minimax] failed to clear session cookie jar after fetch', error)
+    })
   }
 }
 
