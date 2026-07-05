@@ -21,6 +21,8 @@ import {
 } from '../claude-accounts/runtime-selection'
 import { fetchGeminiRateLimits } from './gemini-usage-fetcher'
 import { fetchKimiRateLimits } from './kimi-fetcher'
+import { hasMiniMaxSessionCookie } from '../minimax/minimax-cookie-store'
+import { fetchMiniMaxRateLimits } from './minimax-fetcher'
 import { fetchOpenCodeGoRateLimits } from './opencode-go-usage-fetcher'
 import {
   normalizeCodexAccountSelectionTarget,
@@ -41,6 +43,17 @@ type ClaudeAuthPreparationResolver = (
 type OpenCodeGoRateLimitConfig = {
   sessionCookie: string
   workspaceIdOverride: string
+}
+
+type MiniMaxRateLimitConfig = {
+  sessionCookie: string
+  groupId: string
+  models: string
+}
+
+type MiniMaxResolvedConfig = {
+  config: MiniMaxRateLimitConfig
+  error: string | null
 }
 
 type GeminiCliOAuthEnabledResolver = () => boolean
@@ -64,6 +77,7 @@ type InternalRateLimitState = {
   gemini: ProviderRateLimits | null
   opencodeGo: ProviderRateLimits | null
   kimi: ProviderRateLimits | null
+  minimax: ProviderRateLimits | null
 }
 
 function normalizePollingInterval(ms: number): number {
@@ -85,13 +99,18 @@ function isSystemDefaultClaudeAuth(
   return provenance === 'system' || Boolean(provenance?.endsWith(':system'))
 }
 
+function toErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
+
 export class RateLimitService {
   private state: InternalRateLimitState = {
     claude: null,
     codex: null,
     gemini: null,
     opencodeGo: null,
-    kimi: null
+    kimi: null,
+    minimax: null
   }
   private pollInterval: number = DEFAULT_POLL_MS
   private timer: ReturnType<typeof setInterval> | null = null
@@ -108,7 +127,9 @@ export class RateLimitService {
   private codexFetchGeneration = 0
   private claudeFetchGeneration = 0
   private opencodeFetchGeneration = 0
+  private minimaxFetchGeneration = 0
   private lastOpencodeConfigHash = ''
+  private lastMiniMaxConfigHash = ''
   private codexHomePathResolver: CodexHomePathResolver | null = null
   private codexFetchTarget: NormalizedCodexAccountSelectionTarget = {
     runtime: 'host',
@@ -120,6 +141,7 @@ export class RateLimitService {
     wslDistro: null
   }
   private openCodeGoConfigResolver: (() => OpenCodeGoRateLimitConfig) | null = null
+  private miniMaxConfigResolver: (() => MiniMaxRateLimitConfig) | null = null
   private geminiCliOAuthEnabledResolver: GeminiCliOAuthEnabledResolver | null = null
   private inactiveClaudeAccountsResolver: (() => InactiveClaudeAccountInfo[]) | null = null
   private inactiveCodexAccountsResolver: (() => InactiveCodexAccountInfo[]) | null = null
@@ -161,6 +183,10 @@ export class RateLimitService {
 
   setOpenCodeGoConfigResolver(resolver: () => OpenCodeGoRateLimitConfig): void {
     this.openCodeGoConfigResolver = resolver
+  }
+
+  setMiniMaxConfigResolver(resolver: () => MiniMaxRateLimitConfig): void {
+    this.miniMaxConfigResolver = resolver
   }
 
   setGeminiCliOAuthEnabledResolver(resolver: GeminiCliOAuthEnabledResolver): void {
@@ -239,6 +265,10 @@ export class RateLimitService {
     this.pruneInactiveCodexState()
     return {
       ...this.state,
+      // Why: the cookie lives in the file system, not GlobalSettings. Surface
+      // its presence on the pushed state so the renderer keeps the MiniMax
+      // bar visible across reloads and between snapshot refreshes.
+      minimaxCookieConfigured: hasMiniMaxSessionCookie(),
       claudeTarget: this.claudeFetchTarget,
       codexTarget: this.codexFetchTarget,
       inactiveClaudeAccounts: this.buildInactiveArray(
@@ -259,6 +289,16 @@ export class RateLimitService {
     // though the user is asking for a fresh read right now.
     await this.fetchAll({ force: true })
     return this.getState()
+  }
+
+  invalidateMiniMaxCredentialState(): void {
+    this.minimaxFetchGeneration += 1
+    // Why: saving or forgetting the browser cookie can race an in-flight usage
+    // fetch; clear the visible snapshot before any old-cookie result returns.
+    this.updateState({
+      ...this.state,
+      minimax: this.withFetchingStatus(null, 'minimax')
+    })
   }
 
   async refreshForCodexAccountChange(
@@ -947,9 +987,45 @@ export class RateLimitService {
     return process.platform !== 'win32'
   }
 
+  private resolveMiniMaxConfig(): MiniMaxResolvedConfig {
+    try {
+      return {
+        config: this.miniMaxConfigResolver?.() ?? {
+          sessionCookie: '',
+          groupId: '',
+          models: 'general'
+        },
+        error: null
+      }
+    } catch (error) {
+      // Why: one unreadable browser cookie must not abort every provider's
+      // quota refresh; surface it as MiniMax-only state instead.
+      return {
+        config: {
+          sessionCookie: '',
+          groupId: '',
+          models: 'general'
+        },
+        error: toErrorMessage(error)
+      }
+    }
+  }
+
+  private getMiniMaxCredentialError(message: string): ProviderRateLimits {
+    return {
+      provider: 'minimax',
+      session: null,
+      weekly: null,
+      updatedAt: Date.now(),
+      error: message,
+      status: 'error',
+      usageMetadata: { failureKind: 'keychain-unavailable', source: 'web' }
+    }
+  }
+
   private withFetchingStatus(
     current: ProviderRateLimits | null,
-    provider: 'claude' | 'codex' | 'gemini' | 'opencode-go' | 'kimi'
+    provider: 'claude' | 'codex' | 'gemini' | 'opencode-go' | 'kimi' | 'minimax'
   ): ProviderRateLimits {
     if (!current) {
       return {
@@ -983,6 +1059,10 @@ export class RateLimitService {
     const openCodeGoConfig = this.openCodeGoConfigResolver?.()
     const cookie = openCodeGoConfig?.sessionCookie ?? ''
     const workspaceIdOverride = openCodeGoConfig?.workspaceIdOverride ?? ''
+    const miniMaxConfigResult = this.resolveMiniMaxConfig()
+    const miniMaxCookie = miniMaxConfigResult.config.sessionCookie
+    const miniMaxGroupId = miniMaxConfigResult.config.groupId
+    const miniMaxModels = miniMaxConfigResult.config.models
     const geminiCliOAuthEnabled = this.geminiCliOAuthEnabledResolver?.() ?? false
 
     // Detect if configuration changed — if it did, we must discard any stale
@@ -995,6 +1075,14 @@ export class RateLimitService {
     }
     const opencodeGeneration = this.opencodeFetchGeneration
 
+    const currentMiniMaxConfigHash = `${miniMaxCookie}|${miniMaxGroupId}|${miniMaxModels}|${miniMaxConfigResult.error ?? ''}`
+    const miniMaxConfigChanged = currentMiniMaxConfigHash !== this.lastMiniMaxConfigHash
+    if (miniMaxConfigChanged) {
+      this.lastMiniMaxConfigHash = currentMiniMaxConfigHash
+      this.minimaxFetchGeneration += 1
+    }
+    const miniMaxGeneration = this.minimaxFetchGeneration
+
     // Mark all providers as fetching while keeping previous data visible.
     // Codex account changes clear Codex separately before this method is
     // called, so ordinary refreshes still preserve the current values.
@@ -1006,13 +1094,16 @@ export class RateLimitService {
       opencodeGo: opencodeConfigChanged
         ? this.withFetchingStatus(null, 'opencode-go')
         : this.withFetchingStatus(previousState.opencodeGo, 'opencode-go'),
-      kimi: this.withFetchingStatus(previousState.kimi, 'kimi')
+      kimi: this.withFetchingStatus(previousState.kimi, 'kimi'),
+      minimax: miniMaxConfigChanged
+        ? this.withFetchingStatus(null, 'minimax')
+        : this.withFetchingStatus(previousState.minimax, 'minimax')
     })
 
     const missingWslCodexHome = codexHomePath
       ? null
       : this.getMissingWslCodexHomeResult(codexTarget)
-    const [claudeResult, codexResult, geminiResult, opencodeGoResult, kimiResult] =
+    const [claudeResult, codexResult, geminiResult, opencodeGoResult, kimiResult, miniMaxResult] =
       await Promise.allSettled([
         fetchClaudeRateLimits({
           authPreparation: claudeAuthPreparation,
@@ -1029,7 +1120,14 @@ export class RateLimitService {
           }),
         fetchGeminiRateLimits(geminiCliOAuthEnabled),
         fetchOpenCodeGoRateLimits(cookie, workspaceIdOverride || undefined),
-        fetchKimiRateLimits()
+        fetchKimiRateLimits(),
+        miniMaxConfigResult.error
+          ? Promise.resolve(this.getMiniMaxCredentialError(miniMaxConfigResult.error))
+          : fetchMiniMaxRateLimits({
+              cookie: miniMaxCookie,
+              groupId: miniMaxGroupId,
+              models: miniMaxModels
+            })
       ])
 
     if (signal.aborted) {
@@ -1103,6 +1201,21 @@ export class RateLimitService {
             status: 'error'
           } satisfies ProviderRateLimits)
 
+    const miniMax =
+      miniMaxResult.status === 'fulfilled'
+        ? miniMaxResult.value
+        : ({
+            provider: 'minimax',
+            session: null,
+            weekly: null,
+            updatedAt: Date.now(),
+            error:
+              miniMaxResult.reason instanceof Error
+                ? miniMaxResult.reason.message
+                : 'Unknown error',
+            status: 'error'
+          } satisfies ProviderRateLimits)
+
     const latestCodexHomePath = this.codexHomePathResolver?.(codexTarget) ?? null
     const latestClaudeAuthPreparation = await this.claudeAuthPreparationResolver?.(claudeTarget)
     if (signal.aborted) {
@@ -1117,6 +1230,7 @@ export class RateLimitService {
       claudeProvenance === latestClaudeProvenance &&
       this.isSameClaudeTarget(claudeTarget, this.claudeFetchTarget)
     const shouldApplyOpencode = opencodeGeneration === this.opencodeFetchGeneration
+    const shouldApplyMiniMax = miniMaxGeneration === this.minimaxFetchGeneration
 
     // Why: account switches can race in-flight Codex fetches. Only apply a
     // Codex result if both the selected-account provenance and the request
@@ -1136,7 +1250,12 @@ export class RateLimitService {
           ? opencodeGo
           : this.applyStalePolicy(opencodeGo, previousState.opencodeGo)
         : this.state.opencodeGo,
-      kimi: this.applyStalePolicy(kimi, previousState.kimi)
+      kimi: this.applyStalePolicy(kimi, previousState.kimi),
+      minimax: shouldApplyMiniMax
+        ? miniMaxConfigChanged
+          ? miniMax
+          : this.applyStalePolicy(miniMax, previousState.minimax)
+        : this.state.minimax
     })
 
     this.lastFetchAt = Date.now()

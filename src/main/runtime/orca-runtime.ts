@@ -817,6 +817,8 @@ type RuntimeStore = {
     githubProjects?: GlobalSettings['githubProjects']
     experimentalNewWorktreeCardStyle?: GlobalSettings['experimentalNewWorktreeCardStyle']
     compactWorktreeCards?: GlobalSettings['compactWorktreeCards']
+    minimaxGroupId?: GlobalSettings['minimaxGroupId']
+    minimaxUsageModels?: GlobalSettings['minimaxUsageModels']
     gitlabProjects?: GlobalSettings['gitlabProjects']
     experimentalWorktreeSymlinks?: boolean
     mobileAutoRestoreFitMs?: number | null
@@ -2498,6 +2500,8 @@ export class OrcaRuntimeService {
     | 'githubProjects'
     | 'experimentalNewWorktreeCardStyle'
     | 'compactWorktreeCards'
+    | 'minimaxGroupId'
+    | 'minimaxUsageModels'
   > {
     if (!this.store?.getSettings) {
       throw new Error('runtime_unavailable')
@@ -2517,7 +2521,9 @@ export class OrcaRuntimeService {
       defaultLinearTeamSelection: settings.defaultLinearTeamSelection ?? null,
       githubProjects: settings.githubProjects,
       experimentalNewWorktreeCardStyle: settings.experimentalNewWorktreeCardStyle === true,
-      compactWorktreeCards: settings.compactWorktreeCards === true
+      compactWorktreeCards: settings.compactWorktreeCards === true,
+      minimaxGroupId: settings.minimaxGroupId ?? '',
+      minimaxUsageModels: settings.minimaxUsageModels ?? 'general'
     }
   }
 
@@ -2537,6 +2543,8 @@ export class OrcaRuntimeService {
       | 'githubProjects'
       | 'experimentalNewWorktreeCardStyle'
       | 'compactWorktreeCards'
+      | 'minimaxGroupId'
+      | 'minimaxUsageModels'
     >
   ): Pick<
     GlobalSettings,
@@ -2554,6 +2562,8 @@ export class OrcaRuntimeService {
     | 'githubProjects'
     | 'experimentalNewWorktreeCardStyle'
     | 'compactWorktreeCards'
+    | 'minimaxGroupId'
+    | 'minimaxUsageModels'
   > {
     if (!this.store?.getSettings || !this.store.updateSettings) {
       throw new Error('runtime_unavailable')
@@ -6539,7 +6549,9 @@ export class OrcaRuntimeService {
       })
   }
 
-  private async clearHeadlessTerminalBuffer(ptyId: string): Promise<void> {
+  // Public: desktop-initiated clears (ipc/pty.ts) must also drop this mobile
+  // mirror or a resubscribing mobile client resurrects the cleared scrollback.
+  async clearHeadlessTerminalBuffer(ptyId: string): Promise<void> {
     const state = this.headlessTerminals.get(ptyId)
     if (!state) {
       return

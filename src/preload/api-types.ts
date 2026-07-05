@@ -1159,6 +1159,7 @@ export type PreloadApi = {
     resize: (id: string, cols: number, rows: number) => void
     reportGeometry: (id: string, cols: number, rows: number) => void
     signal: (id: string, signal: string) => void
+    clearBuffer: (id: string) => void
     kill: (id: string, opts?: { keepHistory?: boolean }) => Promise<void>
     ackColdRestore: (id: string) => void
     ackData: (id: string, charCount: number, processedChars?: number) => void
@@ -2846,7 +2847,13 @@ export type PreloadApi = {
     setPollingInterval: (ms: number) => Promise<void>
     fetchInactiveClaudeAccounts: () => Promise<void>
     fetchInactiveCodexAccounts: () => Promise<void>
+    refreshMiniMax: () => Promise<RateLimitState>
     onUpdate: (callback: (state: RateLimitState) => void) => () => void
+  }
+  minimaxCredentials: {
+    getStatus: () => Promise<{ configured: boolean }>
+    saveCookie: (cookie: string) => Promise<{ configured: boolean }>
+    clearCookie: () => Promise<{ configured: boolean }>
   }
   ssh: {
     listTargets: () => Promise<SshTarget[]>
