@@ -343,12 +343,15 @@ export class LocalPtyProvider implements IPtyProvider {
     const startupAgentRecognition = args.command
       ? recognizeAgentProcessFromCommandLine(args.command)
       : null
-    if (args.command && startupAgentRecognition) {
-      assertSafeAgentStartupCwd(args.cwd, args.command)
-    }
 
     const defaultCwd = getDefaultCwd()
     const cwd = args.cwd || defaultCwd
+    // Why: gate on the effective cwd (post default-cwd fallback), not the raw
+    // args.cwd — an omitted cwd resolves to a safe default and must not be
+    // rejected as if it were a root-like path.
+    if (args.command && startupAgentRecognition) {
+      assertSafeAgentStartupCwd(cwd, args.command)
+    }
     const wslInfo = process.platform === 'win32' ? parseWslPath(cwd) : null
     const worktreeWslContext =
       process.platform === 'win32' ? getWslContextFromWorktreeId(args.worktreeId) : undefined

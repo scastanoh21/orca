@@ -82,6 +82,7 @@ vi.mock('../wsl', () => ({
 }))
 
 import { LocalPtyProvider } from './local-pty-provider'
+import { isRootLikePath } from './pty-path-safety'
 import { POWERLEVEL10K_WIZARD_DISABLE_ENV } from '../pty/powerlevel10k-wizard-env'
 
 describe('LocalPtyProvider', () => {
@@ -228,14 +229,15 @@ describe('LocalPtyProvider', () => {
       )
     })
 
-    it('rejects automatic agent startup without an explicit cwd', async () => {
+    it('falls back to the safe default cwd for automatic agent startup without an explicit cwd', async () => {
       spawnMock.mockClear()
 
-      await expect(provider.spawn({ cols: 80, rows: 24, command: 'codex' })).rejects.toThrow(
-        /requires a non-root workspace/
-      )
+      // Why: an omitted cwd resolves to a guaranteed-safe default home (the
+      // guard only rejects root-like paths), so the agent must still launch.
+      await expect(provider.spawn({ cols: 80, rows: 24, command: 'codex' })).resolves.toBeDefined()
 
-      expect(spawnMock).not.toHaveBeenCalled()
+      const spawnCall = spawnMock.mock.calls.at(-1)!
+      expect(isRootLikePath(spawnCall[2].cwd)).toBe(false)
     })
 
     it('rejects automatic agent startup at POSIX root', async () => {
