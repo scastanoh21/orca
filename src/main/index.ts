@@ -120,6 +120,10 @@ import { normalizeClaudeRuntimeSelection } from './claude-accounts/runtime-selec
 import { codexHookService } from './codex/hook-service'
 import { ClaudeAccountService } from './claude-accounts/service'
 import { ClaudeRuntimeAuthService } from './claude-accounts/runtime-auth-service'
+import {
+  attachClaudeLivePtyPersistence,
+  seedLiveClaudePtysFromPersistence
+} from './claude-accounts/live-pty-gate'
 import { StarNagService } from './star-nag/service'
 import { agentHookServer } from './agent-hooks/server'
 import { maybeAutoRenameBranchOnFirstWork } from './agent-hooks/first-work-branch-rename'
@@ -1621,6 +1625,18 @@ app.whenReady().then(async () => {
   // auto-reconnect can drive `ssh -G` or a connection; otherwise a restored
   // connection could resolve against ~/.ssh/config until the next settings edit.
   setSshConfigFilePathOverride(store.getSettings().sshConfigPath)
+  // Why: must run before ClaudeRuntimeAuthService's constructor sync — a Claude
+  // CLI that survived the restart inside the daemon still holds the current
+  // single-use refresh token, and an unguarded early refresh would rotate it
+  // out from under that process (it then shows "Not logged in" mid-session).
+  attachClaudeLivePtyPersistence(store)
+  const persistedClaudePtyIds = store.getClaudeLivePtySessionIds()
+  seedLiveClaudePtysFromPersistence(persistedClaudePtyIds)
+  if (persistedClaudePtyIds.length > 0) {
+    console.log(
+      `[claude-live-pty] Seeded ${persistedClaudePtyIds.length} persisted Claude session id(s) into the refresh gate`
+    )
+  }
   selfHealRuntimeEnvironmentFocus({ store, userDataPath: app.getPath('userData') })
   applyAppIcon(store.getSettings().appIcon)
   if (shouldSuppressDevEducation({ isDev: is.dev })) {
