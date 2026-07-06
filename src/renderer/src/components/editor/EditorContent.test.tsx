@@ -174,4 +174,50 @@ describe('EditorContent', () => {
     // flex-1-only wrapper collapsed the DiffViewer to 0px (found live).
     expect(html).toContain('flex h-full min-h-0 flex-col')
   })
+
+  it('shows the changed-on-disk banner on a dirty markdown diff in preview mode', () => {
+    const activeFile = createOpenFile({
+      id: 'diff:/repo/notes.md',
+      filePath: '/repo/notes.md',
+      relativePath: 'notes.md',
+      language: 'markdown',
+      mode: 'diff',
+      diffSource: 'unstaged',
+      isDirty: true,
+      externalMutation: 'changed'
+    })
+    const html = renderToStaticMarkup(
+      <EditorContent
+        activeFile={activeFile}
+        viewStateScopeId={activeFile.id}
+        fileContents={{}}
+        diffContents={{
+          [activeFile.id]: { kind: 'text', originalContent: 'old', modifiedContent: 'new' } as never
+        }}
+        editBuffers={{ [activeFile.id]: 'new plus edits' }}
+        openFiles={[activeFile]}
+        worktreeEntries={[]}
+        resolvedLanguage="markdown"
+        isMarkdown
+        isMermaid={false}
+        isCsv={false}
+        isNotebook={false}
+        mdViewMode="preview"
+        isChangesMode={false}
+        sideBySide={false}
+        pendingEditorReveal={null}
+        handleContentChange={vi.fn()}
+        handleContentChangeForFile={vi.fn()}
+        handleDirtyStateHint={vi.fn()}
+        handleSave={vi.fn()}
+        handleSaveForFile={vi.fn()}
+        reloadFileContent={vi.fn()}
+        reloadDiffContent={vi.fn()}
+      />
+    )
+
+    expect(html).toContain('role="alert"')
+    expect(html).toContain('changed on disk')
+    expect(html).toContain('Previewing the modified version of this diff')
+  })
 })

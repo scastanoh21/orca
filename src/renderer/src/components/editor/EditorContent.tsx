@@ -983,7 +983,7 @@ export function EditorContent({
     // div must itself be a flex column because DiffViewer's root sizes with
     // flex-1 and collapses to 0px inside a block parent.
     <div className="flex h-full min-h-0 flex-col">
-      <ExternalFileChangeBanner file={activeFile} reloadContent={reloadDiffContent} />
+      {diffExternalChangeBanner}
       <div className="flex min-h-0 flex-1 flex-col">{diffViewer}</div>
     </div>
   )
