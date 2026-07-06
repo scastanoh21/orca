@@ -84,7 +84,7 @@ export function SshConfigFileSetting({
       <p className="text-xs text-muted-foreground">
         {translate(
           'auto.components.settings.SshConfigFileSetting.9d3f5a1c67',
-          'Local OpenSSH client config used to import hosts and connect. Leave blank to use ~/.ssh/config.'
+          'Local OpenSSH client config used to import hosts and connect. Use an absolute or ~-based path. Leave blank to use ~/.ssh/config.'
         )}
       </p>
     </div>
