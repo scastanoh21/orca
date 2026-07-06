@@ -15,6 +15,24 @@ vi.mock('../selectors', () => ({ getTerminalHandle: getTerminalHandleMock }))
 import { ORCHESTRATION_HANDLERS } from './orchestration'
 import { RuntimeClientError } from '../runtime-client'
 
+function staleHandleError(): RuntimeClientError {
+  return new RuntimeClientError('terminal_handle_stale', 'terminal_handle_stale')
+}
+
+// Queues the stale-handle remint chain shared by coordinator commands:
+// stale terminal.show → resolvePane returns liveHandle → downstream RPC result.
+function stubStaleHandleRemint(liveHandle: string, downstream: unknown): void {
+  callMock
+    .mockRejectedValueOnce(staleHandleError())
+    .mockResolvedValueOnce({ result: { terminal: { handle: liveHandle } } })
+    .mockResolvedValueOnce(downstream)
+}
+
+// Queues a stale terminal.show followed by a resolvePane remint that fails with `error`.
+function stubStaleHandleRemintFailure(error: RuntimeClientError): void {
+  callMock.mockRejectedValueOnce(staleHandleError()).mockRejectedValueOnce(error)
+}
+
 afterEach(() => {
   getTerminalHandleMock.mockReset()
   if (originalTerminalHandle === undefined) {
@@ -276,14 +294,9 @@ describe('orchestration dispatch coordinator handle', () => {
   it('remints a stale coordinator env handle from the caller pane key', async () => {
     process.env.ORCA_TERMINAL_HANDLE = 'term_stale_coord'
     process.env.ORCA_PANE_KEY = 'tab_coord:leaf_coord'
-    callMock
-      .mockRejectedValueOnce(
-        new RuntimeClientError('terminal_handle_stale', 'terminal_handle_stale')
-      )
-      .mockResolvedValueOnce({ result: { terminal: { handle: 'term_live_coord' } } })
-      .mockResolvedValueOnce({
-        result: { dispatch: { id: 'ctx_1', task_id: 'task_1', status: 'dispatched' } }
-      })
+    stubStaleHandleRemint('term_live_coord', {
+      result: { dispatch: { id: 'ctx_1', task_id: 'task_1', status: 'dispatched' } }
+    })
     getTerminalHandleMock.mockRejectedValue(new Error('active terminal fallback is unsafe'))
 
     await invokeDispatch(
@@ -314,9 +327,7 @@ describe('orchestration dispatch coordinator handle', () => {
 
   it('rejects stale coordinator env handles when the caller pane cannot be proven', async () => {
     process.env.ORCA_TERMINAL_HANDLE = 'term_stale_coord'
-    callMock.mockRejectedValueOnce(
-      new RuntimeClientError('terminal_handle_stale', 'terminal_handle_stale')
-    )
+    callMock.mockRejectedValueOnce(staleHandleError())
     getTerminalHandleMock.mockResolvedValue('term_wrong_active')
 
     await expect(
@@ -337,11 +348,9 @@ describe('orchestration dispatch coordinator handle', () => {
   it('propagates unexpected caller pane remint failures for coordinator commands', async () => {
     process.env.ORCA_TERMINAL_HANDLE = 'term_stale_coord'
     process.env.ORCA_PANE_KEY = 'tab_coord:leaf_coord'
-    callMock
-      .mockRejectedValueOnce(
-        new RuntimeClientError('terminal_handle_stale', 'terminal_handle_stale')
-      )
-      .mockRejectedValueOnce(new RuntimeClientError('runtime_unavailable', 'runtime_unavailable'))
+    stubStaleHandleRemintFailure(
+      new RuntimeClientError('runtime_unavailable', 'runtime_unavailable')
+    )
     getTerminalHandleMock.mockResolvedValue('term_wrong_active')
 
     await expect(
@@ -368,14 +377,9 @@ describe('orchestration dispatch coordinator handle', () => {
   it('uses a live coordinator handle for dispatch-show preamble previews', async () => {
     process.env.ORCA_TERMINAL_HANDLE = 'term_stale_coord'
     process.env.ORCA_PANE_KEY = 'tab_coord:leaf_coord'
-    callMock
-      .mockRejectedValueOnce(
-        new RuntimeClientError('terminal_handle_stale', 'terminal_handle_stale')
-      )
-      .mockResolvedValueOnce({ result: { terminal: { handle: 'term_live_coord' } } })
-      .mockResolvedValueOnce({
-        result: { dispatch: null, preamble: 'preamble' }
-      })
+    stubStaleHandleRemint('term_live_coord', {
+      result: { dispatch: null, preamble: 'preamble' }
+    })
     getTerminalHandleMock.mockRejectedValue(new Error('active terminal fallback is unsafe'))
 
     await invokeDispatchShow(
@@ -402,14 +406,9 @@ describe('orchestration dispatch coordinator handle', () => {
   it('uses a live coordinator handle for orchestration runs', async () => {
     process.env.ORCA_TERMINAL_HANDLE = 'term_stale_coord'
     process.env.ORCA_PANE_KEY = 'tab_coord:leaf_coord'
-    callMock
-      .mockRejectedValueOnce(
-        new RuntimeClientError('terminal_handle_stale', 'terminal_handle_stale')
-      )
-      .mockResolvedValueOnce({ result: { terminal: { handle: 'term_live_coord' } } })
-      .mockResolvedValueOnce({
-        result: { runId: 'run_1', status: 'running' }
-      })
+    stubStaleHandleRemint('term_live_coord', {
+      result: { runId: 'run_1', status: 'running' }
+    })
     getTerminalHandleMock.mockRejectedValue(new Error('active terminal fallback is unsafe'))
 
     await invokeRun(new Map<string, string | boolean>([['spec', 'run the plan']]))
@@ -468,9 +467,7 @@ describe('orchestration task-create caller handle', () => {
   it('does not persist a stale env terminal handle as task creator', async () => {
     process.env.ORCA_TERMINAL_HANDLE = 'term_stale'
     callMock
-      .mockRejectedValueOnce(
-        new RuntimeClientError('terminal_handle_stale', 'terminal_handle_stale')
-      )
+      .mockRejectedValueOnce(staleHandleError())
       .mockResolvedValueOnce({ result: { task: { id: 'task_1', status: 'ready' } } })
     getTerminalHandleMock.mockResolvedValue('term_wrong_active')
 
@@ -511,12 +508,10 @@ describe('orchestration task-create caller handle', () => {
   it('omits caller handle when pane reminting cannot inspect the graph', async () => {
     process.env.ORCA_TERMINAL_HANDLE = 'term_stale'
     process.env.ORCA_PANE_KEY = 'tab_creator:leaf_creator'
-    callMock
-      .mockRejectedValueOnce(
-        new RuntimeClientError('terminal_handle_stale', 'terminal_handle_stale')
-      )
-      .mockRejectedValueOnce(new RuntimeClientError('runtime_unavailable', 'runtime_unavailable'))
-      .mockResolvedValueOnce({ result: { task: { id: 'task_1', status: 'ready' } } })
+    stubStaleHandleRemintFailure(
+      new RuntimeClientError('runtime_unavailable', 'runtime_unavailable')
+    )
+    callMock.mockResolvedValueOnce({ result: { task: { id: 'task_1', status: 'ready' } } })
     getTerminalHandleMock.mockResolvedValue('term_wrong_active')
 
     await invokeTaskCreate(new Map<string, string | boolean>([['spec', 'do work']]))
@@ -539,11 +534,7 @@ describe('orchestration task-create caller handle', () => {
   it('propagates unexpected caller pane remint failures for task creation', async () => {
     process.env.ORCA_TERMINAL_HANDLE = 'term_stale'
     process.env.ORCA_PANE_KEY = 'tab_creator:leaf_creator'
-    callMock
-      .mockRejectedValueOnce(
-        new RuntimeClientError('terminal_handle_stale', 'terminal_handle_stale')
-      )
-      .mockRejectedValueOnce(new RuntimeClientError('permission_denied', 'denied'))
+    stubStaleHandleRemintFailure(new RuntimeClientError('permission_denied', 'denied'))
     getTerminalHandleMock.mockResolvedValue('term_wrong_active')
 
     await expect(
@@ -576,12 +567,9 @@ describe('orchestration task-create caller handle', () => {
   it('remints a stale task creator env handle from the caller pane key', async () => {
     process.env.ORCA_TERMINAL_HANDLE = 'term_stale'
     process.env.ORCA_PANE_KEY = 'tab_creator:leaf_creator'
-    callMock
-      .mockRejectedValueOnce(
-        new RuntimeClientError('terminal_handle_stale', 'terminal_handle_stale')
-      )
-      .mockResolvedValueOnce({ result: { terminal: { handle: 'term_live' } } })
-      .mockResolvedValueOnce({ result: { task: { id: 'task_1', status: 'ready' } } })
+    stubStaleHandleRemint('term_live', {
+      result: { task: { id: 'task_1', status: 'ready' } }
+    })
     getTerminalHandleMock.mockRejectedValue(new Error('active terminal fallback is unsafe'))
 
     await invokeTaskCreate(new Map<string, string | boolean>([['spec', 'do work']]))
