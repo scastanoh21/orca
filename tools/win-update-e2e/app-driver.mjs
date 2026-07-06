@@ -170,6 +170,22 @@ async function createWorkspaceFromSeededRepo(page, timeoutMs) {
   }
 }
 
+/**
+ * Best-effort dismissal of the post-worktree-creation overlays (setup-script
+ * prompt, feature tips, update banner) that can intercept pointer/focus events
+ * over the terminal. Never throws.
+ */
+export async function dismissOverlays(page) {
+  const labels = ['Dismiss setup scripts', 'Dismiss tip', 'Dismiss update']
+  for (const name of labels) {
+    await page
+      .getByRole('button', { name })
+      .first()
+      .click({ timeout: 3_000 })
+      .catch(() => {})
+  }
+}
+
 /** Create a new terminal tab via the New tab menu. Returns the count after. */
 export async function createTerminalTab(page) {
   const before = await page.locator(SORTABLE_TAB).count()

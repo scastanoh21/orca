@@ -17,7 +17,7 @@ import { backupInstallState, restoreInstallState } from './registry-shortcut-bac
 import {
   launchInstalledApp,
   ensureTerminal,
-  createTerminalTab,
+  dismissOverlays,
   listTabIds,
   startMarker,
   readTerminalTextBestEffort,
@@ -189,11 +189,12 @@ async function runProof(ctx, args) {
   // --- Base version: launch, create sessions, start marker, record daemon ---
   let session = await launchInstalledApp({ exePath: base.exePath, userDataDir, seedProfile })
   ctx.session = session
-  // A fresh profile has no terminal yet, so create a workspace + terminal.
+  // A fresh profile has no terminal yet, so create a workspace + terminal, then
+  // clear the post-creation overlays that would intercept typing.
   await ensureTerminal(session.page)
-  await createTerminalTab(session.page)
+  await dismissOverlays(session.page)
   const tabIds = await listTabIds(session.page)
-  log('sessions', `tab ids: ${tabIds.join(', ')}`)
+  log('sessions', `terminal ready; tab ids: ${tabIds.join(', ')}`)
 
   await startMarker(session.page, { canary, pidFile: markerPidFile, heartbeatFile })
   const markerLive = await probeHeartbeatAdvancing(heartbeatFile)
@@ -236,6 +237,7 @@ async function runProof(ctx, args) {
   session = await launchInstalledApp({ exePath: updated.exePath, userDataDir })
   ctx.session = session
   await ensureTerminal(session.page)
+  await dismissOverlays(session.page)
 
   const evidence = await gatherEvidence({
     profile: opts.expect,
