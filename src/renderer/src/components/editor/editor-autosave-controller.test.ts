@@ -15,7 +15,11 @@ import {
 } from './editor-autosave'
 import { attachEditorAutosaveController } from './editor-autosave-controller'
 import { registerPendingEditorFlush } from './editor-pending-flush'
-import { __clearSelfWriteRegistryForTests, hasRecentSelfWrite } from './editor-self-write-registry'
+import {
+  __clearSelfWriteRegistryForTests,
+  hasRecentSelfWrite,
+  recordSelfWrite
+} from './editor-self-write-registry'
 import {
   createCompatibleRuntimeStatusResponseIfNeeded,
   type RuntimeEnvironmentCallRequest
@@ -706,6 +710,54 @@ describe('attachEditorAutosaveController', () => {
       const file = store.getState().openFiles[0]
       expect(file?.isDirty).toBe(false)
       expect(file?.externalMutation).toBeUndefined()
+    } finally {
+      cleanup()
+    }
+  })
+
+  it('does not backstop-mark a dirty tab for the echo of its own save', () => {
+    const writeFile = vi.fn().mockResolvedValue(undefined)
+    const eventTarget = new EventTarget()
+    vi.stubGlobal('window', {
+      addEventListener: eventTarget.addEventListener.bind(eventTarget),
+      removeEventListener: eventTarget.removeEventListener.bind(eventTarget),
+      dispatchEvent: eventTarget.dispatchEvent.bind(eventTarget),
+      setTimeout: globalThis.setTimeout.bind(globalThis),
+      clearTimeout: globalThis.clearTimeout.bind(globalThis),
+      api: {
+        fs: {
+          writeFile
+        }
+      }
+    } satisfies WindowStub)
+
+    const store = createEditorStore()
+    store.getState().openFile({
+      filePath: '/repo/file.ts',
+      relativePath: 'file.ts',
+      worktreeId: 'wt-1',
+      language: 'typescript',
+      mode: 'edit'
+    })
+    store.getState().setEditorDraft('/repo/file.ts', 'typed during save')
+    store.getState().markFileDirty('/repo/file.ts', true)
+    // Why: the combined-Changes reload notification routes through the
+    // controller for the saved path — a fresh self-write stamp means the
+    // event is Orca's own echo, not an external change.
+    recordSelfWrite('/repo/file.ts', 'orca save')
+
+    const cleanup = attachEditorAutosaveController(store)
+    try {
+      window.dispatchEvent(
+        new CustomEvent(ORCA_EDITOR_EXTERNAL_FILE_CHANGE_EVENT, {
+          detail: { worktreeId: 'wt-1', worktreePath: '/repo', relativePath: 'file.ts' }
+        })
+      )
+
+      const file = store.getState().openFiles[0]
+      expect(file?.externalMutation).toBeUndefined()
+      expect(file?.isDirty).toBe(true)
+      expect(store.getState().editorDrafts['/repo/file.ts']).toBe('typed during save')
     } finally {
       cleanup()
     }

@@ -907,9 +907,16 @@ export function EditorContent({
     modifiedDiffBuffer === undefined &&
     dc.modifiedContent.length === 0
   )
+  // Why: rendered once for every diff sub-branch below (preview and source)
+  // so a dirty markdown diff in preview mode surfaces the conflict too.
+  const diffExternalChangeBanner =
+    activeFile.externalMutation === 'changed' ? (
+      <ExternalFileChangeBanner file={activeFile} reloadContent={reloadDiffContent} />
+    ) : null
   if (isMarkdown && mdViewMode === 'preview' && dc.largeDiffRenderLimit?.limited !== true) {
     return (
       <div className="flex h-full min-h-0 flex-col">
+        {diffExternalChangeBanner}
         <div className="border-b border-border/60 bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
           {/* Why: a rendered markdown preview cannot express additions and
           deletions simultaneously, so preview mode intentionally shows the
@@ -971,9 +978,13 @@ export function EditorContent({
     return diffViewer
   }
   return (
-    <div className="flex flex-1 min-h-0 flex-col">
+    // Why: h-full (not flex-1) — the diff-mode container is not a flex parent,
+    // so flex-1 resolves to zero height and collapses this wrapper. The inner
+    // div must itself be a flex column because DiffViewer's root sizes with
+    // flex-1 and collapses to 0px inside a block parent.
+    <div className="flex h-full min-h-0 flex-col">
       <ExternalFileChangeBanner file={activeFile} reloadContent={reloadDiffContent} />
-      <div className="min-h-0 flex-1">{diffViewer}</div>
+      <div className="flex min-h-0 flex-1 flex-col">{diffViewer}</div>
     </div>
   )
 }

@@ -28,7 +28,7 @@ import {
   type EditorSaveQuiesceDetail
 } from './editor-autosave'
 import { flushPendingEditorChange } from './editor-pending-flush'
-import { clearSelfWrite, recordSelfWrite } from './editor-self-write-registry'
+import { clearSelfWrite, hasRecentSelfWrite, recordSelfWrite } from './editor-self-write-registry'
 import {
   autosaveSubscriberInputsEqual,
   getAutosaveSubscriberInputs,
@@ -414,7 +414,14 @@ export function attachEditorAutosaveController(store: AppStoreApi): () => void {
       if (file.isDirty) {
         // Why: canAutoSaveOpenFile is exactly the set of tabs that can hold
         // unsaved edits (edit + unstaged diff) — the tabs the banner serves.
-        if (canAutoSaveOpenFile(file)) {
+        // The self-write check keeps this backstop from marking on the echo
+        // of Orca's own save (the combined-Changes reload notification routes
+        // through here and would otherwise bypass the watch hook's
+        // echo verification).
+        if (
+          canAutoSaveOpenFile(file) &&
+          !hasRecentSelfWrite(file.filePath, file.runtimeEnvironmentId)
+        ) {
           state.setExternalMutation(file.id, 'changed')
         }
         continue
