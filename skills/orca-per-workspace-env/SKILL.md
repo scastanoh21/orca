@@ -6,7 +6,7 @@ description: >-
   for each workspace. Covers first-time setup (provider prerequisites, the
   reusable base snapshot, the coding-agent auth snapshot, credentials, and
   state), not just the per-workspace lifecycle scripts. Use to stand up
-  per-workspace environments, fix a `environmentRecipes` entry in `orca.yaml`, scaffold
+  per-workspace environments, fix an `environmentRecipes` entry in `orca.yaml`, scaffold
   provider lifecycle scripts, or resolve an `orca vm recipe doctor` failure.
 ---
 
@@ -34,6 +34,11 @@ them in order:
 4. **State** — thread snapshot id / scope / project / port between phases via a state file (§6).
 
 Then the **per-workspace contract** (create/suspend/resume/destroy) runs fast (§8).
+
+**The one branch that shapes everything — connection mode:** **Orca-server** (`create` runs `orca serve`
+in the env and emits a `pairingCode`; §7c/§7f) vs **SSH** (`create` runs no server and emits a
+`connection.type:"ssh"` block Orca dials into; §7g/§7h). Settle this first — it changes the `create`
+output shape and half the templates.
 
 **Quick-start (happy path):** interview the user (connection mode Orca-server vs SSH, provider, agent CLI,
 git auth — §1.2) + read the provider's CLI docs → scaffold `scripts/orca-vm/` from §7 → run the
@@ -138,10 +143,11 @@ ephemeral — so authenticate once and bake it into a second snapshot layer. Scr
    **not** plain `codex login`: the default OAuth login starts a loopback callback server on a container
    port the host browser can't reach, so it hangs. Device-auth instead prints a URL + code the user opens
    on the **host**.
-3. Verify login; **refuse to snapshot an unauthenticated VM.** Agent status/verify output often goes to
-   **stderr** (e.g. `codex login status` prints "Logged in using ChatGPT" to stderr), so **fold stderr
-   before grepping** (`... 2>&1 | grep -qi 'logged in'`) — an stdout-only check falsely reports "not logged
-   in" and refuses to commit an authenticated image.
+3. Verify login; **refuse to snapshot an unauthenticated VM.** Prefer the status command's **exit code**
+   (most agent CLIs exit non-zero when unauthenticated). If you grep instead, agent status often goes to
+   **stderr** (e.g. `codex login status` prints "Logged in using ChatGPT" there), so **fold stderr first**
+   (`... 2>&1 | grep …`) and match the agent's **exact success line** — never `grep -qi 'logged in'`, which
+   also matches "**not** logged in" and would commit an unauthenticated image.
 4. Re-snapshot, parse the new id, and overwrite `snapshotId` in state to the authenticated image
    (recording `authSourceSnapshotId`). Remove the auth sandbox.
 
@@ -244,8 +250,10 @@ set -euo pipefail
 #    device-auth flow (e.g. `codex login --device-auth`) — plain OAuth login binds a loopback callback
 #    port the host can't reach and hangs. User runs this themselves (no TTY under an orchestrator); ask
 #    them to report back when it's done before continuing.
-# 3. verify login status, folding stderr first (`status 2>&1 | grep -qi 'logged in'` — many agents print
-#    "logged in" to stderr); refuse to snapshot if not logged in
+# 3. verify login, then refuse to snapshot if not logged in. Prefer the status command's EXIT CODE (most
+#    agent CLIs exit non-zero when unauthenticated) over string-matching. If you must grep, fold stderr
+#    first (`status 2>&1 | grep …` — many agents print the success line there) and match the agent's exact
+#    success line; never `grep -qi 'logged in'`, which also matches "not logged in". Codex example: §7f.
 # 4. snapshot; parse new id
 # 5. merge { snapshotId:<new>, authSourceSnapshotId:<source> } into state; remove auth sandbox
 # print only the state JSON to stdout
@@ -344,9 +352,8 @@ vercel sandbox create --name "$auth" --snapshot "$snapshot_id" --timeout 30m --p
 # URL/code on the HOST. --device-auth is MANDATORY on a headless VM: plain `codex login` binds a loopback
 # callback port the host browser can't reach and hangs. Ask the user to report back when login finishes.
 vercel sandbox exec --interactive --tty "$auth" "${vercel_args[@]}" -- bash -lc 'codex login --device-auth'
-# refuse to snapshot an unauthenticated VM — fold stderr, since `codex login status` prints "Logged in
-# using ChatGPT" to STDERR (an stdout-only grep would wrongly report NOT logged in)
-vercel sandbox exec "$auth" "${vercel_args[@]}" --timeout 30s -- bash -lc 'codex login status 2>&1' | grep -qi 'logged in' \
+# refuse to snapshot an unauthenticated VM — fold stderr, match codex's exact success line (§4)
+vercel sandbox exec "$auth" "${vercel_args[@]}" --timeout 30s -- bash -lc 'codex login status 2>&1' | grep -Eqi 'Logged in using ChatGPT|Logged in via device' \
   || { echo "agent not logged in; not snapshotting" >&2; exit 1; }
 out="$(vercel sandbox snapshot "$auth" --stop --expiration 30d "${vercel_args[@]}" 2>&1)"; printf '%s\n' "$out" >&2
 new_id="$(printf '%s\n' "$out" | sed -nE 's/.*(snap_[A-Za-z0-9]+).*/\1/p' | tail -1)"
@@ -381,10 +388,9 @@ vercel sandbox exec "$name" "${vercel_args[@]}" --timeout 20m \
   --env "GH_TOKEN=$gh_token" --env "ORCA_PROJECT_ROOT=$project_root" \
   --env "ORCA_REPO_URL=$repo_url" --env "ORCA_REPO_REF=$repo_ref" \
   -- bash -lc 'set -euo pipefail; cd "$ORCA_PROJECT_ROOT"; \
-    # Re-establish git auth for the private-repo fetch (same as §5); without this it hangs on a prompt.
-    # Escape BOTH \$1 and \$GH_TOKEN so they land LITERALLY in the helper and resolve at git-runtime — an
-    # unescaped \$1 aborts under `set -u` ("\$1: unbound variable"), and a literal \$GH_TOKEN keeps the real
-    # token out of the written file.
+    # Re-establish git auth for the private-repo fetch (why + full rationale: §5); else it hangs on a prompt.
+    # Load-bearing escaping: \$1 and \$GH_TOKEN must land LITERALLY and resolve at git-runtime. Test after
+    # any edit here — reformatting the nested printf/node quoting silently breaks the fetch or leaks the token.
     if [ -n "${GH_TOKEN:-}" ]; then \
       printf "%s\n" "#!/usr/bin/env bash" "case \"\$1\" in *Username*) echo x-access-token;; *Password*) echo \"\$GH_TOKEN\";; esac" > /tmp/askpass.sh; \
       chmod 700 /tmp/askpass.sh; export GIT_ASKPASS=/tmp/askpass.sh GIT_TERMINAL_PROMPT=0; fi; \
@@ -526,9 +532,7 @@ Key points:
 - The auth image is the Docker equivalent of Phase 3: the **user** runs the agent login **inside** the
   container (you can't drive it — no TTY under an orchestrator), configures proxy env/config, approves
   hooks, and you commit once they report it's done. On a headless container use the **device-auth** flow
-  (e.g. `codex login --device-auth`) — plain OAuth login binds a loopback callback port nothing on the
-  host can reach. Verify the agent folding **stderr** (`codex login status 2>&1 | grep -qi 'logged in'`;
-  status often prints to stderr) before committing.
+  (§4). Verify login before committing — exit code, or fold stderr and match the exact success line (§4).
 - Do not bind-mount or copy the host's full agent home into the image. Let each container have writable
   agent state; only the committed auth image should carry reusable authenticated state.
 - If committing from an interactive shell, force the runtime entrypoint back to `sshd`:
@@ -690,7 +694,9 @@ startup-only `docker run` before the full clone/install path.
   (`\$1`, `\$GH_TOKEN`) so they land literally and resolve at git-runtime; this also keeps the real token
   out of the file. `rm -f` the helper afterward (§5, §7f).
 - **Agent verified as "not logged in" despite a good login.** `codex login status` (and similar) print
-  "Logged in …" to **stderr**; an stdout-only `grep` misses it. Fold stderr first: `status 2>&1 | grep …`.
+  "Logged in …" to **stderr**; an stdout-only `grep` misses it. Prefer the status **exit code**; if you
+  grep, fold stderr first (`status 2>&1 | grep …`) and match the exact success line — not `grep -qi
+  'logged in'`, which also matches "not logged in".
 - **Headless agent login hangs.** Plain OAuth `login` starts a loopback callback server on a VM/container
   port the host browser can't reach. Use the **device-auth** flow (`login --device-auth`) — it prints a
   URL + code the user opens on the host.
