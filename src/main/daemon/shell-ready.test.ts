@@ -589,6 +589,39 @@ describePosix('daemon shell-ready launch config', () => {
     }
   )
 
+  itWithBash(
+    'dispatches bash-preexec callbacks against the real command, not Orca hooks',
+    async () => {
+      const { getDaemonBashShellReadyRcfileContent } = await importFreshShellReady()
+      // Why: Orca's epilogue captures bash-preexec's re-armed DEBUG trap and
+      // chains it. A non-empty preexec_functions must still see the user's real
+      // command as $BASH_COMMAND — not __orca_osc133_epilogue or a __bp_* helper.
+      writeFileSync(
+        join(userDataPath, '.bash_profile'),
+        [
+          'preexec_functions=(__user_preexec)',
+          '__user_preexec() { printf \'USER_PREEXEC:%s\\n\' "$1"; }',
+          '__bp_preexec_invoke_exec() {',
+          '  [[ -n "${__bp_interactive_mode:-}" ]] || return',
+          '  __bp_interactive_mode=""',
+          '  local f',
+          '  for f in "${preexec_functions[@]}"; do "$f" "$BASH_COMMAND"; done',
+          '}',
+          "__bp_arm() { __bp_interactive_mode=1; trap '__bp_preexec_invoke_exec' DEBUG; }",
+          'PROMPT_COMMAND="${PROMPT_COMMAND:+$PROMPT_COMMAND;}__bp_arm"'
+        ].join('\n')
+      )
+
+      const output = runInteractiveBashRcfile(getDaemonBashShellReadyRcfileContent(), userDataPath)
+
+      expectBashOsc133Lifecycle(output)
+      expect(output).toContain('USER_PREEXEC:true')
+      expect(output).toContain('USER_PREEXEC:false')
+      expect(output).not.toContain('USER_PREEXEC:__orca_osc133')
+      expect(output).not.toContain('USER_PREEXEC:__bp_')
+    }
+  )
+
   itWithBash('normalizes array PROMPT_COMMAND hooks so bash 3.2 still runs cleanup', async () => {
     const { getDaemonBashShellReadyRcfileContent } = await importFreshShellReady()
     writeFileSync(
