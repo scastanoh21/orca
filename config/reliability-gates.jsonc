@@ -1538,7 +1538,7 @@
         "macos"
       ],
       "coveredProviders": [],
-      "coverageNotes": "Deterministic daemon socket write/drain contracts with a fake socket; local macOS evidence. The queue byte bound is soft by one frame: the sole remaining line is never dropped, so the effective cap is maxQueuedBytes plus one frame (<= the NDJSON line cap). Live hidden-output floods, active key latency artifacts, and the renderer ACK slice remain gaps (pending perf slice B).",
+      "coverageNotes": "Deterministic daemon socket write/drain contracts with a fake socket, plus live-socket contracts against a real DaemonServer on a real unix socket with a genuinely stalled reader (kernel-level write(false)/drain). The queue byte bound is soft by one frame: the sole remaining line is never dropped, so the effective cap is maxQueuedBytes plus one frame (<= the NDJSON line cap). Active key latency artifacts and the renderer ACK slice remain gaps (pending perf slice B); Windows named-pipe drain semantics are unexercised in the live regime.",
       "motivatingLinks": [
         "https://github.com/stablyai/orca/pull/6836",
         "https://github.com/stablyai/orca/pull/6858"
@@ -1546,11 +1546,13 @@
       "invariant": "Daemon terminal output floods must pause when socket writes return false, resume on drain, keep buffered bytes bounded, and not starve focused input.",
       "oracle": "The current executable slice injects a slow socket and asserts write(false)/drain ordering, bounded queued daemon stream bytes, close/error listener cleanup, newest-tail preservation under sustained pressure, and flush-immediate cross-session priority ahead of unrelated background backlog on drain. Active input latency remains part of the broader perf gate.",
       "commands": [
-        "pnpm exec vitest run --config config/vitest.config.ts src/main/daemon/daemon-stream-data-batcher.test.ts src/main/daemon/daemon-server.test.ts"
+        "pnpm exec vitest run --config config/vitest.config.ts src/main/daemon/daemon-stream-data-batcher.test.ts src/main/daemon/daemon-server.test.ts",
+        "pnpm exec vitest run --config config/vitest.config.ts src/main/daemon/daemon-stream-data-batcher.test.ts src/main/daemon/daemon-server.test.ts src/main/daemon/daemon-server.live-socket.test.ts"
       ],
       "testFiles": [
         "src/main/daemon/daemon-stream-data-batcher.test.ts",
-        "src/main/daemon/daemon-server.test.ts"
+        "src/main/daemon/daemon-server.test.ts",
+        "src/main/daemon/daemon-server.live-socket.test.ts"
       ],
       "assertionRefs": [
         {
@@ -1571,6 +1573,17 @@
             "interactive bypass and exit-flush ordering hold at the daemon-server seam",
             "exit for sessions attached before a same-clientId reconnect is delivered to the current stream socket, not the stale captured one"
           ]
+        },
+        {
+          "file": "src/main/daemon/daemon-server.live-socket.test.ts",
+          "assertions": [
+            "queued stream bytes stay bounded against a stalled real socket (kernel-level backpressure)",
+            "the stream is lossless and ordered after drain when the backlog stays under the queue bound",
+            "the newest contiguous tail survives when the backlog exceeds the bound (single gap, tail intact)",
+            "a session's exit frame stays behind its drained output tail on a real socket",
+            "interactive echo jumps unrelated queued backlog on drain",
+            "exit routes through the current stream socket after a same-clientId reconnect, behind the new socket's queued tail"
+          ]
         }
       ],
       "evidenceRuns": [
@@ -1582,6 +1595,15 @@
           "result": "passed",
           "durationSeconds": 0.7,
           "summary": "2 test files passed, 34 tests passed; queue contracts, exit-ordering, stale-socket reconnect exit routing, and destroyed-socket guard — the latter two red-proven from the Fable review round."
+        },
+        {
+          "date": "2026-07-06",
+          "runner": "local",
+          "platform": "macos",
+          "command": "pnpm exec vitest run --config config/vitest.config.ts src/main/daemon/daemon-stream-data-batcher.test.ts src/main/daemon/daemon-server.test.ts src/main/daemon/daemon-server.live-socket.test.ts",
+          "result": "passed",
+          "durationSeconds": 5.2,
+          "summary": "34 unit contracts plus 6 live-socket contracts against a real unix socket with a genuinely stalled reader; live rig red-proven three ways (direct exit write, stale captured client, 64KB queue bound each tripped exactly the expected tests). Real-PTY flood probe on the same day: daemon-side buffered bytes 69.4MB unbounded on the merge-base vs 8.4MB bounded on this branch under the same stalled-reader seq flood."
         }
       ],
       "runtimeBudget": {
@@ -1589,8 +1611,8 @@
         "scope": "daemon provider-contract gate"
       },
       "flakeHistory": {
-        "status": "unknown",
-        "evidence": "Focused daemon stream backpressure contract runs locally; needs soak history before promotion."
+        "status": "soaking",
+        "evidence": "100/100 consecutive local green runs of the gate command on 2026-07-06 (macOS, 124s total); needs aggregated CI history before promotion."
       },
       "redGreenEvidence": {
         "status": "partial",
@@ -1606,7 +1628,8 @@
         "Pair with the broader output-backpressure budget before blocking."
       ],
       "knownGaps": [
-        "No live flood or latency metric artifact yet; deterministic byte-accounting only.",
+        "No active-input key latency metric artifact yet.",
+        "Windows named-pipe drain semantics are unexercised in the live regime (unit contracts are platform-neutral; live rig evidence is unix-socket macOS).",
         "The renderer/main ACK and pending-cap extensions arrive with the second perf slice (pty.ts / pty-connection.ts hunks)."
       ],
       "demotionRule": "Cannot promote if backpressure is inferred only from renderer output success."
