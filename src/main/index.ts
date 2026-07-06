@@ -30,12 +30,12 @@ import { startSpan } from './observability/tracer'
 import { registerMobileHandlers } from './ipc/mobile'
 import { initTelemetry, shutdownTelemetry, trackAppOpenedOnce, track } from './telemetry/client'
 import { classifyError } from './telemetry/classify-error'
-import { runManagedHookInstallers } from './agent-hooks/install-telemetry'
 import {
+  installManagedAgentHooks,
   isAgentStatusHooksEnabled,
-  MANAGED_AGENT_HOOK_INSTALLERS,
   removeManagedAgentHooks
 } from './agent-hooks/managed-agent-hook-controls'
+import { recordManagedHookInstallFailure } from './agent-hooks/install-telemetry'
 import { initCohortClassifier } from './telemetry/cohort-classifier'
 import { initOnboardingCohortClassifier } from './telemetry/onboarding-cohort-classifier'
 import { resolveConsent } from './telemetry/consent'
@@ -692,21 +692,28 @@ async function startServeAgentHookServer(): Promise<void> {
   }
 }
 
-function prepareCodexRuntimeHomeForLaunch(target?: CodexAccountSelectionTarget): string | null {
+async function prepareCodexRuntimeHomeForLaunch(
+  target?: CodexAccountSelectionTarget
+): Promise<string | null> {
   const runtimeHomePath = codexRuntimeHome!.prepareForCodexLaunch(target)
   const hooksEnabled = isAgentStatusHooksEnabled(store?.getSettings())
   try {
     // Why: launch prep is reachable after startup via PTY/runtime paths; honor
     // the persisted off switch so those launches cannot reinstall removed hooks.
-    const status = hooksEnabled
-      ? codexHookService.install()
-      : codexHookService.refreshRuntimeUserHooks()
-    if (status.state === 'error') {
+    const statuses = hooksEnabled
+      ? await installManagedAgentHooks(store?.getSettings(), {
+          shouldHydrateShellPath: app.isPackaged && process.platform !== 'win32',
+          onInstallError: recordManagedHookInstallFailure,
+          agents: ['codex']
+        })
+      : [codexHookService.refreshRuntimeUserHooks()]
+    const failedStatus = statuses.find((status) => status.state === 'error')
+    if (failedStatus) {
       console.warn(
         `[codex-hook-service] failed to ${
           hooksEnabled ? 'refresh' : 'refresh user'
         } runtime hooks before launch`,
-        status.detail
+        failedStatus.detail
       )
     }
   } catch (error) {
@@ -720,6 +727,10 @@ function prepareCodexRuntimeHomeForLaunch(target?: CodexAccountSelectionTarget):
     )
   }
   return runtimeHomePath
+}
+
+function getSelectedCodexHomePath(target?: CodexAccountSelectionTarget): string | null {
+  return codexRuntimeHome!.prepareForCodexLaunch(target)
 }
 
 // Why: tray "Open Orca" / left-click restores the window the close handler may
@@ -952,7 +963,7 @@ function openMainWindow(): BrowserWindow {
     window,
     store,
     runtime,
-    prepareCodexRuntimeHomeForLaunch,
+    getSelectedCodexHomePath,
     (target) => claudeRuntimeAuth!.prepareForClaudeLaunch(target),
     {
       awaitLocalPtyStartup: () => localPtyStartupReady,
@@ -1797,7 +1808,8 @@ app.whenReady().then(async () => {
     // reads. worktree.ps pulls it at query time so mobile shows the same agents.
     getAgentStatusSnapshot: () => agentHookServer.getStatusSnapshot(),
     buildAgentHookPtyEnv: () =>
-      isAgentStatusHooksEnabled(store?.getSettings()) ? agentHookServer.buildPtyEnv() : {}
+      isAgentStatusHooksEnabled(store?.getSettings()) ? agentHookServer.buildPtyEnv() : {},
+    shouldHydrateShellPathForAgentHooks: app.isPackaged && process.platform !== 'win32'
   })
   runtime = runtimeService
   automations = new AutomationService(store, {
@@ -1924,10 +1936,15 @@ app.whenReady().then(async () => {
   })
   nativeTheme.themeSource = store.getSettings().theme ?? 'system'
   if (shouldInstallManagedHooks(is.dev)) {
+    const managedHookStore = store
     // Why: the persisted off switch must run before any auto-install path so
     // users who removed Orca-managed hooks do not see them silently reappear on launch.
-    if (isAgentStatusHooksEnabled(store.getSettings())) {
-      runManagedHookInstallers(MANAGED_AGENT_HOOK_INSTALLERS)
+    if (isAgentStatusHooksEnabled(managedHookStore.getSettings())) {
+      void installManagedAgentHooks(managedHookStore.getSettings(), {
+        shouldHydrateShellPath: app.isPackaged && process.platform !== 'win32',
+        onInstallError: recordManagedHookInstallFailure,
+        shouldContinue: () => isAgentStatusHooksEnabled(managedHookStore.getSettings())
+      })
     } else {
       removeManagedAgentHooks()
     }
@@ -2084,7 +2101,7 @@ app.whenReady().then(async () => {
     await startServeAgentHookServer()
     registerHeadlessPtyRuntime(
       runtime,
-      prepareCodexRuntimeHomeForLaunch,
+      getSelectedCodexHomePath,
       () => store!.getSettings(),
       (target) => claudeRuntimeAuth!.prepareForClaudeLaunch(target),
       store
