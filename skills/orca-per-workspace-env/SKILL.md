@@ -75,9 +75,9 @@ a long time, or need the user at the keyboard. Never create an Orca workspace or
 4. **Scaffold scripts + state file** from §7 (worked Vercel example: §7f; SSH host: §7g; Docker SSH:
    §7h; Windows: §7i), filling in the provider's real commands. Make them executable.
 5. **[CHECKPOINT] Build the base snapshot (§3)** — paid, slow.
-6. **[CHECKPOINT] Authenticate the agent (§4)** — interactive; the user follows a URL/code. **You (an
-   orchestrating agent) cannot drive this step** — there's no TTY for `docker exec -it` / `ssh -t` under a
-   non-interactive orchestrator. The **user** runs the Phase-3 login in their own terminal (or via the
+6. **[CHECKPOINT] Authenticate the agent (§4)** — interactive; the user follows a URL/code. **You cannot
+   drive this step** — you run commands non-interactively, so there's no TTY for `docker exec -it` /
+   `ssh -t` to prompt against. The **user** runs the Phase-3 login in their own terminal (or via the
    Claude Code harness bang-prefix — `! <cmd>`, with the required space after `!`); you scaffold and drive
    the non-interactive phases around it. After kicking it off, **ask the user to report back once the login
    finishes** — you can't observe it completing, and you need that confirmation before resuming the
@@ -151,7 +151,7 @@ ephemeral — so authenticate once and bake it into a second snapshot layer. Scr
 4. Re-snapshot, parse the new id, and overwrite `snapshotId` in state to the authenticated image
    (recording `authSourceSnapshotId`). Remove the auth sandbox.
 
-**You can't drive step 2 yourself** (no TTY under a non-interactive orchestrator). The **user** runs it in
+**You can't drive step 2 yourself** (you run commands non-interactively — no TTY). The **user** runs it in
 their own terminal, or via the Claude Code harness bang-prefix (`! <cmd>`, with the required space after
 `!`). You scaffold/boot the sandbox and run steps 3–4, but **you cannot observe the interactive login
 finishing** — so **ask the user to tell you when it's done** before you verify and re-snapshot.
@@ -248,7 +248,7 @@ set -euo pipefail
 # 1. boot sandbox from source snapshot; trap: remove on error
 # 2. INTERACTIVE/TTY remote exec: agent login — user completes URL/code. Headless VM: MUST use the
 #    device-auth flow (e.g. `codex login --device-auth`) — plain OAuth login binds a loopback callback
-#    port the host can't reach and hangs. User runs this themselves (no TTY under an orchestrator); ask
+#    port the host can't reach and hangs. User runs this themselves (you have no interactive TTY); ask
 #    them to report back when it's done before continuing.
 # 3. verify login, then refuse to snapshot if not logged in. Prefer the status command's EXIT CODE (most
 #    agent CLIs exit non-zero when unauthenticated) over string-matching. If you must grep, fold stderr
@@ -348,7 +348,7 @@ snapshot_id="$(printf '%s\n' "$out" | sed -nE 's/.*(snap_[A-Za-z0-9]+).*/\1/p' |
 
 ```bash
 vercel sandbox create --name "$auth" --snapshot "$snapshot_id" --timeout 30m --publish-port "$port" "${vercel_args[@]}" >&2
-# INTERACTIVE — the USER runs this in their own terminal (no TTY under an orchestrator) and completes the
+# INTERACTIVE — the USER runs this in their own terminal (you have no interactive TTY) and completes the
 # URL/code on the HOST. --device-auth is MANDATORY on a headless VM: plain `codex login` binds a loopback
 # callback port the host browser can't reach and hangs. Ask the user to report back when login finishes.
 vercel sandbox exec --interactive --tty "$auth" "${vercel_args[@]}" -- bash -lc 'codex login --device-auth'
@@ -530,7 +530,7 @@ Key points:
   doesn't churn as the published port rotates across workspaces (otherwise every container's freshly
   generated key collides on `localhost` and trips host-key-changed warnings).
 - The auth image is the Docker equivalent of Phase 3: the **user** runs the agent login **inside** the
-  container (you can't drive it — no TTY under an orchestrator), configures proxy env/config, approves
+  container (you can't drive it — you have no interactive TTY), configures proxy env/config, approves
   hooks, and you commit once they report it's done. On a headless container use the **device-auth** flow
   (§4). Verify login before committing — exit code, or fold stderr and match the exact success line (§4).
 - Do not bind-mount or copy the host's full agent home into the image. Let each container have writable
