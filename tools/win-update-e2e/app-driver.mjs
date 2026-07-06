@@ -19,10 +19,11 @@ import { _electron as electron } from '@stablyai/playwright-test'
 import { execFileSync } from 'node:child_process'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
-import { seedCompletedOnboarding } from './onboarding-profile.mjs'
+import { seedFreshProfile } from './onboarding-profile.mjs'
 
 const NEW_TAB_BUTTON = { role: 'button', name: 'New tab' }
 const NEW_TERMINAL_ITEM = /New Terminal/i
+const NEW_WORKSPACE_BUTTON = { role: 'button', name: 'New workspace' }
 const SORTABLE_TAB = '[data-testid="sortable-tab"]'
 const TERMINAL_SURFACE = '[data-terminal-tab-id]'
 const XTERM_INPUT = '.xterm-helper-textarea'
@@ -31,13 +32,21 @@ const XTERM_INPUT = '.xterm-helper-textarea'
  * Launch the installed Orca.exe. Pointing userDataDir at a harness-owned temp
  * dir isolates this run's daemon (its socket/token path becomes unique), so
  * daemon lookups never collide with other Orca installs/daemons on the box.
- * Seeds a completed-onboarding profile first so the fullscreen onboarding
- * overlay does not block the terminal UI on a fresh profile.
+ * Pass `seedProfile` (a buildFreshProfile object) to write orca-data.json
+ * BEFORE this launch — do so only on the FIRST launch, never before the
+ * post-update relaunch, or the persisted session under test is destroyed.
  */
-export async function launchInstalledApp({ exePath, userDataDir, extraEnv = {} }) {
+export async function launchInstalledApp({
+  exePath,
+  userDataDir,
+  seedProfile = null,
+  extraEnv = {}
+}) {
   const { ELECTRON_RUN_AS_NODE: _drop, ...cleanEnv } = process.env
   mkdirSync(userDataDir, { recursive: true })
-  seedCompletedOnboarding(userDataDir)
+  if (seedProfile) {
+    seedFreshProfile(userDataDir, seedProfile)
+  }
   const app = await electron.launch({
     executablePath: exePath,
     args: [],
@@ -107,21 +116,42 @@ export async function waitForTerminalReady(page, timeoutMs = 60_000) {
 }
 
 /**
- * Get the app to an interactive terminal from a freshly-launched (onboarding-
- * seeded) profile. If a terminal surface is already mounted, just wait for it;
- * otherwise wait for the app shell to be interactive (the New tab control is
- * visible, which also confirms the onboarding overlay is gone) and create one.
+ * Get the app to an interactive terminal. Three cases, in order:
+ *   1. A terminal surface is already mounted (post-update relaunch restoring a
+ *      session) — just wait for it.
+ *   2. A workspace exists (New tab control visible) but no terminal — open one.
+ *   3. Fresh seeded profile with a project but no workspace — create a workspace
+ *      from the seeded repo (drivable composer, not the native folder dialog),
+ *      which lands on a worktree whose default tab is a terminal.
  */
 export async function ensureTerminal(page, timeoutMs = 60_000) {
   if ((await page.locator(TERMINAL_SURFACE).count()) > 0) {
     await waitForTerminalReady(page, timeoutMs)
     return
   }
+  const newTab = page.getByRole(NEW_TAB_BUTTON.role, { name: NEW_TAB_BUTTON.name }).first()
+  if (await newTab.isVisible().catch(() => false)) {
+    await createTerminalTab(page)
+    return
+  }
+  await createWorkspaceFromSeededRepo(page, timeoutMs)
+  await waitForTerminalReady(page, timeoutMs)
+}
+
+/**
+ * Drive the "New workspace" composer to create a worktree from the single
+ * seeded project. The composer is in-app DOM (unlike the native Add-Project
+ * dialog). Submitting creates a worktree and opens it; its default tab is a
+ * terminal.
+ */
+async function createWorkspaceFromSeededRepo(page, timeoutMs) {
   await page
-    .getByRole(NEW_TAB_BUTTON.role, { name: NEW_TAB_BUTTON.name })
+    .getByRole(NEW_WORKSPACE_BUTTON.role, { name: NEW_WORKSPACE_BUTTON.name })
     .first()
-    .waitFor({ state: 'visible', timeout: timeoutMs })
-  await createTerminalTab(page)
+    .click({ timeout: timeoutMs })
+  // The composer focuses a name/branch field; submit with Enter to create the
+  // worktree with default settings.
+  await page.keyboard.press('Enter')
 }
 
 /** Create a new terminal tab via the New tab menu. Returns the count after. */

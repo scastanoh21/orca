@@ -34,6 +34,7 @@ import {
   fileMtimeMs
 } from './interactivity-probes.mjs'
 import { buildAssertions, renderTable, allPassed } from './assertions.mjs'
+import { createSeededRepo, buildFreshProfile } from './onboarding-profile.mjs'
 
 function log(step, msg) {
   console.log(`[win-update-e2e] ${step}: ${msg}`)
@@ -179,11 +180,16 @@ async function runProof(ctx, args) {
   const base = silentInstall(fromInstaller, { installDir })
   log('install-base', `installed ${base.exePath} (version ${base.version})`)
 
+  // Seed a fresh profile (onboarding dismissed + one throwaway git repo as a
+  // project) ONLY before the first launch. The relaunch must use the app's own
+  // persisted state so the cold-restore/survival assertions are meaningful.
+  const seededRepo = createSeededRepo(path.join(runDir, 'fixture-repo'))
+  const seedProfile = buildFreshProfile({ repo: seededRepo })
+
   // --- Base version: launch, create sessions, start marker, record daemon ---
-  let session = await launchInstalledApp({ exePath: base.exePath, userDataDir })
+  let session = await launchInstalledApp({ exePath: base.exePath, userDataDir, seedProfile })
   ctx.session = session
-  // A fresh profile has no terminal yet, so create/ensure one rather than
-  // waiting for a pre-existing surface.
+  // A fresh profile has no terminal yet, so create a workspace + terminal.
   await ensureTerminal(session.page)
   await createTerminalTab(session.page)
   const tabIds = await listTabIds(session.page)
