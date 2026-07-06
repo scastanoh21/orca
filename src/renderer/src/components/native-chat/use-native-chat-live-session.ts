@@ -250,6 +250,11 @@ export function useNativeChatLiveSession(
         setRead({ phase: 'ready', messages: result.messages })
         setHasMore(hasMoreNativeChatHistory(result.messages.length, nextLimit))
       })
+      .catch(() => {
+        // Swallow a rejected earlier-page read (the IPC-backed call can reject):
+        // it's a "load more" action, so failing should leave the already-loaded
+        // transcript intact rather than surface an unhandled rejection.
+      })
       .finally(() => {
         // Always clear the loading flag — even after a session swap — so a stale
         // resolve can't leave loadingEarlier stuck true on the new session. Only

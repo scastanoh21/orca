@@ -35,6 +35,8 @@ export function useNativeChatPasteBridge({
     const onAppMenuPaste = (event: Event): void => {
       const root = rootRef.current
       const activeElement = document.activeElement
+      // The app-menu paste event is window-scoped; only claim it when focus is
+      // inside this chat pane so multiple panes don't all react to one Cmd+V.
       if (!root || !(activeElement instanceof Element) || !root.contains(activeElement)) {
         return
       }
