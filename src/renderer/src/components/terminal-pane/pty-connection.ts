@@ -1824,10 +1824,15 @@ export function connectPanePty(
     // Why: with no shell mark yet, launchAgent bootstrap already paints the icon,
     // so a read is pointless. Otherwise probe the foreground: a shell mark (from a
     // reattach or a full-screen agent's leaked nested-shell 133;D) can hide a
-    // still-running agent — including a manually started one with no launchAgent or
-    // hook, which no later 133;C will reseed. A genuinely idle shell just returns a
-    // shell name and publishes nothing, so the probe is self-limiting.
+    // still-running agent the launch/hook identity says is expected, which no
+    // later 133;C will reseed. A genuinely idle shell just returns a shell name
+    // and publishes nothing, so the probe is self-limiting.
     if (!foreground?.shellForeground && expectsAgent) {
+      return
+    }
+    // Why: a 133;D already proved this pane is back at a shell prompt; with no
+    // agent expectation there is nothing to recover, so trust it and don't re-read.
+    if (foreground?.shellForeground && !expectsAgent) {
       return
     }
     paneForegroundAgentTracker.onVisiblePtyBound()
