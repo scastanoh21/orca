@@ -274,6 +274,72 @@ function clickBranchRow(init: MouseEventInit = {}): void {
   })
 }
 
+describe('SourceControl large list rendering', () => {
+  it('mounts only the visible window for a large uncommitted file list', () => {
+    const entries = Array.from({ length: 1000 }, (_, index) =>
+      gitEntry({ path: `src/file-${index}.ts` })
+    )
+    resetState({
+      gitStatusByWorktree: { [mocks.activeWorktree.id]: entries }
+    })
+
+    renderSourceControl()
+
+    const renderedEntries = container.querySelectorAll('[data-testid="source-control-entry"]')
+    expect(renderedEntries.length).toBeGreaterThan(0)
+    expect(renderedEntries.length).toBeLessThan(100)
+    expect(container.querySelector('[data-source-control-path="src/file-999.ts"]')).toBeNull()
+  })
+
+  it('mounts only the visible window for a large branch compare list', () => {
+    const branchEntries = Array.from({ length: 1000 }, (_, index) =>
+      branchEntry({ path: `src/branch-${index}.ts` })
+    )
+    resetState({
+      gitBranchChangesByWorktree: { [mocks.activeWorktree.id]: branchEntries },
+      gitBranchCompareSummaryByWorktree: {
+        [mocks.activeWorktree.id]: { ...branchSummary(), changedFiles: branchEntries.length }
+      }
+    })
+
+    renderSourceControl()
+
+    const branchRows = container.querySelectorAll(
+      '[data-source-control-virtual-row-kind="branch-list-entry"]'
+    )
+    expect(branchRows.length).toBeGreaterThan(0)
+    expect(branchRows.length).toBeLessThan(100)
+    expect(container.textContent).not.toContain('branch-999.ts')
+  })
+
+  it('docks the commits panel outside the virtualized scroll area so it stays visible', () => {
+    const branchEntries = Array.from({ length: 1000 }, (_, index) =>
+      branchEntry({ path: `src/branch-${index}.ts` })
+    )
+    resetState({
+      gitBranchChangesByWorktree: { [mocks.activeWorktree.id]: branchEntries },
+      gitBranchCompareSummaryByWorktree: {
+        [mocks.activeWorktree.id]: { ...branchSummary(), changedFiles: branchEntries.length }
+      }
+    })
+
+    renderSourceControl()
+
+    const commitsButton = [...container.querySelectorAll<HTMLButtonElement>('button')].find(
+      (button) => button.textContent?.includes('Commits')
+    )
+    const commitsContainer = commitsButton?.closest<HTMLDivElement>('.border-t')
+    // Why: the commits footer is branch context that must stay visible while the
+    // file list scrolls, so it lives outside the virtualized overflow-auto
+    // container (never sticky over the absolutely-positioned virtual rows).
+    expect(commitsContainer).toBeTruthy()
+    expect(commitsContainer?.classList.contains('sticky')).toBe(false)
+    const scrollContainer = container.querySelector('.overflow-auto')
+    expect(scrollContainer).toBeTruthy()
+    expect(scrollContainer?.contains(commitsContainer ?? null)).toBe(false)
+  })
+})
+
 describe('SourceControl preview row opens', () => {
   it('passes preview=true when plain uncommitted row clicks open diff tabs', () => {
     resetState({
