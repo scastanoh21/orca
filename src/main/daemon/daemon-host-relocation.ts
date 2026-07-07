@@ -63,6 +63,8 @@ type CopyOp = {
   kind: 'file' | 'dir'
   /** When true, a missing source is skipped rather than failing the copy. */
   optional?: boolean
+  /** Per-source-path predicate for dir copies: return false to skip a path. */
+  filter?: (sourcePath: string) => boolean
 }
 
 type DaemonHostSources = {
@@ -123,12 +125,13 @@ function collectDaemonHostSources(): DaemonHostSources | null {
   }
 }
 
-function listTopLevelDlls(appDir: string): string[] {
-  try {
-    return readdirSync(appDir).filter((name) => name.toLowerCase().endsWith('.dll'))
-  } catch {
-    return []
-  }
+// node-pty ships debug symbols (.pdb) and prebuilds for other CPU arches; the
+// run-as-node daemon loads neither (verified against the live daemon's loaded
+// module list), so they are filtered out of the copy — the bulk of node-pty's
+// on-disk size — leaving only the arch-native binaries the host actually loads.
+function isRuntimeNodePtyPath(sourcePath: string): boolean {
+  const p = sourcePath.toLowerCase()
+  return !p.endsWith('.pdb') && !p.includes('win32-arm64')
 }
 
 /**
@@ -137,25 +140,20 @@ function listTopLevelDlls(appDir: string): string[] {
  * identically to the packaged app. Pure over its inputs so tests can assert the
  * layout without a real build.
  */
-export function buildDaemonHostManifest(
-  sources: DaemonHostSources,
-  topLevelDlls: string[]
-): CopyOp[] {
+export function buildDaemonHostManifest(sources: DaemonHostSources): CopyOp[] {
   const { appDir, execPath, resourcesPath, entrySourcePath, entryRelPath } = sources
   const ops: CopyOp[] = []
 
-  // Electron host binary + runtime data blobs at the dest root. The exe is
+  // Electron host binary + V8/ICU data blobs at the dest root. The exe is
   // renamed to a distinct image name so the NSIS updater's name-based
-  // `taskkill /IM Orca.exe` can't match it; the blobs/DLLs beside it are read by
-  // the Electron bootstrap by fixed names, so they keep their original names.
+  // `taskkill /IM Orca.exe` can't match it; the blobs beside it are read by the
+  // Electron bootstrap by fixed name. Top-level DLLs are deliberately NOT copied
+  // — they are all GPU/graphics/media (swiftshader, vulkan, d3d, dxcompiler,
+  // ffmpeg) that a windowless run-as-node host never loads (verified empirically
+  // against the live daemon's module list), so copying them only wastes ~48MB.
   ops.push({ sourcePath: execPath, destRel: DAEMON_HOST_EXE_NAME, kind: 'file' })
   for (const name of RUNTIME_DATA_FILES) {
     ops.push({ sourcePath: join(appDir, name), destRel: name, kind: 'file', optional: true })
-  }
-  // All top-level runtime DLLs: exe size dominates the copy, so carry them all
-  // rather than guess which the run-as-node host loads.
-  for (const name of topLevelDlls) {
-    ops.push({ sourcePath: join(appDir, name), destRel: name, kind: 'file' })
   }
 
   // Daemon bundle: entry + its sibling chunks/ + the unpacked out/package.json
@@ -178,9 +176,15 @@ export function buildDaemonHostManifest(
 
   // node-pty package tree (native conpty.node + conpty/ runtime dir). It is a
   // sibling of app.asar.unpacked; require('node-pty') resolves it by walking up
-  // from the mirrored daemon-entry dir to resources/node_modules.
+  // from the mirrored daemon-entry dir to resources/node_modules. Filtered to
+  // drop .pdb debug symbols and other-arch prebuilds the host never loads.
   const nodePtyDir = join(resourcesPath, 'node_modules', 'node-pty')
-  ops.push({ sourcePath: nodePtyDir, destRel: toPosixRelative(appDir, nodePtyDir), kind: 'dir' })
+  ops.push({
+    sourcePath: nodePtyDir,
+    destRel: toPosixRelative(appDir, nodePtyDir),
+    kind: 'dir',
+    filter: isRuntimeNodePtyPath
+  })
 
   return ops
 }
@@ -195,8 +199,14 @@ function executeManifest(ops: CopyOp[], stagingRoot: string): void {
     }
     const dest = destPath(stagingRoot, op.destRel)
     mkdirSync(dirname(dest), { recursive: true })
+    const { filter } = op
     // Dereference symlinks so the copy holds no link back into the install dir.
-    cpSync(op.sourcePath, dest, { recursive: op.kind === 'dir', dereference: true, force: true })
+    cpSync(op.sourcePath, dest, {
+      recursive: op.kind === 'dir',
+      dereference: true,
+      force: true,
+      ...(filter ? { filter: (src: string) => filter(src) } : {})
+    })
   }
 }
 
@@ -269,7 +279,7 @@ export function materializeRelocatedDaemonHost(): RelocatedDaemonHost | null {
   try {
     mkdirSync(root, { recursive: true })
     rmSync(staging, { recursive: true, force: true })
-    executeManifest(buildDaemonHostManifest(sources, listTopLevelDlls(sources.appDir)), staging)
+    executeManifest(buildDaemonHostManifest(sources), staging)
     // Marker written LAST: an interrupted copy leaves a marker-less staging dir
     // that the next launch discards, never a dest the cheap check trusts.
     const marker: MaterializeMarker = {

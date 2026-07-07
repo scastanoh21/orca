@@ -288,8 +288,6 @@ function createOutOfProcessLauncher(runtimeDir: string): DaemonLauncher {
     // so the one-time copy stays off the first-paint path and is skipped on
     // launches that adopt a live daemon. Fail-open: null → in-dir host, below.
     const relocatedHost = materializeRelocatedDaemonHost()
-    // Reclaim old version host dirs no surviving daemon still pins (best-effort).
-    pruneOldDaemonHosts(collectPinnedDaemonVersions(runtimeDir))
     // Fork the relocated entry when available; otherwise the install-dir entry.
     const forkEntryPath = relocatedHost ? relocatedHost.entryPath : entryPath
     const child = fork(
@@ -434,6 +432,10 @@ export async function initDaemonPtyProvider(signal?: AbortSignal): Promise<void>
   // throws, a stale spawner would prevent shutdownDaemon() from cleaning up
   // correctly on retry.
   const info = await newSpawner.ensureRunning()
+  // Reclaim superseded daemon-host copies on EVERY launch, not just on a fresh
+  // spawn: surviving daemons make spawns rare, so a spawn-only sweep would let
+  // old-version copies accumulate. Current + live-daemon-pinned versions stay.
+  pruneOldDaemonHosts(collectPinnedDaemonVersions(runtimeDir))
   const launchMode = newSpawner.getHandle()?.mode
   logDaemonMilestone('daemon-current-ready')
   if (signal?.aborted) {
