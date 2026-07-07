@@ -190,15 +190,108 @@ describe('captureRendererPerfDump', () => {
     expect(inspectorPostMock).not.toHaveBeenCalled()
   })
 
-  it('coalesces concurrent captures onto one consent dialog and one capture', async () => {
+  it('coalesces concurrent captures onto one consent dialog and wires both progress listeners', async () => {
     const renderer = makeRenderer()
+    const firstStages: string[] = []
+    const secondStages: string[] = []
     const [first, second] = await Promise.all([
-      captureRendererPerfDump({ getRendererWebContents: () => renderer as never }),
-      captureRendererPerfDump({ getRendererWebContents: () => renderer as never })
+      captureRendererPerfDump({
+        getRendererWebContents: () => renderer as never,
+        onProgress: (stage) => firstStages.push(stage)
+      }),
+      captureRendererPerfDump({
+        getRendererWebContents: () => renderer as never,
+        onProgress: (stage) => secondStages.push(stage)
+      })
     ])
 
     expect(showMessageBoxMock).toHaveBeenCalledTimes(1)
     expect(first).toEqual(second)
+    expect(firstStages).toEqual(['metrics', 'profile', 'compressing'])
+    expect(secondStages).toEqual(firstStages)
+  })
+
+  it('times out a hung renderer profiler instead of wedging the capture, then recovers', async () => {
+    const dbg = makeRendererDebugger({
+      sendCommand: vi.fn((method: string) =>
+        method === 'Profiler.start' ? new Promise(() => {}) : Promise.resolve(undefined)
+      )
+    })
+
+    const result = await captureRendererPerfDump({
+      getRendererWebContents: () => makeRenderer(dbg) as never,
+      profileCaptureTimeoutMs: 50
+    })
+
+    const { filePath } = result as { filePath: string }
+    const entries = readTarEntries(await readFile(filePath))
+    expect([...entries.keys()]).toEqual([
+      'metadata.json',
+      'renderer-perf-metrics.json',
+      'main.cpuprofile'
+    ])
+    const metadata = JSON.parse(entries.get('metadata.json')!) as {
+      artifacts: Record<string, { status: string; reason?: string }>
+    }
+    expect(metadata.artifacts.renderer_profile.status).toBe('failed')
+    expect(metadata.artifacts.renderer_profile.reason).toBe('timed out')
+    expect(metadata.artifacts.main_profile.status).toBe('included')
+
+    // The single-flight latch must clear so the next capture starts fresh.
+    const next = await captureRendererPerfDump({
+      getRendererWebContents: () => makeRenderer() as never
+    })
+    expect(next).not.toHaveProperty('canceled')
+    expect(showMessageBoxMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('contains a debugger attach failure to a renderer_profile failure note', async () => {
+    const dbg = makeRendererDebugger({
+      attach: vi.fn(() => {
+        throw new Error('Another debugger is already attached')
+      })
+    })
+
+    const result = await captureRendererPerfDump({
+      getRendererWebContents: () => makeRenderer(dbg) as never
+    })
+
+    const { filePath } = result as { filePath: string }
+    const entries = readTarEntries(await readFile(filePath))
+    const metadata = JSON.parse(entries.get('metadata.json')!) as {
+      artifacts: Record<string, { status: string; reason?: string }>
+    }
+    expect(metadata.artifacts.renderer_profile.status).toBe('failed')
+    expect(metadata.artifacts.renderer_profile.reason).toContain('already attached')
+    expect(metadata.artifacts.main_profile.status).toBe('included')
+  })
+
+  it('survives the renderer being destroyed mid-capture', async () => {
+    let destroyed = false
+    const dbg = makeRendererDebugger({
+      sendCommand: vi.fn(async (method: string) => {
+        if (method === 'Profiler.stop') {
+          destroyed = true
+          throw new Error('Render frame was disposed')
+        }
+        return undefined
+      })
+    })
+    const renderer = { isDestroyed: () => destroyed, debugger: dbg }
+
+    const result = await captureRendererPerfDump({
+      getRendererWebContents: () => renderer as never
+    })
+
+    const { filePath } = result as { filePath: string }
+    const entries = readTarEntries(await readFile(filePath))
+    const metadata = JSON.parse(entries.get('metadata.json')!) as {
+      artifacts: Record<string, { status: string }>
+    }
+    expect(metadata.artifacts.renderer_profile.status).toBe('failed')
+    expect(metadata.artifacts.main_profile.status).toBe('included')
+    // Destroyed renderer: Profiler.disable must not be sent post-destruction.
+    expect(dbg.sendCommand).not.toHaveBeenCalledWith('Profiler.disable')
   })
 
   it('still produces a report with failure notes when both profilers fail', async () => {

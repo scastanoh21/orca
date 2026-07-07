@@ -156,7 +156,7 @@
             "d2e43e426a": "{{value0}} must be an object.",
             "fb290366b2": "Unavailable on web.",
             "76122208ca": "Shortcut for \"{{value0}}\" was ignored: {{value1}}",
-            "afa470528f": "Performance debug dumps are unavailable on web."
+            "2ce4f81b9d": "Performance reports are unavailable on web."
           }
         },
         "runtime": {
@@ -7867,7 +7867,12 @@
             "4104f6f0f3": "analytics",
             "10124159f1": "privacy",
             "aa3b794c17": "Anonymous product usage data, diagnostics, and telemetry controls.",
-            "5c508bad41": "Privacy & Telemetry"
+            "5c508bad41": "Privacy & Telemetry",
+            "68d450145b": "performance",
+            "3b1f4c07da": "performance report",
+            "7de2b90c14": "cpu profile",
+            "ec083fb9e1": "slow",
+            "900d529b12": "lag"
           }
         },
         "quick": {

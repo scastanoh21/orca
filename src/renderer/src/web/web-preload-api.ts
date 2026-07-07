@@ -553,8 +553,8 @@ function createWebPreloadApi(): Partial<PreloadApi> {
         Promise.reject(
           new Error(
             translate(
-              'auto.web.web.preload.api.afa470528f',
-              'Performance debug dumps are unavailable on web.'
+              'auto.web.web.preload.api.2ce4f81b9d',
+              'Performance reports are unavailable on web.'
             )
           )
         ),

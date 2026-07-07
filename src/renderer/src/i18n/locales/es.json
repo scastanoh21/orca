@@ -156,7 +156,7 @@
             "d2e43e426a": "{{value0}} debe ser un objeto.",
             "fb290366b2": "No está disponible en la web.",
             "76122208ca": "Se ignoró el atajo para \"{{value0}}\": {{value1}}",
-            "afa470528f": "Los volcados de depuración de rendimiento no están disponibles en la web."
+            "2ce4f81b9d": "Los informes de rendimiento no están disponibles en la web."
           }
         },
         "runtime": {
@@ -7830,7 +7830,12 @@
             "4104f6f0f3": "analíticas",
             "10124159f1": "privacidad",
             "aa3b794c17": "Datos anónimos de uso del producto, diagnósticos y controles de telemetría.",
-            "5c508bad41": "Privacidad y telemetría"
+            "5c508bad41": "Privacidad y telemetría",
+            "68d450145b": "rendimiento",
+            "3b1f4c07da": "informe de rendimiento",
+            "7de2b90c14": "perfil de cpu",
+            "ec083fb9e1": "lento",
+            "900d529b12": "retraso"
           }
         },
         "quick": {
