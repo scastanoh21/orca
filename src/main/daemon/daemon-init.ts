@@ -36,6 +36,11 @@ import {
   isDaemonStaleForCurrentBundle,
   killStaleDaemon
 } from './daemon-health'
+import {
+  collectPinnedDaemonVersions,
+  materializeRelocatedDaemonHost,
+  pruneOldDaemonHosts
+} from './daemon-host-relocation'
 import { DegradedDaemonPtyProvider } from './degraded-daemon-pty-provider'
 import {
   getLocalPtyProvider,
@@ -273,8 +278,18 @@ function createOutOfProcessLauncher(runtimeDir: string): DaemonLauncher {
     await killStaleDaemon(runtimeDir, socketPath, tokenPath)
 
     const userDataPath = app.getPath('userData')
+    // Why: on win32 packaged, fork from a copy of the Electron runtime staged
+    // in userData so the daemon's image + loaded modules escape the install dir
+    // the NSIS updater deletes and force-closes. Staged here (not at app start)
+    // so the one-time copy stays off the first-paint path and is skipped on
+    // launches that adopt a live daemon. Fail-open: null → in-dir host, below.
+    const relocatedHost = materializeRelocatedDaemonHost()
+    // Reclaim old version host dirs no surviving daemon still pins (best-effort).
+    pruneOldDaemonHosts(collectPinnedDaemonVersions(runtimeDir))
+    // Fork the relocated entry when available; otherwise the install-dir entry.
+    const forkEntryPath = relocatedHost ? relocatedHost.entryPath : entryPath
     const child = fork(
-      entryPath,
+      forkEntryPath,
       ['--socket', socketPath, '--token', tokenPath, ...daemonLogArgs()],
       {
         // Why: detached daemons can outlive dev worktrees. Starting from
@@ -285,6 +300,10 @@ function createOutOfProcessLauncher(runtimeDir: string): DaemonLauncher {
         // open, which would prevent Electron from exiting cleanly.
         detached: true,
         stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
+        // Why: run the relocated Orca.exe copy instead of the install-dir one.
+        // It is byte-identical, so run-as-node behavior is unchanged; only the
+        // image path moves out of the updater's kill zone.
+        ...(relocatedHost ? { execPath: relocatedHost.execPath } : {}),
         // Why: ELECTRON_RUN_AS_NODE makes the forked process run as a plain
         // Node.js process instead of an Electron renderer/main process. Without
         // it, Electron's GPU/display initialization can interfere with native
