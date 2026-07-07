@@ -7,8 +7,8 @@
 // validate the pure logic anywhere without a build.
 
 import { randomUUID } from 'node:crypto'
-import { readFileSync, rmSync } from 'node:fs'
-import { join } from 'node:path'
+import { existsSync, readFileSync, readdirSync, rmSync } from 'node:fs'
+import { join, relative } from 'node:path'
 import { parseArgs, getUsage } from './cli.mjs'
 import { inventoryAppDir, formatInventory } from './app-inventory.mjs'
 import { resolveTierFileSet } from './tier-file-set.mjs'
@@ -41,6 +41,54 @@ function makeSocketPath() {
     return `\\\\?\\pipe\\orca-daemon-spike-${randomUUID().slice(0, 12)}`
   }
   return join(process.env.TMPDIR ?? '/tmp', `orca-daemon-spike-${randomUUID().slice(0, 12)}.sock`)
+}
+
+/** Print a recursive listing of the copied daemon-host tree so the mirrored
+ *  layout (daemon-entry + node-pty at their require-resolvable paths) is
+ *  verifiable from the CI log. Depth-limited to keep output readable. */
+function printHostTree(hostRoot, maxDepth = 6) {
+  console.log(`\n--- copied daemon-host tree: ${hostRoot} ---`)
+  if (!existsSync(hostRoot)) {
+    console.log('  (missing)')
+    return
+  }
+  const walk = (dir, depth) => {
+    let entries = []
+    try {
+      entries = readdirSync(dir, { withFileTypes: true })
+    } catch {
+      return
+    }
+    for (const e of entries) {
+      const full = join(dir, e.name)
+      const rel = relative(hostRoot, full).split('\\').join('/')
+      if (e.isDirectory()) {
+        console.log(`  ${rel}/`)
+        if (depth < maxDepth) {
+          walk(full, depth + 1)
+        }
+      } else {
+        console.log(`  ${rel}`)
+      }
+    }
+  }
+  walk(hostRoot, 0)
+}
+
+/** Dump the tail of the daemon's captured stdout/stderr — the actual crash
+ *  reason when it exits before ready. */
+function printDaemonLogs(workDir, tailLines = 60) {
+  for (const name of ['daemon-stdout.log', 'daemon-stderr.log']) {
+    const p = join(workDir, name)
+    console.log(`\n--- ${name} ---`)
+    try {
+      const text = readFileSync(p, 'utf8').trimEnd()
+      const lines = text.split('\n')
+      console.log(lines.slice(-tailLines).join('\n') || '(empty)')
+    } catch {
+      console.log('(unavailable)')
+    }
+  }
 }
 
 async function shutdownDaemon(child) {
@@ -91,7 +139,11 @@ async function runLaunch(opts) {
     return report
   }
 
-  const { hostExePath, daemonEntryPath, nodePtyNativeDir, skipped } = copyHost(inv, plan, workDir)
+  const { hostRoot, hostExePath, daemonEntryPath, nodePtyNativeDir, skipped } = copyHost(
+    inv,
+    plan,
+    workDir
+  )
   if (skipped.length > 0) {
     console.error(`  copy skipped (missing sources): ${skipped.join(', ')}`)
     report.error = `required sources missing: ${skipped.join(', ')}`
@@ -99,7 +151,9 @@ async function runLaunch(opts) {
   }
   console.log(`copied host: ${hostExePath}`)
   console.log(`daemon entry: ${daemonEntryPath}`)
-  console.log(`node-pty native dir: ${nodePtyNativeDir || '(none)'}\n`)
+  console.log(`node-pty native dir: ${nodePtyNativeDir || '(none)'}`)
+  printHostTree(hostRoot)
+  console.log('')
 
   const socketPath = makeSocketPath()
   const tokenPath = join(workDir, 'daemon.token')
@@ -149,7 +203,7 @@ async function runLaunch(opts) {
   } catch (err) {
     report.error = err instanceof Error ? err.message : String(err)
     console.error(`\nFAILURE: ${report.error}`)
-    console.error(`  daemon logs under: ${workDir}`)
+    printDaemonLogs(workDir)
   } finally {
     await shutdownDaemon(child)
     if (!keepWorkDir) {
