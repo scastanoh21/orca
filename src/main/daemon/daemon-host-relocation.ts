@@ -46,6 +46,14 @@ export type RelocatedDaemonHost = {
 const HOST_SUBDIR = 'daemon-host'
 const MARKER_NAME = '.materialized.json'
 
+// The relocated host is machine-specific runtime (~260MB). It must live under
+// LOCAL appData, not the roaming userData dir, so a roaming profile or OneDrive
+// Known-Folder-Move never syncs it (slow login/logout, sync bloat). This folder
+// name is shared verbatim with the NSIS uninstall cleanup
+// (config/nsis/daemon-host-uninstall.nsh), which removes
+// %LOCALAPPDATA%\<LOCAL_HOST_ROOT_NAME>\daemon-host — keep the two in sync.
+const LOCAL_HOST_ROOT_NAME = 'Orca'
+
 // The relocated host exe is a copy of Orca.exe renamed to a distinct image
 // name. The NSIS updater's name-based kill (`taskkill /IM Orca.exe`) matches by
 // image name, so a distinct name spares the daemon from that branch, while the
@@ -229,7 +237,15 @@ function readMarker(dir: string): MaterializeMarker | null {
 }
 
 function hostRootDir(): string {
-  return join(app.getPath('userData'), HOST_SUBDIR)
+  // Prefer LOCAL appData (see LOCAL_HOST_ROOT_NAME). Fall back to userData only
+  // if LOCALAPPDATA is somehow unset — a no-op off win32, where relocation never
+  // runs anyway; on win32 packaged the env var is always present.
+  const localAppData = process.env.LOCALAPPDATA
+  const base =
+    typeof localAppData === 'string' && localAppData.length > 0
+      ? join(localAppData, LOCAL_HOST_ROOT_NAME)
+      : app.getPath('userData')
+  return join(base, HOST_SUBDIR)
 }
 
 /**

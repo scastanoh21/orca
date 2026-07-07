@@ -35,9 +35,11 @@ import {
 let tempDir: string
 let installDir: string
 let userDataDir: string
+let localAppDataDir: string
 const originalPlatform = process.platform
 const originalExecPath = process.execPath
 const originalResourcesPath = process.resourcesPath
+const originalLocalAppData = process.env.LOCALAPPDATA
 
 function setProcessProp(key: string, value: unknown): void {
   Object.defineProperty(process, key, { value, configurable: true, writable: true })
@@ -75,6 +77,9 @@ beforeEach(() => {
   installDir = join(tempDir, 'app')
   userDataDir = join(tempDir, 'userData')
   mkdirSync(userDataDir, { recursive: true })
+  localAppDataDir = join(tempDir, 'localAppData')
+  mkdirSync(localAppDataDir, { recursive: true })
+  process.env.LOCALAPPDATA = localAppDataDir
   buildInstallFixture(installDir)
   electronApp.isPackaged = true
   electronApp.userDataPath = userDataDir
@@ -88,6 +93,11 @@ afterEach(() => {
   setProcessProp('platform', originalPlatform)
   setProcessProp('execPath', originalExecPath)
   setProcessProp('resourcesPath', originalResourcesPath)
+  if (originalLocalAppData === undefined) {
+    delete process.env.LOCALAPPDATA
+  } else {
+    process.env.LOCALAPPDATA = originalLocalAppData
+  }
   try {
     rmSync(tempDir, { recursive: true, force: true })
   } catch {
@@ -133,7 +143,7 @@ describe('materializeRelocatedDaemonHost', () => {
   it('copies the tree, writes the marker, and returns mirrored fork paths', () => {
     const result = materializeRelocatedDaemonHost()
     expect(result).not.toBeNull()
-    const dest = join(userDataDir, 'daemon-host', '9.9.9')
+    const dest = join(localAppDataDir, 'Orca', 'daemon-host', '9.9.9')
     expect(result?.execPath).toBe(join(dest, 'orca-terminal-daemon.exe'))
     expect(result?.entryPath).toBe(
       join(dest, 'resources', 'app.asar.unpacked', 'out', 'main', 'daemon-entry.js')
@@ -170,7 +180,7 @@ describe('materializeRelocatedDaemonHost', () => {
 
   it('is idempotent: a valid marker short-circuits without recopying', () => {
     materializeRelocatedDaemonHost()
-    const dest = join(userDataDir, 'daemon-host', '9.9.9')
+    const dest = join(localAppDataDir, 'Orca', 'daemon-host', '9.9.9')
     // A recopy would rm the dest; a sentinel inside it must survive the 2nd call.
     const sentinel = join(dest, 'sentinel.txt')
     writeFileSync(sentinel, 'keep')
@@ -186,7 +196,7 @@ describe('materializeRelocatedDaemonHost', () => {
     })
     const result = materializeRelocatedDaemonHost()
     expect(result).toBeNull()
-    const hostRoot = join(userDataDir, 'daemon-host')
+    const hostRoot = join(localAppDataDir, 'Orca', 'daemon-host')
     // Neither the published dest nor any leftover staging dir remains.
     const remaining = existsSync(hostRoot) ? readdirSync(hostRoot) : []
     expect(remaining).toEqual([])
@@ -195,13 +205,13 @@ describe('materializeRelocatedDaemonHost', () => {
   it('returns null off win32', () => {
     setProcessProp('platform', 'darwin')
     expect(materializeRelocatedDaemonHost()).toBeNull()
-    expect(existsSync(join(userDataDir, 'daemon-host'))).toBe(false)
+    expect(existsSync(join(localAppDataDir, 'Orca', 'daemon-host'))).toBe(false)
   })
 })
 
 describe('getRelocatedDaemonHost', () => {
   it('returns null when the marker version does not match the current version', () => {
-    const dest = join(userDataDir, 'daemon-host', '9.9.9')
+    const dest = join(localAppDataDir, 'Orca', 'daemon-host', '9.9.9')
     mkdirSync(dirname(join(dest, 'x')), { recursive: true })
     writeFileSync(join(dest, 'Orca.exe'), 'exe')
     mkdirSync(join(dest, 'resources', 'app.asar.unpacked', 'out', 'main'), { recursive: true })
@@ -223,7 +233,7 @@ describe('getRelocatedDaemonHost', () => {
 
 describe('pruneOldDaemonHosts', () => {
   it('removes unpinned non-current version dirs, keeping current and pinned', () => {
-    const root = join(userDataDir, 'daemon-host')
+    const root = join(localAppDataDir, 'Orca', 'daemon-host')
     for (const v of ['9.9.9', '1.0.0', '2.0.0']) {
       mkdirSync(join(root, v), { recursive: true })
     }
