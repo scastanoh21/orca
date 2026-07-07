@@ -67,10 +67,27 @@ function handshake(socket, hello) {
   })
 }
 
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+// Race a promise against a timeout so a dead daemon can't wedge the failure
+// path (an unanswered RPC would otherwise hang until the CI job limit).
+function withTimeout(promise, ms, label) {
+  let timer
+  const timeout = new Promise((_resolve, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms)
+  })
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer))
+}
+
 /**
  * Connect a control+stream client, create a session, write `command\r\n`, and
  * resolve once `expectRe` matches the accumulated PTY output (or reject on
- * timeout). Returns { output } on success. Always tears down its sockets.
+ * timeout). Returns { output, diagnostics } on success. On timeout/error the
+ * rejected Error carries `.diagnostics` and `.output` so the caller can tell
+ * "no session created" vs "session created but no output" vs "output arrived
+ * but the regex did not match". Always tears down its sockets.
  */
 export async function runPtyEcho(options) {
   const {
@@ -79,13 +96,29 @@ export async function runPtyEcho(options) {
     protocolVersion,
     command,
     expectRe,
+    shellOverride,
     connectTimeoutMs = 5000,
-    ioTimeoutMs = 20000
+    ioTimeoutMs = 20000,
+    // Why: PowerShell/PSReadLine needs a beat to initialize before it echoes
+    // typed input; writing the command the instant createOrAttach returns can
+    // race the shell's own startup so the keystrokes land before the prompt.
+    writeDelayMs = 400
   } = options
 
   const token = readFileSync(tokenPath, 'utf8').trim()
   const clientId = randomUUID()
   const sessionId = `spike-${randomUUID()}`
+
+  // Everything we learn on the failure path, so the CI log can pinpoint where
+  // the ConPTY round-trip broke.
+  const diagnostics = {
+    createResponse: null,
+    ourDataFrames: 0,
+    otherDataFrames: 0,
+    exitEvents: [],
+    rawSample: '',
+    sessionsAtTimeout: null
+  }
 
   const control = await connectSocket(socketPath, connectTimeoutMs)
   const stream = await connectSocket(socketPath, connectTimeoutMs)
@@ -140,29 +173,73 @@ export async function runPtyEcho(options) {
 
     return await new Promise((resolve, reject) => {
       let output = ''
+      let settled = false
+
+      const rejectWith = (err) => {
+        if (settled) {
+          return
+        }
+        settled = true
+        clearTimeout(timer)
+        err.diagnostics = diagnostics
+        err.output = output
+        reject(err)
+      }
+
       const timer = setTimeout(() => {
-        reject(new Error(`pty echo timeout after ${ioTimeoutMs}ms; output so far:\n${output}`))
+        // On timeout, ask the daemon what sessions it thinks exist — this
+        // distinguishes "session never created / already exited" from "session
+        // alive but silent".
+        withTimeout(rpc('listSessions'), 2000, 'listSessions')
+          .then((payload) => {
+            diagnostics.sessionsAtTimeout = payload?.sessions ?? payload
+          })
+          .catch((err) => {
+            diagnostics.sessionsAtTimeout = `listSessions error: ${err.message}`
+          })
+          .finally(() => {
+            rejectWith(new Error(`pty echo timeout after ${ioTimeoutMs}ms`))
+          })
       }, ioTimeoutMs)
 
       stream.removeAllListeners('data')
       stream.on(
         'data',
         makeLineReader((msg) => {
-          if (msg.type === 'event' && msg.event === 'data' && msg.sessionId === sessionId) {
-            output += msg.payload.data
-            if (expectRe.test(output)) {
-              clearTimeout(timer)
-              resolve({ output })
+          if (msg.type === 'event' && msg.event === 'data') {
+            const data = msg.payload?.data ?? ''
+            if (diagnostics.rawSample.length < 500) {
+              diagnostics.rawSample = (diagnostics.rawSample + data).slice(0, 500)
             }
+            if (msg.sessionId === sessionId) {
+              diagnostics.ourDataFrames++
+              output += data
+              if (expectRe.test(output) && !settled) {
+                settled = true
+                clearTimeout(timer)
+                resolve({ output, diagnostics })
+              }
+            } else {
+              diagnostics.otherDataFrames++
+            }
+          } else if (msg.type === 'event' && msg.event === 'exit') {
+            diagnostics.exitEvents.push({ sessionId: msg.sessionId, code: msg.payload?.code })
           }
         })
       )
 
-      rpc('createOrAttach', { sessionId, cols: 120, rows: 30 })
+      const createPayload = { sessionId, cols: 120, rows: 30 }
+      if (shellOverride) {
+        createPayload.shellOverride = shellOverride
+      }
+      rpc('createOrAttach', createPayload)
+        .then((payload) => {
+          diagnostics.createResponse = payload
+          return delay(writeDelayMs)
+        })
         .then(() => rpc('write', { sessionId, data: `${command}\r\n` }))
         .catch((err) => {
-          clearTimeout(timer)
-          reject(err)
+          rejectWith(err instanceof Error ? err : new Error(String(err)))
         })
     })
   } finally {

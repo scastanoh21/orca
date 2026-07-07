@@ -78,7 +78,7 @@ function printHostTree(hostRoot, maxDepth = 6) {
 /** Dump the tail of the daemon's captured stdout/stderr — the actual crash
  *  reason when it exits before ready. */
 function printDaemonLogs(workDir, tailLines = 60) {
-  for (const name of ['daemon-stdout.log', 'daemon-stderr.log']) {
+  for (const name of ['daemon.log', 'daemon-stdout.log', 'daemon-stderr.log']) {
     const p = join(workDir, name)
     console.log(`\n--- ${name} ---`)
     try {
@@ -89,6 +89,24 @@ function printDaemonLogs(workDir, tailLines = 60) {
       console.log('(unavailable)')
     }
   }
+}
+
+/** Print the raw-frame diagnostics the client collects so a failed ConPTY
+ *  round-trip is classifiable from the CI log alone. */
+function printEchoDiagnostics(d) {
+  if (!d) {
+    console.log('  (no diagnostics captured)')
+    return
+  }
+  console.log(`  createOrAttach response: ${JSON.stringify(d.createResponse)}`)
+  console.log(`  data frames (our session): ${d.ourDataFrames}`)
+  console.log(`  data frames (other sessions): ${d.otherDataFrames}`)
+  console.log(`  exit events: ${JSON.stringify(d.exitEvents)}`)
+  if (d.sessionsAtTimeout !== null) {
+    console.log(`  listSessions at timeout: ${JSON.stringify(d.sessionsAtTimeout)}`)
+  }
+  const sample = d.rawSample || ''
+  console.log(`  raw stream sample (${sample.length} chars): ${JSON.stringify(sample)}`)
 }
 
 async function shutdownDaemon(child) {
@@ -157,6 +175,7 @@ async function runLaunch(opts) {
 
   const socketPath = makeSocketPath()
   const tokenPath = join(workDir, 'daemon.token')
+  const logFilePath = join(workDir, 'daemon.log')
   const protocolVersion = resolveProtocolVersion()
 
   let child = null
@@ -167,7 +186,8 @@ async function runLaunch(opts) {
       socketPath,
       tokenPath,
       workDir,
-      nodePtyNativeDir
+      nodePtyNativeDir,
+      logFilePath
     })
     child = launched.child
     report.ready = true
@@ -191,18 +211,28 @@ async function runLaunch(opts) {
     // Match the marker only when it appears alone at line start (executed
     // output), not inside the echoed `echo <marker>` input line.
     const expectRe = new RegExp(`(?:^|\\r?\\n)${marker}(?:\\r|\\n)`)
+    // `echo <marker>` is shell-agnostic (cmd / powershell / pwsh / bash); force
+    // powershell.exe so the CI runner's ambient COMSPEC can't pick a shell that
+    // behaves differently under ConPTY.
     const echo = await runPtyEcho({
       socketPath,
       tokenPath,
       protocolVersion,
       command: `echo ${marker}`,
-      expectRe
+      expectRe,
+      shellOverride: process.platform === 'win32' ? 'powershell.exe' : undefined
     })
     report.ptyEchoOk = true
     console.log(`pty echo: nonce round-tripped (${echo.output.length} bytes of output)`)
+    console.log('pty echo diagnostics:')
+    printEchoDiagnostics(echo.diagnostics)
   } catch (err) {
     report.error = err instanceof Error ? err.message : String(err)
     console.error(`\nFAILURE: ${report.error}`)
+    if (err && err.diagnostics) {
+      console.error('pty echo diagnostics:')
+      printEchoDiagnostics(err.diagnostics)
+    }
     printDaemonLogs(workDir)
   } finally {
     await shutdownDaemon(child)

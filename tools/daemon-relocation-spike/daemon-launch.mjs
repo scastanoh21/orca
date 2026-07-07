@@ -19,6 +19,7 @@ export function launchDaemonHost(options) {
     tokenPath,
     workDir,
     nodePtyNativeDir,
+    logFilePath,
     readyTimeoutMs = 30000
   } = options
 
@@ -37,16 +38,21 @@ export function launchDaemonHost(options) {
     env.ORCA_NODE_PTY_NATIVE_DIR = nodePtyNativeDir
   }
 
-  const child = spawn(
-    hostExePath,
-    [daemonEntryPath, '--socket', socketPath, '--token', tokenPath],
-    {
-      cwd: workDir,
-      detached: true,
-      stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
-      env
-    }
-  )
+  // Why: --log-file makes the daemon write its session lifecycle events
+  // (session-created / session-exited / uncaught-exception-suppressed) to a
+  // file, which is the only window into ConPTY spawn failures that don't reach
+  // stdout/stderr. daemon-entry parses it as an optional Phase 0 flag.
+  const daemonArgs = [daemonEntryPath, '--socket', socketPath, '--token', tokenPath]
+  if (logFilePath) {
+    daemonArgs.push('--log-file', logFilePath)
+  }
+
+  const child = spawn(hostExePath, daemonArgs, {
+    cwd: workDir,
+    detached: true,
+    stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+    env
+  })
   child.stdout.pipe(stdoutLog)
   child.stderr.pipe(stderrLog)
 
