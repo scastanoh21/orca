@@ -94,8 +94,8 @@ describe('GitHubItemDialog source host boundaries', () => {
     expect(source).toContain('sourceContext,')
     expect(cacheKeySection).toContain('sourceCacheScope')
     expect(source).toContain('getTaskSourceCacheScope(sourceContext)')
-    expect(matchInvalidationSection).toMatch(
-      /if \(removed\) {\s+workItemDetailsCacheGeneration \+= 1/
+    expect(matchInvalidationSection).toContain(
+      'if (removed) {\n    workItemDetailsCacheGeneration += 1'
     )
   })
 
