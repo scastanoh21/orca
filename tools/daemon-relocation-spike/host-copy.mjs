@@ -5,6 +5,7 @@
 import { cpSync, existsSync, mkdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { HOST_EXE } from './app-inventory.mjs'
+import { toPosixRelative } from './tier-file-set.mjs'
 
 export const HOST_SUBDIR = 'daemon-host'
 
@@ -43,19 +44,17 @@ export function copyHost(inv, plan, workDir) {
   }
 
   const hostExePath = join(hostRoot, HOST_EXE)
-  const daemonEntryPath = inv.daemonEntry.relFromUnpacked
-    ? destPath(hostRoot, inv.daemonEntry.relFromUnpacked)
+  // Both paths mirror the win-unpacked layout under hostRoot, so they resolve
+  // exactly as they do in the packaged app (relative to appDir).
+  const daemonEntryPath = inv.daemonEntry.exists
+    ? destPath(hostRoot, toPosixRelative(inv.appDir, inv.daemonEntry.path))
     : ''
 
   // The relocated node-pty native dir (build/Release or prebuilds/...), mirrored
-  // under the host root at node-pty's unpacked-relative path.
+  // under the host root at node-pty's real win-unpacked-relative path.
   let nodePtyNativeDir = ''
-  if (inv.nodePty.exists && inv.nodePty.nativeRel && inv.unpackedRoot) {
-    const pkgRel = inv.nodePty.packageDir
-      .slice(inv.unpackedRoot.length)
-      .replace(/^[\\/]+/, '')
-      .split('\\')
-      .join('/')
+  if (inv.nodePty.exists && inv.nodePty.nativeRel) {
+    const pkgRel = toPosixRelative(inv.appDir, inv.nodePty.packageDir)
     nodePtyNativeDir = destPath(hostRoot, `${pkgRel}/${inv.nodePty.nativeRel}`)
   }
 

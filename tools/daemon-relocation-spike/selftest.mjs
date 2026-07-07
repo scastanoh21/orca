@@ -33,10 +33,14 @@ function makeSyntheticInventory() {
       size: 1,
       relFromUnpacked: 'out/main/daemon-entry.js'
     },
+    // node-pty is packaged at resources/node_modules/node-pty — a SIBLING of
+    // app.asar.unpacked, NOT under it (see packaged-runtime-node-modules.cjs).
+    // The synthetic inventory reflects that so the copy-plan test catches any
+    // regression that mislocates it.
     nodePty: {
       exists: true,
-      packageDir: `${unpackedRoot}\\node_modules\\node-pty`,
-      nativeDir: `${unpackedRoot}\\node_modules\\node-pty\\build\\Release`,
+      packageDir: 'C:\\App\\resources\\node_modules\\node-pty',
+      nativeDir: 'C:\\App\\resources\\node_modules\\node-pty\\build\\Release',
       nativeRel: 'build/Release',
       conptyNode: { name: 'conpty.node', path: 'x', exists: true, size: 1 }
     }
@@ -95,11 +99,16 @@ function run() {
     const dests = plan.ops.map((o) => o.destRel)
     check(`${tier}: has exe`, dests.includes('Orca.exe'))
     check(`${tier}: has icu`, dests.includes('icudtl.dat'))
-    check(`${tier}: has daemon entry`, dests.includes('out/main/daemon-entry.js'))
-    check(`${tier}: has node-pty dir`, dests.includes('node_modules/node-pty'))
+    // destRel mirrors the full win-unpacked layout so the require-closure and
+    // node-pty native resolution work verbatim from the copy.
+    check(
+      `${tier}: has daemon entry`,
+      dests.includes('resources/app.asar.unpacked/out/main/daemon-entry.js')
+    )
+    check(`${tier}: has node-pty dir`, dests.includes('resources/node_modules/node-pty'))
     check(
       `${tier}: node-pty op is a dir`,
-      plan.ops.find((o) => o.destRel === 'node_modules/node-pty')?.kind === 'dir'
+      plan.ops.find((o) => o.destRel === 'resources/node_modules/node-pty')?.kind === 'dir'
     )
   }
   const fullDests = resolveTierFileSet(inv, 'full').ops.map((o) => o.destRel)

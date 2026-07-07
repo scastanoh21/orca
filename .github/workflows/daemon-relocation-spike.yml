@@ -70,10 +70,14 @@ jobs:
           foreach ($tier in $tiers) {
             "===== TIER: $tier =====" | Tee-Object -FilePath $log -Append
             $work = Join-Path $env:RUNNER_TEMP "spike-$tier"
+            # --keep-work-dir so the per-tier daemon stdout/stderr logs survive
+            # for the artifact upload (the spike otherwise removes work-dir),
+            # which is what diagnoses a tier that fails to reach ready.
             node tools/daemon-relocation-spike/spike.mjs `
               --app-dir dist/win-unpacked `
               --work-dir "$work" `
-              --tier $tier 2>&1 | Tee-Object -FilePath $log -Append
+              --tier $tier `
+              --keep-work-dir 2>&1 | Tee-Object -FilePath $log -Append
             if ($LASTEXITCODE -eq 0) { $any = $true }
           }
           if (-not $any) { throw "No tier passed the relocation spike" }

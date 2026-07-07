@@ -69,12 +69,19 @@ a code change.
 
 ## How node-pty's native + ConPTY runtime is handled
 
-The whole `node-pty` package tree is copied, mirroring its
-`app.asar.unpacked/node_modules/node-pty` relative layout. That preserves two
-resolutions from the relocated path:
+The whole `node-pty` package tree is copied, and **the entire win-unpacked
+layout is mirrored verbatim** (every copy destination is relative to the
+win-unpacked root, not the asar-unpacked root). This matters because node-pty is
+packaged at `resources/node_modules/node-pty` — a **sibling** of
+`app.asar.unpacked`, not under it (see
+`config/packaged-runtime-node-modules.cjs`). Mirroring the full layout preserves
+two resolutions from the relocated path:
 
-1. **The daemon require-closure** resolves `node-pty` by walking up from the
-   mirrored `daemon-entry.js` to `node_modules/node-pty`.
+1. **The daemon require-closure** resolves `require('node-pty')` by walking
+   parent dirs up from the mirrored
+   `resources/app.asar.unpacked/out/main/daemon-entry.js`, which passes through
+   `resources/` and finds `resources/node_modules/node-pty` — exactly as in the
+   packaged app.
 2. **node-pty's own native loader** resolves `conpty.node` from `build/Release`
    (or `prebuilds/win32-<arch>`) relative to node-pty's own `__dirname`, and
    node-pty's Windows addon loads `conpty.dll` from `<dir-of-conpty.node>/conpty/`

@@ -2,6 +2,8 @@
 // rather than a code change. A tier resolves (given a discovered inventory) to a
 // flat list of copy operations { sourcePath, destRel, kind }.
 
+import { dirname, join, relative, sep } from 'node:path'
+
 // GPU/render DLLs that a run-as-node Electron host plausibly never loads. The
 // spike measures whether dropping them still yields a working ConPTY host.
 // ffmpeg.dll is deliberately NOT here — it is kept in the no-gpu tier.
@@ -42,71 +44,74 @@ export function selectTierDlls(topLevelDlls, tier) {
   return topLevelDlls.filter((e) => !isGpuDll(e.name))
 }
 
-// Copy the whole node-pty package tree so its default native/conpty resolution
-// (relative to node-pty's own __dirname) keeps working from the relocated path,
-// and so the daemon require-closure resolves `node-pty` by walking up from the
-// mirrored daemon-entry.js. destRel mirrors the app.asar.unpacked layout.
-function nodePtyRelDir(inv) {
-  // node-pty's package dir relative to the unpacked root, normalized to '/'.
-  const root = inv.unpackedRoot ?? ''
-  const rel = inv.nodePty.packageDir.slice(root.length).replace(/^[\\/]+/, '')
-  return rel.split('\\').join('/')
+/**
+ * A source file/dir's path relative to the win-unpacked root, normalized to '/'.
+ *
+ * Why relative to the APP DIR (not the app.asar.unpacked root): node-pty is
+ * packaged at resources/node_modules/node-pty (see
+ * config/packaged-runtime-node-modules.cjs), a SIBLING of app.asar.unpacked.
+ * The daemon resolves `require('node-pty')` by walking parent dirs up from
+ * resources/app.asar.unpacked/out/main/daemon-entry.js, which passes through
+ * resources/ and finds resources/node_modules/node-pty. Mirroring the full
+ * win-unpacked layout verbatim is the only copy that preserves that walk.
+ */
+export function toPosixRelative(appDir, absPath) {
+  return relative(appDir, absPath).split(sep).join('/')
 }
 
 /**
  * Build the ordered copy plan for a tier. Returns { ops, warnings } where each
- * op is { sourcePath, destRel, kind: 'file' | 'dir' }. Missing required inputs
- * are surfaced as warnings rather than thrown, so the report stays complete.
+ * op is { sourcePath, destRel, kind: 'file' | 'dir' }. Every destRel mirrors the
+ * source's win-unpacked-relative path. Missing required inputs are surfaced as
+ * warnings rather than thrown, so the report stays complete.
  */
 export function resolveTierFileSet(inv, tier) {
   const ops = []
   const warnings = []
+  const appDir = inv.appDir
 
-  const addFile = (entry, destRel, requiredLabel) => {
+  const addFile = (entry, requiredLabel, optional = false) => {
     if (!entry || !entry.exists) {
       if (requiredLabel) {
         warnings.push(`missing required input: ${requiredLabel}`)
       }
       return
     }
-    ops.push({ sourcePath: entry.path, destRel, kind: 'file' })
+    ops.push({
+      sourcePath: entry.path,
+      destRel: toPosixRelative(appDir, entry.path),
+      kind: 'file',
+      optional
+    })
   }
 
-  // Core: exe + runtime data blobs live next to Orca.exe in win-unpacked, so
-  // they mirror to the host-dir root.
-  addFile(inv.hostExe, inv.hostExe.name, 'Orca.exe')
+  // Core: exe + runtime data blobs live next to Orca.exe in win-unpacked.
+  addFile(inv.hostExe, 'Orca.exe')
   for (const entry of inv.runtimeData) {
-    addFile(entry, entry.name, entry.name)
+    addFile(entry, entry.name)
   }
 
   // Top-level DLLs per tier.
   for (const dll of selectTierDlls(inv.topLevelDlls, tier)) {
-    addFile(dll, dll.name)
+    addFile(dll)
   }
 
-  // Daemon bundle: the entry plus its sibling chunks + the unpacked
-  // out/package.json (module-type resolution). Mirror the unpacked layout so the
-  // relative require-closure resolves unchanged.
+  // Daemon bundle: the entry, its sibling chunks/, and the unpacked
+  // out/package.json (CJS/ESM loader resolution). Mirror the layout verbatim.
   if (inv.daemonEntry.exists && inv.unpackedRoot) {
+    addFile(inv.daemonEntry, 'daemon-entry.js')
+    const entryDir = dirname(inv.daemonEntry.path)
+    const chunksDir = join(entryDir, 'chunks')
     ops.push({
-      sourcePath: inv.daemonEntry.path,
-      destRel: inv.daemonEntry.relFromUnpacked,
-      kind: 'file'
-    })
-    const entryDir = inv.daemonEntry.relFromUnpacked.includes('/')
-      ? inv.daemonEntry.relFromUnpacked.slice(0, inv.daemonEntry.relFromUnpacked.lastIndexOf('/'))
-      : ''
-    // chunks/ sit beside the entry (out/main/chunks per asarUnpack config).
-    ops.push({
-      sourcePath: `${inv.unpackedRoot}\\${entryDir.split('/').join('\\')}\\chunks`,
-      destRel: entryDir ? `${entryDir}/chunks` : 'chunks',
+      sourcePath: chunksDir,
+      destRel: toPosixRelative(appDir, chunksDir),
       kind: 'dir',
       optional: true
     })
-    // out/package.json is unpacked so Node can resolve the CJS/ESM loader.
+    const pkgJson = join(inv.unpackedRoot, 'out', 'package.json')
     ops.push({
-      sourcePath: `${inv.unpackedRoot}\\out\\package.json`,
-      destRel: 'out/package.json',
+      sourcePath: pkgJson,
+      destRel: toPosixRelative(appDir, pkgJson),
       kind: 'file',
       optional: true
     })
@@ -115,11 +120,11 @@ export function resolveTierFileSet(inv, tier) {
   }
 
   // node-pty package tree (native binding + conpty runtime), mirrored at its
-  // app.asar.unpacked-relative path.
-  if (inv.nodePty.exists && inv.nodePty.conptyNode && inv.unpackedRoot) {
+  // real win-unpacked path (resources/node_modules/node-pty).
+  if (inv.nodePty.exists && inv.nodePty.conptyNode) {
     ops.push({
       sourcePath: inv.nodePty.packageDir,
-      destRel: nodePtyRelDir(inv),
+      destRel: toPosixRelative(appDir, inv.nodePty.packageDir),
       kind: 'dir'
     })
   } else {
