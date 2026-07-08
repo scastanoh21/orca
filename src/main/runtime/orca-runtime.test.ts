@@ -5,6 +5,7 @@ import { performance } from 'node:perf_hooks'
 import { EventEmitter } from 'node:events'
 import { randomUUID } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
+import { mkdirSync } from 'node:fs'
 import { lstat, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -66,6 +67,7 @@ import {
   buildAgentPromptPasteBytes
 } from '../../shared/agent-prompt-injection'
 import { CLIPBOARD_TEXT_MEASURE_YIELD_CODE_UNITS } from '../../shared/clipboard-text'
+import { projectHostSetupProjectionFromRepos } from '../../shared/project-host-setup-projection'
 import {
   registerSshFilesystemProvider,
   unregisterSshFilesystemProvider
@@ -5252,6 +5254,406 @@ describe('OrcaRuntimeService', () => {
       })
     } finally {
       await rm(tempRoot, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps existing-folder imports split by runtime host on the same normalized path', async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), 'orca-runtime-project-host-'))
+    const repos: Record<string, unknown>[] = []
+    getRepoUpstreamMock.mockResolvedValue({ owner: 'stablyai', repo: 'orca' })
+    const runtimeStore = {
+      ...store,
+      getRepos: () => [...repos] as never,
+      addRepo: (repo: Record<string, unknown>) => {
+        repos.push(repo)
+      },
+      getRepo: (id: string) => repos.find((repo) => repo.id === id) as never,
+      updateRepo: (id: string, updates: Record<string, unknown>) => {
+        const index = repos.findIndex((repo) => repo.id === id)
+        if (index === -1) {
+          return null
+        }
+        repos[index] = { ...repos[index], ...updates }
+        return repos[index] as never
+      },
+      getProjects: () => projectHostSetupProjectionFromRepos(repos as never).projects as never,
+      getProjectHostSetups: () =>
+        projectHostSetupProjectionFromRepos(repos as never).setups as never
+    }
+    const runtime = new OrcaRuntimeService(runtimeStore as never)
+
+    try {
+      execFileSync('git', ['init'], { cwd: tempRoot, stdio: 'ignore' })
+      const first = await runtime.setupProjectExistingFolder({
+        projectId: 'github:stablyai/orca',
+        hostId: 'runtime:env-1',
+        path: tempRoot,
+        kind: 'git',
+        setupMethod: 'imported-existing-folder'
+      })
+      const second = await runtime.setupProjectExistingFolder({
+        projectId: 'github:stablyai/orca',
+        hostId: 'runtime:env-2',
+        path: tempRoot,
+        kind: 'git',
+        setupMethod: 'imported-existing-folder'
+      })
+
+      expect(repos).toHaveLength(2)
+      expect(repos).toEqual([
+        expect.objectContaining({
+          path: tempRoot,
+          executionHostId: 'runtime:env-1'
+        }),
+        expect.objectContaining({
+          path: tempRoot,
+          executionHostId: 'runtime:env-2'
+        })
+      ])
+      expect(first.repo).toMatchObject({
+        path: tempRoot,
+        executionHostId: 'runtime:env-1'
+      })
+      expect(first.setup).toMatchObject({
+        repoId: first.repo.id,
+        hostId: 'runtime:env-1'
+      })
+      expect(second.repo).toMatchObject({
+        path: tempRoot,
+        executionHostId: 'runtime:env-2'
+      })
+      expect(second.setup).toMatchObject({
+        repoId: second.repo.id,
+        hostId: 'runtime:env-2'
+      })
+      expect(first.repo.id).not.toBe(second.repo.id)
+      expect(first.setup.repoId).not.toBe(second.setup.repoId)
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps path-only runtime addRepo reuse working when a host-qualified repo already exists', async () => {
+    const repos: Record<string, unknown>[] = [
+      {
+        id: 'repo-runtime-1',
+        path: '/tmp/runtime-shared',
+        displayName: 'repo',
+        badgeColor: 'blue',
+        addedAt: 1,
+        kind: 'folder',
+        executionHostId: 'runtime:env-1'
+      }
+    ]
+    const runtimeStore = {
+      ...store,
+      getRepos: () => [...repos] as never,
+      addRepo: (repo: Record<string, unknown>) => {
+        repos.push(repo)
+      },
+      getRepo: (id: string) => repos.find((repo) => repo.id === id) as never
+    }
+    const runtime = new OrcaRuntimeService(runtimeStore as never)
+
+    const repo = await runtime.addRepo('/tmp/runtime-shared', 'folder')
+
+    expect(repo).toMatchObject({
+      id: 'repo-runtime-1',
+      path: '/tmp/runtime-shared',
+      executionHostId: 'runtime:env-1'
+    })
+    expect(repos).toHaveLength(1)
+  })
+
+  it('does not hijack a legacy SSH repo at the same path into a runtime host', async () => {
+    // A legacy SSH repo resolves to `ssh:<connectionId>` even with a null executionHostId,
+    // so a same-path runtime import must create a new repo instead of adopting it.
+    const repos: Record<string, unknown>[] = [
+      {
+        id: 'repo-ssh-1',
+        path: '/workspace',
+        displayName: 'workspace',
+        badgeColor: 'blue',
+        addedAt: 1,
+        kind: 'folder',
+        connectionId: 'ssh-target-1'
+      }
+    ]
+    const runtimeStore = {
+      ...store,
+      getRepos: () => [...repos] as never,
+      addRepo: (repo: Record<string, unknown>) => {
+        repos.push(repo)
+      },
+      getRepo: (id: string) => repos.find((repo) => repo.id === id) as never,
+      updateRepo: (id: string, updates: Record<string, unknown>) => {
+        const index = repos.findIndex((repo) => repo.id === id)
+        if (index === -1) {
+          return null
+        }
+        repos[index] = { ...repos[index], ...updates }
+        return repos[index] as never
+      }
+    }
+    const runtime = new OrcaRuntimeService(runtimeStore as never)
+
+    const repo = await runtime.addRepo('/workspace', 'folder', 'runtime:env-1')
+
+    expect(repos).toHaveLength(2)
+    expect(repo.id).not.toBe('repo-ssh-1')
+    expect(repo).toMatchObject({ path: '/workspace', executionHostId: 'runtime:env-1' })
+    // The legacy SSH repo must be untouched (no executionHostId stamped onto it).
+    expect(repos[0]).toMatchObject({ id: 'repo-ssh-1', connectionId: 'ssh-target-1' })
+    expect(repos[0]).not.toHaveProperty('executionHostId')
+  })
+
+  it('only a runtime host adopts an unstamped repo; local/ssh imports never stamp it', async () => {
+    // A genuine local repo is indistinguishable from a legacy runtime repo (both have null
+    // executionHostId and connectionId). Only a runtime host may backfill it — a local or ssh
+    // import at the same path must leave it untouched rather than re-attribute it to that host.
+    for (const importHostId of ['local', 'ssh:ssh-target-9'] as const) {
+      const repos: Record<string, unknown>[] = [
+        {
+          id: 'repo-local-1',
+          path: '/workspace',
+          displayName: 'workspace',
+          badgeColor: 'blue',
+          addedAt: 1,
+          kind: 'folder'
+        }
+      ]
+      const runtimeStore = {
+        ...store,
+        getRepos: () => [...repos] as never,
+        addRepo: (repo: Record<string, unknown>) => {
+          repos.push(repo)
+        },
+        getRepo: (id: string) => repos.find((repo) => repo.id === id) as never,
+        updateRepo: (id: string, updates: Record<string, unknown>) => {
+          const index = repos.findIndex((repo) => repo.id === id)
+          if (index === -1) {
+            return null
+          }
+          repos[index] = { ...repos[index], ...updates }
+          return repos[index] as never
+        }
+      }
+      const runtime = new OrcaRuntimeService(runtimeStore as never)
+
+      const repo = await runtime.addRepo('/workspace', 'folder', importHostId)
+
+      // The matched repo is returned unchanged — no new repo, no executionHostId stamped.
+      expect(repos).toHaveLength(1)
+      expect(repo.id).toBe('repo-local-1')
+      expect(repos[0]).not.toHaveProperty('executionHostId')
+    }
+  })
+
+  it('keeps project clone setup on the cloned host-qualified repo', async () => {
+    const destination = await mkdtemp(join(tmpdir(), 'orca-runtime-project-clone-'))
+    const clonePath = join(destination, 'orca')
+    const spawnSpy = vi.spyOn(gitRunner, 'wslAwareSpawn')
+    const repos: Record<string, unknown>[] = []
+    getRepoUpstreamMock.mockResolvedValue({ owner: 'stablyai', repo: 'orca' })
+    const runtimeStore = {
+      ...store,
+      getRepos: () => [...repos] as never,
+      addRepo: (repo: Record<string, unknown>) => {
+        repos.push(repo)
+      },
+      getRepo: (id: string) => repos.find((repo) => repo.id === id) as never,
+      updateRepo: (id: string, updates: Record<string, unknown>) => {
+        const index = repos.findIndex((repo) => repo.id === id)
+        if (index === -1) {
+          return null
+        }
+        repos[index] = { ...repos[index], ...updates }
+        return repos[index] as never
+      },
+      getProjects: () => projectHostSetupProjectionFromRepos(repos as never).projects as never,
+      getProjectHostSetups: () =>
+        projectHostSetupProjectionFromRepos(repos as never).setups as never
+    }
+    spawnSpy.mockImplementation(() => {
+      const proc = new EventEmitter() as EventEmitter & { stderr: EventEmitter }
+      proc.stderr = new EventEmitter()
+      queueMicrotask(() => {
+        mkdirSync(clonePath, { recursive: true })
+        execFileSync('git', ['init'], { cwd: clonePath, stdio: 'ignore' })
+        proc.emit('close', 0, null)
+      })
+      return proc as never
+    })
+    const runtime = new OrcaRuntimeService(runtimeStore as never)
+
+    try {
+      const result = await runtime.setupProjectClone({
+        projectId: 'github:stablyai/orca',
+        hostId: 'runtime:env-1',
+        url: 'https://example.com/orca.git',
+        destination
+      })
+
+      expect(repos).toHaveLength(1)
+      expect(result.repo).toMatchObject({
+        path: clonePath,
+        executionHostId: 'runtime:env-1',
+        projectHostSetupMethod: 'cloned'
+      })
+      expect(result.setup).toMatchObject({
+        repoId: result.repo.id,
+        hostId: 'runtime:env-1',
+        setupMethod: 'cloned'
+      })
+    } finally {
+      spawnSpy.mockRestore()
+      await rm(destination, { recursive: true, force: true })
+    }
+  })
+
+  it('adopts public clone repos into host-qualified project setup', async () => {
+    const destination = await mkdtemp(join(tmpdir(), 'orca-runtime-project-clone-'))
+    const clonePath = join(destination, 'orca')
+    const spawnSpy = vi.spyOn(gitRunner, 'wslAwareSpawn')
+    const repos: Record<string, unknown>[] = []
+    getRepoUpstreamMock.mockResolvedValue({ owner: 'stablyai', repo: 'orca' })
+    const runtimeStore = {
+      ...store,
+      getRepos: () => [...repos] as never,
+      addRepo: (repo: Record<string, unknown>) => {
+        repos.push(repo)
+      },
+      getRepo: (id: string) => repos.find((repo) => repo.id === id) as never,
+      updateRepo: (id: string, updates: Record<string, unknown>) => {
+        const index = repos.findIndex((repo) => repo.id === id)
+        if (index === -1) {
+          return null
+        }
+        repos[index] = { ...repos[index], ...updates }
+        return repos[index] as never
+      },
+      getProjects: () => projectHostSetupProjectionFromRepos(repos as never).projects as never,
+      getProjectHostSetups: () =>
+        projectHostSetupProjectionFromRepos(repos as never).setups as never
+    }
+    spawnSpy.mockImplementation(() => {
+      const proc = new EventEmitter() as EventEmitter & { stderr: EventEmitter }
+      proc.stderr = new EventEmitter()
+      queueMicrotask(() => {
+        mkdirSync(clonePath, { recursive: true })
+        execFileSync('git', ['init'], { cwd: clonePath, stdio: 'ignore' })
+        proc.emit('close', 0, null)
+      })
+      return proc as never
+    })
+    const runtime = new OrcaRuntimeService(runtimeStore as never)
+
+    try {
+      const cloned = await runtime.cloneRepo('https://example.com/orca.git', destination)
+      expect(cloned).toMatchObject({
+        path: clonePath
+      })
+      expect(cloned).not.toHaveProperty('executionHostId')
+
+      const result = await runtime.setupProjectExistingFolder({
+        projectId: 'github:stablyai/orca',
+        hostId: 'runtime:env-1',
+        path: clonePath,
+        kind: 'git',
+        setupMethod: 'cloned'
+      })
+
+      expect(repos).toHaveLength(1)
+      expect(result.repo).toMatchObject({
+        id: cloned.id,
+        path: clonePath,
+        executionHostId: 'runtime:env-1',
+        projectHostSetupMethod: 'cloned'
+      })
+      expect(result.setup).toMatchObject({
+        repoId: cloned.id,
+        hostId: 'runtime:env-1',
+        setupMethod: 'cloned'
+      })
+    } finally {
+      spawnSpy.mockRestore()
+      await rm(destination, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps project clone repos split by runtime host on the same clone path', async () => {
+    const destination = await mkdtemp(join(tmpdir(), 'orca-runtime-project-clone-'))
+    const clonePath = join(destination, 'orca')
+    const spawnSpy = vi.spyOn(gitRunner, 'wslAwareSpawn')
+    const repos: Record<string, unknown>[] = [
+      {
+        id: 'repo-host-a',
+        path: clonePath,
+        displayName: 'orca',
+        badgeColor: 'blue',
+        addedAt: 1,
+        kind: 'git',
+        executionHostId: 'runtime:env-1'
+      }
+    ]
+    getRepoUpstreamMock.mockResolvedValue({ owner: 'stablyai', repo: 'orca' })
+    const runtimeStore = {
+      ...store,
+      getRepos: () => [...repos] as never,
+      addRepo: (repo: Record<string, unknown>) => {
+        repos.push(repo)
+      },
+      getRepo: (id: string) => repos.find((repo) => repo.id === id) as never,
+      updateRepo: (id: string, updates: Record<string, unknown>) => {
+        const index = repos.findIndex((repo) => repo.id === id)
+        if (index === -1) {
+          return null
+        }
+        repos[index] = { ...repos[index], ...updates }
+        return repos[index] as never
+      },
+      getProjects: () => projectHostSetupProjectionFromRepos(repos as never).projects as never,
+      getProjectHostSetups: () =>
+        projectHostSetupProjectionFromRepos(repos as never).setups as never
+    }
+    spawnSpy.mockImplementation(() => {
+      const proc = new EventEmitter() as EventEmitter & { stderr: EventEmitter }
+      proc.stderr = new EventEmitter()
+      queueMicrotask(() => {
+        mkdirSync(clonePath, { recursive: true })
+        execFileSync('git', ['init'], { cwd: clonePath, stdio: 'ignore' })
+        proc.emit('close', 0, null)
+      })
+      return proc as never
+    })
+    const runtime = new OrcaRuntimeService(runtimeStore as never)
+
+    try {
+      const result = await runtime.setupProjectClone({
+        projectId: 'github:stablyai/orca',
+        hostId: 'runtime:env-2',
+        url: 'https://example.com/orca.git',
+        destination
+      })
+
+      expect(repos).toHaveLength(2)
+      expect(repos[0]).toMatchObject({
+        id: 'repo-host-a',
+        executionHostId: 'runtime:env-1'
+      })
+      expect(result.repo).toMatchObject({
+        path: clonePath,
+        executionHostId: 'runtime:env-2'
+      })
+      expect(result.repo.id).not.toBe('repo-host-a')
+      expect(result.setup).toMatchObject({
+        repoId: result.repo.id,
+        hostId: 'runtime:env-2',
+        setupMethod: 'cloned'
+      })
+    } finally {
+      spawnSpy.mockRestore()
+      await rm(destination, { recursive: true, force: true })
     }
   })
 
@@ -26493,6 +26895,228 @@ describe('OrcaRuntimeService', () => {
       expect(onPtyStopped).toHaveBeenCalledWith(`${TEST_WORKTREE_ID}@@aaaaaaaa`)
       // The pre-daemon provider must not have been consulted for the kill.
       expect(preDaemonProvider.shutdown).not.toHaveBeenCalled()
+    })
+  })
+  describe('stale terminal handle resolution (#7718)', () => {
+    function syncSingleTerminalGraph(runtime: OrcaRuntimeService, ptyId: string): void {
+      runtime.syncWindowGraph(1, {
+        tabs: [
+          {
+            tabId: 'tab-1',
+            worktreeId: TEST_WORKTREE_ID,
+            title: 'Terminal 1',
+            activeLeafId: 'pane:1',
+            layout: null
+          }
+        ],
+        leaves: [
+          {
+            tabId: 'tab-1',
+            worktreeId: TEST_WORKTREE_ID,
+            leafId: 'pane:1',
+            paneRuntimeId: 1,
+            ptyId,
+            paneTitle: 'Terminal 1'
+          }
+        ],
+        mobileSessionTabs: [
+          {
+            worktree: TEST_WORKTREE_ID,
+            publicationEpoch: 'epoch-1',
+            snapshotVersion: 1,
+            activeGroupId: 'group-1',
+            activeTabId: 'tab-1::pane:1',
+            activeTabType: 'terminal',
+            tabs: [
+              {
+                type: 'terminal',
+                id: 'tab-1::pane:1',
+                parentTabId: 'tab-1',
+                leafId: 'pane:1',
+                title: 'Terminal 1',
+                isActive: true
+              }
+            ]
+          }
+        ]
+      })
+    }
+
+    // Why: session-tab mirrors travel as PTY handles, but client-created
+    // terminals (terminal.create) hold LEAF handles — the kind that can
+    // diverge from the pane's current PTY across reconnects. Issue one
+    // directly from the leaf record to pin the resolver semantics.
+    function issueLeafHandle(runtime: OrcaRuntimeService, ptyId: string): string {
+      const internals = runtime as unknown as {
+        leaves: Map<string, { ptyId: string | null }>
+        issueHandle: (leaf: unknown) => string
+      }
+      const leaf = Array.from(internals.leaves.values()).find(
+        (candidate) => candidate.ptyId === ptyId
+      )
+      if (!leaf) {
+        throw new Error('expected leaf record')
+      }
+      return internals.issueHandle(leaf)
+    }
+
+    it('errors with terminal_handle_stale instead of adopting a replacement PTY', async () => {
+      const runtime = new OrcaRuntimeService(store)
+      runtime.attachWindow(1)
+      syncSingleTerminalGraph(runtime, 'pty-a')
+      const handle = issueLeafHandle(runtime, 'pty-a')
+
+      // Simulate the pane's PTY being replaced while the remote client still
+      // holds the old handle (the record missed the swap, e.g. across a
+      // renderer graph reload that preserved live PTY records).
+      const internals = runtime as unknown as {
+        leaves: Map<string, { ptyId: string | null }>
+      }
+      for (const leaf of internals.leaves.values()) {
+        if (leaf.ptyId === 'pty-a') {
+          leaf.ptyId = 'pty-b'
+        }
+      }
+
+      // The unguarded resolver silently adopts the new PTY — the misroute.
+      expect(runtime.resolveLeafForHandle(handle)).toEqual({ ptyId: 'pty-b' })
+      // The guarded resolver surfaces the staleness so clients can re-derive.
+      expect(() => runtime.resolveLiveLeafForHandle(handle)).toThrow('terminal_handle_stale')
+    })
+
+    it('lets a handle issued before its first PTY adopt that PTY without erroring', async () => {
+      const runtime = new OrcaRuntimeService(store)
+      runtime.attachWindow(1)
+      syncSingleTerminalGraph(runtime, 'pty-a')
+      const handle = issueLeafHandle(runtime, 'pty-a')
+
+      // Simulate the mobile pre-spawn flow: the handle record predates the
+      // PTY (ptyId null); the pane's first PTY must still resolve.
+      const internals = runtime as unknown as {
+        handles: Map<string, { ptyId: string | null }>
+      }
+      const record = internals.handles.get(handle)
+      if (!record) {
+        throw new Error('expected handle record')
+      }
+      record.ptyId = null
+
+      expect(runtime.resolveLiveLeafForHandle(handle)).toEqual({ ptyId: 'pty-a' })
+    })
+  })
+
+  describe('mobile terminal create resilience (#7718)', () => {
+    it('cancels the surface wait without rolling back when the client connection dies', async () => {
+      vi.useFakeTimers()
+      try {
+        const closeTerminal = vi.fn()
+        const runtime = new OrcaRuntimeService(store)
+        runtime.setNotifier(createMobileCreateTestNotifier(closeTerminal))
+        const abort = new AbortController()
+        const webContents = { send: vi.fn() }
+        const send = vi.fn((_channel: string, payload: { requestId: string }) => {
+          ipcMain.emit(
+            'terminal:tabCreateReply',
+            { sender: webContents },
+            { requestId: payload.requestId, tabId: 'tab-abort', title: 'Terminal' }
+          )
+        })
+        webContents.send = send
+        runtime.attachWindow(1)
+        runtime.syncWindowGraph(1, { tabs: [], leaves: [] })
+        electronMocks.BrowserWindow.fromId.mockReturnValue({
+          isDestroyed: () => false,
+          webContents
+        })
+
+        const create = runtime.createMobileSessionTerminal(`id:${TEST_WORKTREE_ID}`, {
+          activate: false,
+          signal: abort.signal
+        })
+        const settled = create.then(
+          () => ({ ok: true as const }),
+          (error: Error) => ({ ok: false as const, error })
+        )
+        await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1))
+
+        // The client's socket dies mid-wait. The create must settle right away
+        // (not run down the 10s surface timeout) and must NOT close the tab —
+        // the renderer spawned a real terminal the host user can see.
+        abort.abort()
+        await vi.advanceTimersByTimeAsync(0)
+        const outcome = await settled
+
+        expect(outcome.ok).toBe(false)
+        if (outcome.ok === false) {
+          expect(outcome.error.message).toBe('client_disconnected')
+        }
+        expect(closeTerminal).not.toHaveBeenCalled()
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('keeps a mobile-created terminal alive when its live shell has no registered pane key', async () => {
+      vi.useFakeTimers()
+      try {
+        const closeTerminal = vi.fn()
+        const runtime = new OrcaRuntimeService(store)
+        runtime.setNotifier(createMobileCreateTestNotifier(closeTerminal))
+        const webContents = { send: vi.fn() }
+        const send = vi.fn((_channel: string, payload: { requestId: string }) => {
+          ipcMain.emit(
+            'terminal:tabCreateReply',
+            { sender: webContents },
+            { requestId: payload.requestId, tabId: 'tab-stall', title: 'Terminal' }
+          )
+        })
+        webContents.send = send
+        runtime.attachWindow(1)
+        runtime.syncWindowGraph(1, { tabs: [], leaves: [] })
+        electronMocks.BrowserWindow.fromId.mockReturnValue({
+          isDestroyed: () => false,
+          webContents
+        })
+
+        const create = runtime.createMobileSessionTerminal(`id:${TEST_WORKTREE_ID}`, {
+          activate: false
+        })
+        const settled = create.then(
+          () => ({ ok: true as const }),
+          (error: Error) => ({ ok: false as const, error })
+        )
+        await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(1))
+
+        // A live shell backs the tab, but its leaf id is not a terminal UUID
+        // so no pane key registers: the surface rescue can't publish it, and
+        // the surface itself never publishes (stalled renderer publication).
+        runtime.syncWindowGraph(1, {
+          tabs: [],
+          leaves: [
+            {
+              tabId: 'tab-stall',
+              worktreeId: TEST_WORKTREE_ID,
+              leafId: 'pane:1',
+              paneRuntimeId: 1,
+              ptyId: 'pty-stall',
+              paneTitle: null
+            }
+          ]
+        })
+
+        await vi.advanceTimersByTimeAsync(11_000)
+        const outcome = await settled
+
+        // The create still fails (nothing to return), but the timeout must not
+        // kill the live terminal — that is the "tab dies after ~10s" symptom.
+        expect(outcome.ok).toBe(false)
+        if (outcome.ok === false) {
+          expect(outcome.error.message).toContain('Timed out')
+        }
+        expect(closeTerminal).not.toHaveBeenCalled()
+      } finally {
+        vi.useRealTimers()
+      }
     })
   })
 })
