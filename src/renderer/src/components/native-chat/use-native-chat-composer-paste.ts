@@ -1,5 +1,6 @@
 import { useCallback, useRef } from 'react'
 import { translate } from '@/i18n/i18n'
+import { extractIpcErrorMessage } from '@/lib/ipc-error'
 import type { AgentType } from '../../../../shared/agent-status-types'
 import { resolveImagePaste } from './native-chat-image-paste'
 import { NATIVE_CHAT_CONTEXT_PASTE_MAX_BYTES } from './native-chat-composer-target'
@@ -66,6 +67,36 @@ export function useNativeChatComposerPaste({
   const disabledRef = useRef(disabled)
   disabledRef.current = disabled
 
+  // Distinguishes 'empty' (no image on the clipboard — text may fall through)
+  // from 'failed' (save errored — the flow must stop and say why).
+  const saveClipboardImageForOwner = useCallback(
+    async (
+      owner: NativeChatAttachmentOwner
+    ): Promise<{ status: 'saved'; tempPath: string } | { status: 'empty' | 'failed' }> => {
+      try {
+        // SSH panes save the image on the remote host (SFTP) so the attached
+        // path is readable by the remote agent, matching terminal image paste.
+        const tempPath = await window.api.ui.saveClipboardImageAsTempFile(
+          owner.kind === 'ssh' ? { connectionId: owner.connectionId } : undefined
+        )
+        return tempPath ? { status: 'saved', tempPath } : { status: 'empty' }
+      } catch (error) {
+        // A failed save must be visible: over SSH it fails whenever the
+        // connection drops, and a silent no-op reads as a broken paste.
+        if (!disabledRef.current) {
+          setNotice(
+            extractIpcErrorMessage(
+              error,
+              translate('components.native-chat.composer.imagePasteFailed', 'Image paste failed.')
+            )
+          )
+        }
+        return { status: 'failed' }
+      }
+    },
+    [setNotice]
+  )
+
   const attachClipboardImageTempFile = useCallback(
     (tempPath: string) => {
       const result = resolveImagePaste(agent, tempPath)
@@ -108,21 +139,22 @@ export function useNativeChatComposerPaste({
       // state can move (further typing/selection) while the await is in flight.
       const caretAtPaste = caret
       void (async () => {
-        // SSH panes save the image on the remote host (SFTP) so the attached
-        // path is readable by the remote agent, matching terminal image paste.
-        const tempPath = await window.api.ui
-          .saveClipboardImageAsTempFile(
-            owner.kind === 'ssh' ? { connectionId: owner.connectionId } : undefined
-          )
-          .catch(() => null)
-        if (!tempPath || disabledRef.current) {
+        const saved = await saveClipboardImageForOwner(owner)
+        if (saved.status !== 'saved' || disabledRef.current) {
           return
         }
-        attachClipboardImageTempFile(tempPath)
+        attachClipboardImageTempFile(saved.tempPath)
         setCaret(caretAtPaste)
       })()
     },
-    [attachClipboardImageTempFile, caret, resolveAttachmentOwner, setCaret, setNotice]
+    [
+      attachClipboardImageTempFile,
+      caret,
+      resolveAttachmentOwner,
+      saveClipboardImageForOwner,
+      setCaret,
+      setNotice
+    ]
   )
 
   const pasteFromClipboard = useCallback(() => {
@@ -132,20 +164,16 @@ export function useNativeChatComposerPaste({
       // way to LEARN whether the clipboard holds an image. An image then gets
       // the not-ready notice (never a local-path attach for a possibly-remote
       // worktree); plain text falls through unaffected.
-      const tempPath = await window.api.ui
-        .saveClipboardImageAsTempFile(
-          owner.kind === 'ssh' ? { connectionId: owner.connectionId } : undefined
-        )
-        .catch(() => null)
-      if (disabledRef.current) {
+      const saved = await saveClipboardImageForOwner(owner)
+      if (disabledRef.current || saved.status === 'failed') {
         return
       }
-      if (tempPath) {
+      if (saved.status === 'saved') {
         if (owner.kind === 'not-ready') {
           setNotice(nativeChatWorktreeNotReadyNotice())
           return
         }
-        attachClipboardImageTempFile(tempPath)
+        attachClipboardImageTempFile(saved.tempPath)
         return
       }
       const text = await window.api.ui
@@ -158,7 +186,13 @@ export function useNativeChatComposerPaste({
         insertTypedText(text)
       }
     })()
-  }, [attachClipboardImageTempFile, insertTypedText, resolveAttachmentOwner, setNotice])
+  }, [
+    attachClipboardImageTempFile,
+    insertTypedText,
+    resolveAttachmentOwner,
+    saveClipboardImageForOwner,
+    setNotice
+  ])
 
   return { handlePaste, pasteFromClipboard }
 }
