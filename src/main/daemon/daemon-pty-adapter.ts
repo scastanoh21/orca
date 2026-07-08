@@ -351,6 +351,12 @@ export class DaemonPtyAdapter implements IPtyProvider {
   }
 
   async shutdown(id: string, opts: { immediate?: boolean; keepHistory?: boolean }): Promise<void> {
+    // Why: the client connects lazily, so after an app restart a kill can be
+    // the first session op (startup sleep sweeps, closing a restored tab).
+    // Without connecting first, request('kill') throws "Not connected" while
+    // the daemon is healthy, and the live session survives as an orphaned
+    // PTY (#7742).
+    await this.ensureConnected()
     // Why: sleep/exact-stop must preserve restorable terminal history,
     // so force a final checkpoint before killing the daemon session.
     if (opts.keepHistory) {
