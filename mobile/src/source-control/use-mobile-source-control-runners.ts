@@ -45,6 +45,8 @@ type Params = {
   setCreatedPrUrl: (next: string | null) => void
   setCreatedPrWarning: (next: string | null) => void
   recordCommitFailure: RecordMobileCommitFailure
+  // Hub override: switch to the History segment instead of pushing the route.
+  onOpenHistory?: () => void
 }
 
 // All git workflow + action-sheet runners for the source-control panel. Split
@@ -78,7 +80,8 @@ export function useMobileSourceControlRunners(params: Params) {
     setShowBranchPicker,
     setCreatedPrUrl,
     setCreatedPrWarning,
-    recordCommitFailure
+    recordCommitFailure,
+    onOpenHistory
   } = params
 
   const runGitWorkflow = useCallback(
@@ -248,6 +251,12 @@ export function useMobileSourceControlRunners(params: Params) {
 
   const openHistory = useCallback(() => {
     setShowActionSheet(false)
+    // Inside the hub, History is a segment — switch to it rather than pushing a
+    // route. The standalone/dock usage (no override) keeps pushing the route.
+    if (onOpenHistory) {
+      onOpenHistory()
+      return
+    }
     if (hostId && worktreeId) {
       router.push(
         `/h/${hostId}/history/${encodeURIComponent(worktreeId)}` as Parameters<
@@ -255,7 +264,7 @@ export function useMobileSourceControlRunners(params: Params) {
         >[0]
       )
     }
-  }, [hostId, router, setShowActionSheet, worktreeId])
+  }, [hostId, onOpenHistory, router, setShowActionSheet, worktreeId])
 
   // Switch to a local branch, then reload status.
   const checkoutBranch = useCallback(

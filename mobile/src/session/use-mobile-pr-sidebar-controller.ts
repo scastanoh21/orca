@@ -145,3 +145,5 @@ export function useMobilePrSidebarController(input: PrSidebarControllerInput) {
     refetchPRSidebar: load
   }
 }
+
+export type MobilePrSidebarController = ReturnType<typeof useMobilePrSidebarController>

@@ -7,11 +7,14 @@ import { colors, radii, spacing, typography } from '../../theme/mobile-theme'
 import type { ConnectionState } from '../../transport/types'
 import type { RpcClient } from '../../transport/rpc-client'
 import type { MobileGitStatusResult } from '../../source-control/mobile-git-status'
-import { useMobilePrSidebarController } from '../../session/use-mobile-pr-sidebar-controller'
+import {
+  useMobilePrSidebarController,
+  type MobilePrSidebarController
+} from '../../session/use-mobile-pr-sidebar-controller'
 import { MobilePRSidebar } from '../MobilePRSidebar'
 import { openMobilePrUrl } from '../MobilePrComposeSheet'
 
-type Props = {
+type BodyProps = {
   client: RpcClient | null
   connState: ConnectionState
   worktreeId: string
@@ -20,13 +23,34 @@ type Props = {
   gitStatus: MobileGitStatusResult | null
   isGithubRepo?: boolean
   branchContextLoaded?: boolean
-  // Embedded (docked) drops the full-screen SafeAreaView chrome and shows a close
-  // affordance; the dock column owns the safe-area insets. Full-screen otherwise.
+  controller: MobilePrSidebarController
+  // 'chromeless' drops the panel's own header + SafeAreaView so it can live inside
+  // the source-control hub, which owns the header, segmented control, and chrome.
+  chromeless?: boolean
+  // When false, the parent (the hub) owns triggering the initial load — the body
+  // must not also fire it, or a ?tab=pr deep link double-fetches. Default true so
+  // the standalone route stays self-loading.
+  autoLoad?: boolean
   embedded?: boolean
   onRequestClose?: () => void
 }
 
-export function MobilePrViewPanel({
+type Props = Omit<BodyProps, 'controller' | 'autoLoad'>
+
+// Standalone entry (the /pr route + wide-layout dock): owns its controller and
+// self-loads. The hub uses MobilePrViewPanelBody with a shared controller instead.
+export function MobilePrViewPanel(props: Props) {
+  const controller = useMobilePrSidebarController({
+    client: props.client,
+    connState: props.connState,
+    worktreeId: props.worktreeId,
+    branch: props.branch,
+    headSha: props.headSha
+  })
+  return <MobilePrViewPanelBody {...props} controller={controller} />
+}
+
+export function MobilePrViewPanelBody({
   client,
   connState,
   worktreeId,
@@ -35,29 +59,25 @@ export function MobilePrViewPanel({
   gitStatus,
   isGithubRepo = true,
   branchContextLoaded = true,
+  controller,
+  chromeless = false,
+  autoLoad = true,
   embedded = false,
   onRequestClose
-}: Props) {
+}: BodyProps) {
   const router = useRouter()
   const insets = useSafeAreaInsets()
-  const controller = useMobilePrSidebarController({
-    client,
-    connState,
-    worktreeId,
-    branch,
-    headSha
-  })
 
   // A docked/full-screen PR panel is always visible — there is no drawer to open,
   // so trigger the load directly once context is ready rather than gating on the
-  // showPRSidebar overlay flag (KTD4).
+  // showPRSidebar overlay flag (KTD4). Skipped when the hub owns the trigger.
   const prSidebarKind = controller.prSidebarState.kind
   const refetch = controller.refetchPRSidebar
   useEffect(() => {
-    if (branch && isGithubRepo && prSidebarKind === 'hidden') {
+    if (autoLoad && branch && isGithubRepo && prSidebarKind === 'hidden') {
       refetch()
     }
-  }, [branch, isGithubRepo, prSidebarKind, refetch])
+  }, [autoLoad, branch, isGithubRepo, prSidebarKind, refetch])
 
   // Embedded: the dock column applies the bottom inset; full-screen relies on its own
   // SafeAreaView (edges top only), so content must clear the home indicator itself.
@@ -109,6 +129,11 @@ export function MobilePrViewPanel({
       bottomInset={insets.bottom}
     />
   )
+
+  // Chromeless: the hub owns the header + chrome, so render just the scrollable body.
+  if (chromeless) {
+    return <View style={styles.container}>{sidebar}</View>
+  }
 
   if (embedded) {
     return (

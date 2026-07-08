@@ -4431,14 +4431,17 @@ export default function SessionScreen() {
       setActivePanel(action.next)
       return
     }
+    const descriptor = panelRouteDescriptor(action.panel)
     router.push({
-      pathname: panelRouteDescriptor(action.panel).pathname,
+      pathname: descriptor.pathname,
       params: {
         hostId,
         worktreeId,
         name: worktreeName || '',
         // Source control's post-diff-open dismissal keys off origin: 'session' (U2).
-        ...(action.panel === 'sourceControl' ? { origin: 'session' } : {})
+        ...(action.panel === 'sourceControl' ? { origin: 'session' } : {}),
+        // The PR panel routes into the hub's Pull Request segment via descriptor params.
+        ...descriptor.params
       }
     })
   }

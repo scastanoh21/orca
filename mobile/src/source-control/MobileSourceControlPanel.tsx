@@ -1,3 +1,4 @@
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { ActivityIndicator, Pressable, Text, View } from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { colors } from '../theme/mobile-theme'
@@ -6,7 +7,15 @@ import { useMobileSourceControlActionSheet } from './use-mobile-source-control-a
 import { MobileSourceControlHeader } from './MobileSourceControlHeader'
 import { MobileSourceControlContent } from './MobileSourceControlContent'
 import { MobileSourceControlModals } from './MobileSourceControlModals'
+import { MobileSourceControlSegments } from './MobileSourceControlSegments'
+import { MobileSourceControlBranchCard } from './MobileSourceControlBranchCard'
+import { MobileGitHistoryList } from './MobileGitHistoryList'
 import { styles } from './mobile-source-control-styles'
+import { hubStyles } from './mobile-source-control-hub-styles'
+import type { SourceControlHubTab } from './mobile-source-control-hub-tab'
+import { buildMobilePrChipSummary, countUnresolvedReviewThreads } from './mobile-pr-chip-summary'
+import { useMobilePrSidebarController } from '../session/use-mobile-pr-sidebar-controller'
+import { MobilePrViewPanelBody } from '../components/pr-sidebar/MobilePrViewPanel'
 
 export type MobileSourceControlPanelProps = {
   hostId: string
@@ -15,6 +24,8 @@ export type MobileSourceControlPanelProps = {
   /** Where the panel was launched from; drives the file-open dismissal path. */
   origin?: string
   embedded?: boolean
+  /** Initial hub segment (from the route's `tab` deep-link param). */
+  initialTab?: SourceControlHubTab
   onRequestClose?: () => void
   onFileOpenStart?: () => void
   onOpenedFileDiff?: (relativePath: string) => void
@@ -26,10 +37,15 @@ export function MobileSourceControlPanel({
   name = '',
   origin = '',
   embedded = false,
+  initialTab = 'changes',
   onRequestClose,
   onFileOpenStart,
   onOpenedFileDiff
 }: MobileSourceControlPanelProps) {
+  const [activeTab, setActiveTab] = useState<SourceControlHubTab>(initialTab)
+  const openHistoryTab = useCallback(() => setActiveTab('history'), [])
+  const openPrTab = useCallback(() => setActiveTab('pr'), [])
+
   const state = useMobileSourceControlState({
     hostId,
     worktreeId,
@@ -38,12 +54,15 @@ export function MobileSourceControlPanel({
     embedded,
     onRequestClose,
     onFileOpenStart,
-    onOpenedFileDiff
+    onOpenedFileDiff,
+    onOpenHistory: openHistoryTab
   })
   const actionSheetActions = useMobileSourceControlActionSheet(state)
   const {
+    client,
     connState,
     forceReconnect,
+    insets,
     router,
     setRootRef,
     worktreeLabel,
@@ -51,14 +70,53 @@ export function MobileSourceControlPanel({
     busyAction,
     openingPath,
     openingBranchPath,
-    loadStatus
+    loadStatus,
+    status,
+    branchLabel,
+    syncLabel,
+    unstagedCount,
+    stagedCount,
+    branchEntries,
+    abortConflictOperation
   } = state
   const ioBusy = busyAction !== null || openingPath !== null || openingBranchPath !== null
+  const ready = screenState.kind === 'ready'
+
+  // One PR controller feeds both the branch-card chip and the Pull Request
+  // segment, so the chip's rollup can never disagree with the checks list it
+  // links to. Branch + head come from the already-loaded git.status — no second
+  // status read. The chip loads independently, so it never blocks the file list.
+  const prBranch = status?.branch ?? null
+  const prHeadSha = status?.head ?? null
+  const prController = useMobilePrSidebarController({
+    client,
+    connState,
+    worktreeId,
+    branch: prBranch,
+    headSha: prHeadSha
+  })
+  const isHostedRepo = prController.prSidebarIsGithubRepo
+  const prSidebarKind = prController.prSidebarState.kind
+  const refetchPr = prController.refetchPRSidebar
+  useEffect(() => {
+    if (prBranch && isHostedRepo && prSidebarKind === 'hidden') {
+      refetchPr()
+    }
+  }, [prBranch, isHostedRepo, prSidebarKind, refetchPr])
+
+  const prChip = useMemo(() => {
+    if (!isHostedRepo) {
+      return null
+    }
+    const commentCount =
+      prController.prSidebarState.kind === 'ready'
+        ? countUnresolvedReviewThreads(prController.prSidebarState.data.details?.comments)
+        : null
+    return buildMobilePrChipSummary(prController.prSidebarState, commentCount)
+  }, [isHostedRepo, prController.prSidebarState])
 
   // Embedded mode docks beside the terminal: close the dock instead of popping
   // a route, and skip the full-screen safe-area chrome (the dock column owns it).
-  // Fall back to router.back() when embedded without a close handler so the button
-  // never silently no-ops.
   const onBack = embedded ? (onRequestClose ?? (() => router.back())) : () => router.back()
   const header = (
     <MobileSourceControlHeader
@@ -79,6 +137,8 @@ export function MobileSourceControlPanel({
           {header}
         </SafeAreaView>
       )}
+
+      <MobileSourceControlSegments active={activeTab} onSelect={setActiveTab} />
 
       {screenState.kind === 'loading' ? (
         <View style={styles.state}>
@@ -110,7 +170,46 @@ export function MobileSourceControlPanel({
           ) : null}
         </View>
       ) : (
-        <MobileSourceControlContent state={state} />
+        <>
+          <MobileSourceControlBranchCard
+            branchLabel={branchLabel}
+            syncLabel={syncLabel}
+            unstagedCount={unstagedCount}
+            stagedCount={stagedCount}
+            branchCount={branchEntries.length}
+            conflictOperation={status?.conflictOperation ?? null}
+            conflictBusy={busyAction !== null}
+            onAbortConflict={(operation) => void abortConflictOperation(operation)}
+            prChip={prChip}
+            onOpenPr={openPrTab}
+          />
+          {activeTab === 'changes' ? (
+            <MobileSourceControlContent state={state} />
+          ) : activeTab === 'pr' ? (
+            <MobilePrViewPanelBody
+              client={client}
+              connState={connState}
+              worktreeId={worktreeId}
+              branch={prBranch}
+              headSha={prHeadSha}
+              gitStatus={status}
+              isGithubRepo={isHostedRepo}
+              branchContextLoaded={ready}
+              controller={prController}
+              chromeless
+              autoLoad={false}
+            />
+          ) : (
+            <View style={hubStyles.tabBody}>
+              <MobileGitHistoryList
+                client={client}
+                connState={connState}
+                worktreeId={worktreeId}
+                bottomInset={insets.bottom}
+              />
+            </View>
+          )}
+        </>
       )}
 
       <MobileSourceControlModals state={state} actionSheetActions={actionSheetActions} />
