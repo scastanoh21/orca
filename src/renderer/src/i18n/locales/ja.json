@@ -12422,7 +12422,9 @@
         "noSkills": "一致するスキルがありません",
         "localAttachmentUnsupported": "ローカル添付ファイルはリモート セッションでは使用できません。",
         "removeAttachment": "添付ファイルを削除する",
-        "pastedImageLabel": "貼り付けた画像"
+        "pastedImageLabel": "貼り付けた画像",
+        "worktreeNotReady": "Worktree not ready — try again in a moment.",
+        "uploadingAttachments": "Uploading {{value0}} file{{value1}} to remote…"
       },
       "tool": {
         "running": "実行中…",
