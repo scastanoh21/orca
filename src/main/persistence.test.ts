@@ -3225,6 +3225,55 @@ describe('Store', () => {
     expect(ui.workspaceHostOrder).toEqual(['ssh:ssh-new', 'local'])
   })
 
+  it('reassignSshTargetId re-keys a session partition stored under the old ssh host id', async () => {
+    const store = await createStore()
+    store.setWorkspaceSession(
+      {
+        activeRepoId: null,
+        activeWorktreeId: null,
+        activeTabId: null,
+        tabsByWorktree: {
+          'r1::/wt': [makeTerminalTab({ id: 'tab1', ptyId: 'ssh:ssh-old@@pty-9' })]
+        },
+        terminalLayoutsByTabId: {}
+      },
+      'ssh:ssh-old'
+    )
+
+    store.reassignSshTargetId('ssh-old', 'ssh-new')
+    store.flush()
+
+    const reloaded = await createStore()
+    // Old-key partition is gone; the re-keyed one carries migrated pty ids.
+    expect(reloaded.getWorkspaceSession('ssh:ssh-old').tabsByWorktree).toEqual({})
+    expect(reloaded.getWorkspaceSession('ssh:ssh-new').tabsByWorktree['r1::/wt'][0].ptyId).toBe(
+      'ssh:ssh-new@@pty-9'
+    )
+  })
+
+  it('reassignSshTargetId keeps the live partition when both host keys exist', async () => {
+    const store = await createStore()
+    const baseSession = {
+      activeRepoId: null,
+      activeWorktreeId: null,
+      activeTabId: null,
+      terminalLayoutsByTabId: {}
+    }
+    store.setWorkspaceSession(
+      { ...baseSession, tabsByWorktree: { 'r1::/dead': [] } },
+      'ssh:ssh-old'
+    )
+    store.setWorkspaceSession(
+      { ...baseSession, tabsByWorktree: { 'r1::/live': [] } },
+      'ssh:ssh-new'
+    )
+
+    store.reassignSshTargetId('ssh-old', 'ssh-new')
+
+    expect(store.getWorkspaceSession('ssh:ssh-old').tabsByWorktree).toEqual({})
+    expect(store.getWorkspaceSession('ssh:ssh-new').tabsByWorktree).toEqual({ 'r1::/live': [] })
+  })
+
   it('reassignSshTargetId re-points an independent provisioned host setup', async () => {
     const store = await createStore()
     store.addRepo({

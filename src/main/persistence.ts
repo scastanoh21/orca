@@ -6147,6 +6147,17 @@ export class Store {
         carrierChanged = true
       }
     }
+    // Why: partitions are read by host id, so one stored under the removed id
+    // would be orphaned. No writer keys partitions by ssh host today, but the
+    // schema tolerates it — re-key rather than strand it. If the new key
+    // already has a partition, that one is live; drop the dead old one.
+    const partitions = this.state.workspaceSessionsByHostId
+    const oldPartition = partitions?.[oldHostId]
+    if (partitions && oldPartition) {
+      delete partitions[oldHostId]
+      partitions[newHostId] ??= oldPartition
+      carrierChanged = true
+    }
     if (migrateUiHostScopeSshTargetId(this.state.ui, oldTargetId, newTargetId)) {
       carrierChanged = true
     }

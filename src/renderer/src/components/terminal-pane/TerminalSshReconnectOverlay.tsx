@@ -103,15 +103,13 @@ export function TerminalSshReconnectOverlay({
       // Why: a failed connect usually means the renderer's target metadata is
       // stale (target removed, or re-added under a new id). Resync it so the
       // overlay converges to the ghost/re-adopted state instead of offering
-      // the same failing Connect forever (STA-1468).
+      // the same failing Connect forever (STA-1468). Apply the target list
+      // first — a removed-labels failure must not discard it.
       void (async () => {
-        const [targets, removedLabels] = await Promise.all([
-          window.api.ssh.listTargets(),
-          window.api.ssh.listRemovedTargetLabels()
-        ])
-        const store = useAppStore.getState()
-        store.setSshTargetsMetadata(targets)
-        store.setRemovedSshTargetLabels(removedLabels)
+        const targets = await window.api.ssh.listTargets()
+        useAppStore.getState().setSshTargetsMetadata(targets)
+        const removedLabels = await window.api.ssh.listRemovedTargetLabels()
+        useAppStore.getState().setRemovedSshTargetLabels(removedLabels)
       })().catch(() => {})
     } finally {
       if (mountedRef.current) {

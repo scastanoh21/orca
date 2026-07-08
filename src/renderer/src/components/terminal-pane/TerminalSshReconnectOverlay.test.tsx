@@ -141,6 +141,31 @@ describe('TerminalSshReconnectOverlay', () => {
     })
   })
 
+  it('still applies the target list when the removed-labels refresh fails', async () => {
+    const connect = vi.fn().mockRejectedValue(new Error('SSH target "ssh-dead" not found'))
+    const listTargets = vi
+      .fn()
+      .mockResolvedValue([
+        { id: 'ssh-live', label: 'devbox', host: 'devbox', port: 22, username: 'me' }
+      ])
+    const listRemovedTargetLabels = vi.fn().mockRejectedValue(new Error('unavailable'))
+    installSshConnect(connect, { listTargets, listRemovedTargetLabels })
+    const user = userEvent.setup()
+
+    render(
+      <TerminalSshReconnectOverlay targetId="ssh-dead" targetLabel="devbox" status="disconnected" />
+    )
+
+    await user.click(screen.getByRole('button', { name: 'Connect' }))
+
+    // Why: a removed-labels failure must not discard the refreshed target
+    // list — it alone is enough evidence for targetRemoved to converge.
+    await waitFor(() => {
+      expect(useAppStore.getState().sshTargetLabels.get('ssh-live')).toBe('devbox')
+      expect(useAppStore.getState().sshTargetsHydrated).toBe(true)
+    })
+  })
+
   it('offers to remove the workspace (not Connect) when the SSH target was removed', async () => {
     const connect = vi.fn().mockResolvedValue(undefined)
     installSshConnect(connect)
