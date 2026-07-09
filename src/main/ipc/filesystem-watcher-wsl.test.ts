@@ -93,6 +93,17 @@ describe('createWslWatcher', () => {
     )
   })
 
+  it('scans below the first two levels so nested open files stay fresh', async () => {
+    const { child, promise } = startWatcher()
+    child.stdout.write(snapshotFrame([]))
+
+    await promise
+
+    const snapshotScript = child.stdin.read()?.toString('utf8') ?? ''
+    expect(snapshotScript).toContain('find "$root" -mindepth 1')
+    expect(snapshotScript).not.toContain('-maxdepth')
+  })
+
   it('diffs WSL snapshots into create, update, and delete events', async () => {
     const scheduleBatchFlush = vi.fn()
     const { child, promise } = startWatcher(makeDeps(scheduleBatchFlush))

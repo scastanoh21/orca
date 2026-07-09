@@ -77,7 +77,9 @@ function buildSnapshotScript(ignoreDirs: readonly string[]): string {
     'while :; do',
     "  printf '\\036'",
     '  if [ -d "$root" ]; then',
-    `    find "$root" -mindepth 1 -maxdepth 2 ${prune} -printf '%y\\t%T@\\t%p\\0' 2>/dev/null || true`,
+    // Why: open editor tabs can live at any depth, and the scan runs natively
+    // inside WSL with high-churn directories pruned before traversal.
+    `    find "$root" -mindepth 1 ${prune} -printf '%y\\t%T@\\t%p\\0' 2>/dev/null || true`,
     '  fi',
     "  printf '\\037'",
     `  sleep ${POLL_INTERVAL_SECONDS} || exit 0`,
