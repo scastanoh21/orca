@@ -25,6 +25,9 @@ export type PtyDataMeta = {
   seq?: number
   rawLength?: number
   background?: boolean
+  /** Main's delivery bound trimmed output before this chunk (STA-1397); the
+   *  pane must rebuild from a buffer snapshot instead of painting the splice. */
+  dropped?: boolean
 }
 
 export const ptyDataHandlers = new Map<string, (data: string, meta?: PtyDataMeta) => void>()
@@ -119,6 +122,10 @@ export function ensurePtyDispatcher(): void {
       if (payload.background === true) {
         meta ??= {}
         meta.background = true
+      }
+      if (payload.dropped === true) {
+        meta ??= {}
+        meta.dropped = true
       }
       const handler = ptyDataHandlers.get(payload.id)
       if (handler) {

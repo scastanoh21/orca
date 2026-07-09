@@ -5189,6 +5189,12 @@ export function connectPanePty(
         pendingForegroundQuery?.consumedCurrentChars ?? 0
       )
       observeRendererOrderedSeqRegression(meta)
+      if (meta?.dropped === true) {
+        // Why: main's delivery bound trimmed this PTY's backlog (STA-1397), so
+        // the stream has a hole before this chunk. Rebuild from the main buffer
+        // snapshot; the restore branches below queue or skip the live bytes.
+        markHiddenOutputRestoreNeeded()
+      }
       const orderedRendererData = foreground
         ? rendererData
         : getHiddenRendererDataAfterOrderedSeq(rendererData, rendererMeta)

@@ -1043,6 +1043,11 @@ export function clearProviderPtyState(id: string): void {
   ptySizes.delete(id)
   lastInputAtByPty.delete(id)
   interactiveOutputCharsByPty.delete(id)
+  // Why: teardown paths without a renderer exit event (SSH connection drop,
+  // synthetic-kill dedup) must still release this PTY's pending delivery queue
+  // and in-flight ACK budget, or both leak for the process lifetime and the
+  // stuck in-flight chars throttle every other terminal (STA-1397).
+  clearPtyRendererDeliveryState(id)
   activeRendererPtys.delete(id)
   visibleRendererPtys.delete(id)
   rendererVisibilityKnownPtys.delete(id)
@@ -1177,6 +1182,11 @@ let readPtyRendererDeliveryDebugSnapshot = (): PtyRendererDeliveryDebugSnapshot 
   ...EMPTY_PTY_RENDERER_DELIVERY_DEBUG_SNAPSHOT
 })
 let resetPtyRendererDeliveryDebugSnapshot = (): void => {}
+// Why: pendingData/rendererInFlightCharsByPty live in the registerPtyHandlers
+// closure, so teardown paths that bypass sendPtyExitToRenderer (SSH connection
+// shutdown, synthetic-kill dedup) stranded them forever (STA-1397). This hook
+// lets clearProviderPtyState release both from module scope.
+let clearPtyRendererDeliveryState: (id: string) => void = () => {}
 
 export function getPtyRendererDeliveryDebugSnapshot(): PtyRendererDeliveryDebugSnapshot {
   return readPtyRendererDeliveryDebugSnapshot()
@@ -1364,6 +1374,9 @@ export function registerPtyHandlers(
     data: string
     startSeq?: number
     containsBackgroundOutput?: boolean
+    /** Output before this data was trimmed by the delivery bound; the next
+     *  flushed payload must tell the renderer to rebuild from a snapshot. */
+    droppedOutput?: boolean
   }
 
   type PtyDataPayload = {
@@ -1372,6 +1385,7 @@ export function registerPtyHandlers(
     seq?: number
     rawLength?: number
     background?: boolean
+    dropped?: boolean
   }
 
   const pendingData = new Map<string, PendingPtyData>()
@@ -1389,6 +1403,14 @@ export function registerPtyHandlers(
   // Why: active panes need a bounded lane through old hidden bulk output so a
   // keystroke redraw can reach the renderer before every background ACK lands.
   const PTY_RENDERER_ACTIVE_PTY_IN_FLIGHT_RESERVE_CHARS = 512 * 1024
+  // Why: without a bound, a pane that never ACKs (hidden worktree, window that
+  // never mounted a terminal, wedged renderer) accumulates its PTY's entire
+  // output here for the process lifetime — the STA-1397 OOM driver. The cap
+  // keeps only the newest tail; the renderer rebuilds the hole from a main
+  // buffer snapshot via the payload's `dropped` flag. Keep-chars sits above the
+  // per-PTY in-flight high water so a healthy ACKing pane never trims.
+  const PTY_PENDING_DATA_MAX_CHARS = 1024 * 1024
+  const PTY_PENDING_DATA_KEEP_CHARS = 640 * 1024
   // Why: keep the immediate path bounded to keystroke-sized TUI redraws;
   // large output and non-interactive output must still use the batcher.
   const INTERACTIVE_OUTPUT_WINDOW_MS = 100
@@ -1454,6 +1476,31 @@ export function registerPtyHandlers(
     ackGatedFlushSkipCount = 0
     recordPtyRendererDeliveryPressure()
   }
+  clearPtyRendererDeliveryState = (id: string) => {
+    // Why flush-then-clear: teardown callers run in either order relative to
+    // sendPtyExitToRenderer; delivering the queued tail first keeps the
+    // "last <=8ms of output" guarantee while still guaranteeing release.
+    const remaining = pendingData.get(id)
+    if (remaining && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send(
+        'pty:data',
+        makePtyDataPayload(
+          id,
+          remaining.data,
+          remaining.startSeq,
+          remaining.containsBackgroundOutput,
+          remaining.droppedOutput
+        )
+      )
+    }
+    pendingData.delete(id)
+    const inFlight = rendererInFlightCharsByPty.get(id)
+    if (inFlight !== undefined) {
+      rendererInFlightTotalChars = Math.max(0, rendererInFlightTotalChars - inFlight)
+      rendererInFlightCharsByPty.delete(id)
+    }
+    recordPtyRendererDeliveryPressure()
+  }
 
   function isLikelyInteractiveRedraw(data: string): boolean {
     if (data.length <= INTERACTIVE_OUTPUT_MAX_CHARS) {
@@ -1492,7 +1539,8 @@ export function registerPtyHandlers(
     id: string,
     data: string,
     startSeq: number | undefined,
-    containsBackgroundOutput: boolean | undefined
+    containsBackgroundOutput: boolean | undefined,
+    droppedOutput?: boolean
   ): PtyDataPayload {
     const payload: PtyDataPayload = { id, data }
     if (typeof startSeq === 'number') {
@@ -1501,6 +1549,9 @@ export function registerPtyHandlers(
     }
     if (containsBackgroundOutput === true) {
       payload.background = true
+    }
+    if (droppedOutput === true) {
+      payload.dropped = true
     }
     return payload
   }
@@ -1582,10 +1633,12 @@ export function registerPtyHandlers(
   ): PendingPtyData {
     const nextContainsBackgroundOutput =
       existing?.containsBackgroundOutput === true || containsBackgroundOutput
+    const nextDroppedOutput = existing?.droppedOutput === true
     if (!preservesSeq) {
       return {
         data: (existing?.data ?? '') + data,
-        ...(nextContainsBackgroundOutput ? { containsBackgroundOutput: true } : {})
+        ...(nextContainsBackgroundOutput ? { containsBackgroundOutput: true } : {}),
+        ...(nextDroppedOutput ? { droppedOutput: true } : {})
       }
     }
     if (!existing) {
@@ -1597,10 +1650,29 @@ export function registerPtyHandlers(
     }
     const next: PendingPtyData = {
       data: existing.data + data,
-      ...(nextContainsBackgroundOutput ? { containsBackgroundOutput: true } : {})
+      ...(nextContainsBackgroundOutput ? { containsBackgroundOutput: true } : {}),
+      ...(nextDroppedOutput ? { droppedOutput: true } : {})
     }
     if (typeof existing.startSeq === 'number') {
       next.startSeq = existing.startSeq
+    }
+    return next
+  }
+
+  function capPendingPtyData(pending: PendingPtyData): PendingPtyData {
+    if (pending.data.length <= PTY_PENDING_DATA_MAX_CHARS) {
+      return pending
+    }
+    const dropCount = pending.data.length - PTY_PENDING_DATA_KEEP_CHARS
+    const next: PendingPtyData = {
+      data: pending.data.slice(dropCount),
+      droppedOutput: true,
+      ...(pending.containsBackgroundOutput === true ? { containsBackgroundOutput: true } : {})
+    }
+    if (typeof pending.startSeq === 'number') {
+      // Why: seq must stay truthful for the kept tail so the renderer's
+      // snapshot-alignment math (getChunkDataAfterSnapshot) keeps working.
+      next.startSeq = pending.startSeq + dropCount
     }
     return next
   }
@@ -1634,6 +1706,8 @@ export function registerPtyHandlers(
       const chunk = data.slice(0, PTY_BATCH_FLUSH_CHUNK_CHARS)
       const remaining = data.slice(PTY_BATCH_FLUSH_CHUNK_CHARS)
       if (remaining) {
+        // Why: the dropped flag marks the hole BEFORE the queued data; the head
+        // chunk carries it to the renderer, the remainder is contiguous.
         const nextPending: PendingPtyData = { data: remaining }
         if (typeof pending.startSeq === 'number') {
           nextPending.startSeq = pending.startSeq + chunk.length
@@ -1645,7 +1719,13 @@ export function registerPtyHandlers(
       }
       sendPtyDataToRenderer(
         id,
-        makePtyDataPayload(id, chunk, pending.startSeq, pending.containsBackgroundOutput)
+        makePtyDataPayload(
+          id,
+          chunk,
+          pending.startSeq,
+          pending.containsBackgroundOutput,
+          pending.droppedOutput
+        )
       )
       writes++
     }
@@ -1709,7 +1789,8 @@ export function registerPtyHandlers(
           payload.id,
           remaining.data,
           remaining.startSeq,
-          remaining.containsBackgroundOutput
+          remaining.containsBackgroundOutput,
+          remaining.droppedOutput
         )
       )
       pendingData.delete(payload.id)
@@ -1784,18 +1865,28 @@ export function registerPtyHandlers(
       if (rendererData.length === 0) {
         return
       }
+      // Why: pty:kill already flushed and deleted this PTY's pending delivery
+      // via its synthetic exit. Daemon buffers can drain late output for the
+      // rest of the dedup window, and the swallowed real exit would strand a
+      // repopulated entry forever (STA-1397) — drop renderer delivery only;
+      // runtime/status consumers above already saw the bytes.
+      if (syntheticKillExitPtyIds.has(payload.id)) {
+        return
+      }
       const containsBackgroundOutput =
         rendererPtyIsKnownHidden(payload.id) || ptyHasHiddenRendererResizeOutput(payload.id)
       if (containsBackgroundOutput) {
         markHiddenRendererResizeOutputDelivered(payload.id)
       }
       const existing = pendingData.get(payload.id)
-      const pending = appendPendingPtyData(
-        existing,
-        rendererData,
-        startSeq,
-        preservesSeq,
-        containsBackgroundOutput
+      const pending = capPendingPtyData(
+        appendPendingPtyData(
+          existing,
+          rendererData,
+          startSeq,
+          preservesSeq,
+          containsBackgroundOutput
+        )
       )
       const nextData = pending.data
       const isInteractiveOutput = shouldSendInteractiveOutputNow(
@@ -1822,7 +1913,8 @@ export function registerPtyHandlers(
           ...(typeof pending.startSeq === 'number'
             ? { seq: pending.startSeq + nextData.length, rawLength: nextData.length }
             : {}),
-          ...(pending.containsBackgroundOutput === true ? { background: true } : {})
+          ...(pending.containsBackgroundOutput === true ? { background: true } : {}),
+          ...(pending.droppedOutput === true ? { dropped: true } : {})
         })
         return
       }
