@@ -10,10 +10,9 @@
  *   every pointer-motion report (`<35;col;rowM`) as literal text.
  *
  * What it covers (full stack, no mocks):
- *   - First launch arms the leak through the real daemon: a fixture writes the
- *     enable sequence to stdout and exits, and the daemon's buffer snapshot is
- *     asserted to re-arm ?1003h/?1006h on reattach (the leak precondition — the
- *     assertion that pins "this would leak without the fix").
+ *   - First launch arms the leak for real: a fixture writes the enable sequence
+ *     to stdout and exits, and the live pane is asserted to enter mouse-reporting
+ *     mode (the byte flow the daemon's tracker also records and re-arms).
  *   - After a warm reattach, the renderer terminal ends with mouse reporting
  *     DISARMED: mouseTrackingMode is 'none', the enable-mouse-events class is
  *     gone, and real pointer motion produces zero mouse reports.
@@ -21,11 +20,13 @@
  *     does observe reports, so the "zero reports" assertion cannot pass vacuously.
  *
  * What it does NOT cover:
+ *   - That the daemon's buildRehydrateSequences re-arms the mode on reattach —
+ *     locked by repro-7329-remote-snapshot-corruption.test.ts against the real
+ *     serializer + xterm. This suite proves the reset half end to end.
  *   - Live-agent panes keeping mouse via POST_REPLAY_LIVE_AGENT_REATTACH_RESET
  *     (unit-tested in pty-connection.test.ts).
  */
 
-import path from 'node:path'
 import { existsSync, readFileSync } from 'node:fs'
 import type { ElectronApplication } from '@stablyai/playwright-test'
 import { test, expect } from './helpers/orca-app'
@@ -34,15 +35,11 @@ import {
   discoverActivePtyId,
   execInTerminal,
   waitForActiveTerminalManager,
-  waitForPaneCount
+  waitForPaneCount,
+  waitForTerminalOutput
 } from './helpers/terminal'
 import { ensureTerminalVisible, waitForActiveWorktree, waitForSessionReady } from './helpers/store'
 import { attachRepoAndOpenTerminal, createRestartSession } from './helpers/orca-restart'
-
-const LEAKED_MOUSE_MODE_FIXTURE_PATH = path.join(
-  process.cwd(),
-  'tests/e2e/fixtures/leaked-mouse-mode-fixture.cjs'
-)
 
 // Why: quit→relaunch against the same userDataDir relies on the daemon
 // surviving the first close; serial keeps the shared profile from competing
@@ -52,6 +49,10 @@ test.describe.configure({ mode: 'serial' })
 test.describe('reattach mouse-mode leak', () => {
   test('warm reattach disarms mouse modes a killed TUI left armed', async (// oxlint-disable-next-line no-empty-pattern -- Playwright's second fixture arg is testInfo; the first must be an object destructure to opt out of the default fixture set.
   {}, testInfo) => {
+    // Why: arms the leak with a POSIX `printf` builtin; the reset logic under
+    // test is platform-agnostic, so skipping Windows here loses no coverage.
+    test.skip(process.platform === 'win32', 'Uses a POSIX printf to arm mouse reporting')
+
     const repoPath = readFileSync(TEST_REPO_PATH_FILE, 'utf-8').trim()
     if (!repoPath || !existsSync(repoPath)) {
       test.skip(true, 'Global setup did not produce a seeded test repo')
@@ -81,32 +82,47 @@ test.describe('reattach mouse-mode leak', () => {
       await waitForPaneCount(firstLaunch.page, 1, 30_000)
       const ptyId = await discoverActivePtyId(firstLaunch.page)
 
-      // The fixture emits ?1003h?1006h to stdout and exits without the disable,
-      // so the daemon's tracker keeps the mode while a plain shell foregrounds.
-      await execInTerminal(
-        firstLaunch.page,
-        ptyId,
-        `node ${JSON.stringify(LEAKED_MOUSE_MODE_FIXTURE_PATH)}`
-      )
+      // Gate on real command execution before arming: the `$((21+21))` result
+      // only appears if the shell evaluated it (the echoed command text shows
+      // the expression, not `42`), so this rules out a shell that hasn't started.
+      await execInTerminal(firstLaunch.page, ptyId, 'echo ORCA_MOUSE_READY_$((21+21))')
+      await waitForTerminalOutput(firstLaunch.page, 'ORCA_MOUSE_READY_42', 15_000)
 
-      // Precondition: the daemon buffer snapshot re-arms both modes on reattach
-      // (data = rehydrateSequences + snapshotAnsi). Without the fix this is
-      // exactly what leaks into the reattached plain shell.
+      // Arm mouse tracking exactly as a TUI would, then let the shell foreground
+      // return — the disable is never sent, so the daemon's tracker keeps the
+      // mode and re-arms it on reattach. printf is a shell builtin (no external
+      // binary), and its typed argument is literal backslashes, so only real
+      // execution emits the ESC bytes that arm xterm below.
+      await execInTerminal(firstLaunch.page, ptyId, `printf '\\033[?1003h\\033[?1006h'`)
+
+      // Precondition: the printf armed real mouse reporting in the live
+      // pane (proving the leak's byte flow reached the terminal). The daemon's
+      // tracker sees the same output stream and re-arms this mode on every
+      // reattach — the rehydrate half is locked by the repro-7329 unit test; this
+      // suite proves the reattach reset disarms it end to end.
       await expect
         .poll(
           async () =>
-            firstLaunch.page.evaluate(async (id: string) => {
-              const snap = await window.api.pty.getMainBufferSnapshot(id)
-              const data = snap?.data ?? ''
-              return data.includes('\x1b[?1003h') && data.includes('\x1b[?1006h')
-            }, ptyId),
+            firstLaunch.page.evaluate(() => {
+              const state = window.__store?.getState()
+              const worktreeId = state?.activeWorktreeId
+              const tabId =
+                state?.activeTabType === 'terminal'
+                  ? state.activeTabId
+                  : worktreeId
+                    ? (state?.activeTabIdByWorktree?.[worktreeId] ?? null)
+                    : null
+              const manager = tabId ? window.__paneManagers?.get(tabId) : null
+              const pane = manager?.getActivePane?.() ?? manager?.getPanes?.()[0] ?? null
+              return pane?.terminal.modes.mouseTrackingMode ?? null
+            }),
           {
             timeout: 15_000,
             message:
-              'Daemon snapshot never re-armed the leaked mouse modes; leak precondition not met'
+              'printf never armed mouse reporting in the live pane; leak precondition not met'
           }
         )
-        .toBe(true)
+        .toBe('any')
 
       // Why: app.close flushes beforeunload, but the daemon is a detached fork
       // so the PTY (and its armed mouse mode) survives for the warm reattach.
