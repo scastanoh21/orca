@@ -45,8 +45,11 @@ export async function deliverLaunchPromptToAgentTab(args: {
   // (codex trust/update, claude login), so submitted launch prompts are only
   // "delivered" once the agent's own managed hook acknowledges a submitted
   // prompt (UserPromptSubmit). Agents without installed managed hooks keep
-  // the optimistic legacy verdict instead of false-failing.
-  const requireReceipt = submit === true && (await isPromptReceiptEligible(agent))
+  // the optimistic legacy verdict instead of false-failing. Native-prefill
+  // delivery has no submitted paste, so it never waits on a receipt (which
+  // would never arrive).
+  const requireReceipt =
+    submit === true && !deliversViaNativePrefill && (await isPromptReceiptEligible(agent))
   const receiptWatch = requireReceipt
     ? watchForPromptSubmitReceipt({ tabId, agent, since: Date.now() })
     : null

@@ -251,6 +251,26 @@ describe('deliverLaunchPromptToAgentTab', () => {
       expect(mocks.watchForPromptSubmitReceipt).not.toHaveBeenCalled()
     })
 
+    it('does not require a receipt for native-prefill delivery (no submitted paste)', async () => {
+      // Why: claude --prefill delivers the prompt at launch without a submit,
+      // so no UserPromptSubmit ever fires — arming a receipt would hang the
+      // full window and false-fail even though delivery succeeded.
+      mocks.isPromptReceiptEligible.mockResolvedValue(true)
+
+      await expect(
+        deliverLaunchPromptToAgentTab({
+          tabId: 'tab-1',
+          agent: 'claude',
+          content: 'Fix failing checks',
+          submit: true,
+          forcePaste: false
+        })
+      ).resolves.toBe(true)
+
+      expect(mocks.watchForPromptSubmitReceipt).not.toHaveBeenCalled()
+      expect(mocks.markNativeChatLaunchPromptFailed).not.toHaveBeenCalled()
+    })
+
     it('does not require receipts for unsubmitted drafts', async () => {
       mocks.isPromptReceiptEligible.mockResolvedValue(true)
 
