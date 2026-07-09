@@ -17,8 +17,11 @@ export function countAiVaultViewAdjustments(options: {
   group: AiVaultGroup
   hideEmptySessions: boolean
 }): number {
+  // Why: count by membership, not length — an agent swap keeps the array length but
+  // still deviates from the default of every agent enabled.
+  const allAgentsEnabled = AI_VAULT_AGENTS.every((agent) => options.agents.includes(agent))
   return (
-    (options.agents.length === AI_VAULT_AGENTS.length ? 0 : 1) +
+    (allAgentsEnabled ? 0 : 1) +
     (options.sort === DEFAULT_AI_VAULT_SORT ? 0 : 1) +
     (options.group === DEFAULT_AI_VAULT_GROUP ? 0 : 1) +
     (options.hideEmptySessions === DEFAULT_AI_VAULT_HIDE_EMPTY_SESSIONS ? 0 : 1)

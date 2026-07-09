@@ -45,6 +45,20 @@ describe('ai-vault-view-defaults', () => {
     ).toBe(0)
   })
 
+  it('counts an equal-length agent swap as an adjustment', () => {
+    // A swap keeps the array length but drops a default agent (here the first) for a duplicate.
+    const swapped = [...AI_VAULT_AGENTS.slice(1), AI_VAULT_AGENTS[1]]
+    expect(swapped).toHaveLength(AI_VAULT_AGENTS.length)
+    expect(
+      countAiVaultViewAdjustments({
+        agents: swapped,
+        sort: DEFAULT_AI_VAULT_SORT,
+        group: DEFAULT_AI_VAULT_GROUP,
+        hideEmptySessions: DEFAULT_AI_VAULT_HIDE_EMPTY_SESSIONS
+      })
+    ).toBe(1)
+  })
+
   it('counts other non-default view options independently', () => {
     expect(
       countAiVaultViewAdjustments({
