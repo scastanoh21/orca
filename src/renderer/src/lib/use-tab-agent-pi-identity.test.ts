@@ -160,3 +160,106 @@ describe('resolveTabAgentFromSignals — Pi/OMP identity', () => {
     ).toBe('pi')
   })
 })
+
+// The tab icon is a pane's IDENTITY, not its activity state: a hook record
+// identifies the pane whether the agent is mid-turn (live) or idle (done). These
+// pin that separation so identity can't collapse back into the (non-
+// distinguishing) title layer.
+describe('resolveTabAgentFromSignals — identity vs liveness', () => {
+  it('surfaces the focused idle identity from the record, not the title', () => {
+    // Agent went idle between turns; the title names no agent. Identity still
+    // comes from the pane's own done-hook record.
+    expect(
+      resolveTabAgentFromSignals({
+        hasObservedAgentSignal: true,
+        isRemote: true,
+        title: 'Terminal',
+        hookAgent: null,
+        focusedCompletedHookAgent: 'omp',
+        launchAgent: undefined
+      })
+    ).toBe('omp')
+  })
+
+  it('ranks the focused idle identity above a hibernated session and launch bootstrap', () => {
+    // The agent that actually ran and idled here beats both a hibernation record
+    // and stale launch intent.
+    expect(
+      resolveTabAgentFromSignals({
+        hasObservedAgentSignal: true,
+        isRemote: true,
+        title: 'Terminal',
+        hookAgent: null,
+        focusedCompletedHookAgent: 'omp',
+        sleepingSessionAgent: 'claude',
+        launchAgent: 'codex'
+      })
+    ).toBe('omp')
+  })
+
+  it('never lets a title override a live hook (ground truth)', () => {
+    expect(
+      resolveTabAgentFromSignals({
+        hasObservedAgentSignal: true,
+        isRemote: true,
+        title: '✳ Claude Code',
+        hookAgent: 'omp',
+        launchAgent: undefined
+      })
+    ).toBe('omp')
+  })
+
+  it('lets a different-group title reclaim a reused idle pane without launch metadata', () => {
+    expect(
+      resolveTabAgentFromSignals({
+        hasObservedAgentSignal: true,
+        isRemote: true,
+        title: '✳ Claude Code',
+        hookAgent: null,
+        focusedCompletedHookAgent: 'codex',
+        launchAgent: undefined
+      })
+    ).toBe('claude')
+  })
+
+  it('does not let a sibling pane re-own the focused pane ambiguous Pi title', () => {
+    // A split-pane sibling running OMP says nothing about which Pi-variant the
+    // focused pane runs; the focused pane's own Pi title must stay Pi.
+    expect(
+      resolveTabAgentFromSignals({
+        hasObservedAgentSignal: true,
+        isRemote: true,
+        title: '⠋ Pi',
+        hookAgent: null,
+        focusedCompletedHookAgent: null,
+        siblingCompletedHookAgent: 'omp',
+        launchAgent: undefined
+      })
+    ).toBe('pi')
+  })
+
+  it('does not flash the exited agent before a hookless reuse title reclaims on mount', () => {
+    // hasObservedAgentSignal starts false for one mount commit; a completed hook
+    // is itself activity evidence, so the reuse title reclaims immediately
+    // instead of flashing the prior agent's idle identity. (claude ran+idled,
+    // then a hookless codex reused the pane and emits its own title.)
+    const onMount = resolveTabAgentFromSignals({
+      hasObservedAgentSignal: false,
+      isRemote: false,
+      title: '⠋ Codex',
+      hookAgent: null,
+      focusedCompletedHookAgent: 'claude',
+      launchAgent: undefined
+    })
+    const afterObserved = resolveTabAgentFromSignals({
+      hasObservedAgentSignal: true,
+      isRemote: false,
+      title: '⠋ Codex',
+      hookAgent: null,
+      focusedCompletedHookAgent: 'claude',
+      launchAgent: undefined
+    })
+    expect(onMount).toBe('codex')
+    expect(afterObserved).toBe('codex')
+  })
+})
