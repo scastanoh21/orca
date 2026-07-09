@@ -155,12 +155,6 @@ export function MacNotificationPermissionCard({
                 'Click Allow in the macOS dialog.'
               )}
             </p>
-            <p className="text-[13px] leading-relaxed text-muted-foreground/70">
-              {translate(
-                'auto.components.onboarding.mac.notification.permission.card.3d18cf71f9',
-                'Updates automatically.'
-              )}
-            </p>
           </div>
           <Button
             type="button"
@@ -199,12 +193,6 @@ export function MacNotificationPermissionCard({
               {translate(
                 'auto.components.onboarding.mac.notification.permission.card.721d2bedb6',
                 'Turn on Allow notifications for Orca in System Settings.'
-              )}
-            </p>
-            <p className="text-[13px] leading-relaxed text-amber-700/60 dark:text-amber-200/50">
-              {translate(
-                'auto.components.onboarding.mac.notification.permission.card.3d18cf71f9',
-                'Updates automatically.'
               )}
             </p>
           </div>

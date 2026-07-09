@@ -128,7 +128,9 @@ function prepareMacDevElectronApp() {
 
   const title = process.env.ORCA_DEV_DOCK_TITLE || 'Orca: dev'
   const identityKey = process.env.ORCA_DEV_INSTANCE_KEY || repoRoot
-  const bundleLayoutVersion = 'dock-title-app-preserve-framework-symlinks-v4'
+  // v5: ad-hoc re-sign after plist edits so Notification Center accepts the
+  // bundle; bumping forces cached copies with broken seals to be recreated.
+  const bundleLayoutVersion = 'dock-title-app-preserve-framework-symlinks-v5'
   const hash = createHash('sha1')
     .update(
       `${sourceAppPath}\0${electronVersion ?? ''}\0${title}\0${identityKey}\0${bundleLayoutVersion}`
@@ -206,9 +208,20 @@ function prepareMacDevElectronApp() {
   setPlistValue(plistPath, 'CFBundleDisplayName', title)
   setPlistValue(plistPath, 'CFBundleIdentifier', bundleId)
 
-  // Why no re-sign: dev launches execute the copied Electron binary directly,
-  // and Electron's framework bundle is ambiguous to codesign when deep-signing
-  // an already-built distribution. Avoid blocking `pn dev` on local signing.
+  // Why: the plist edits above (and the copy itself) break the bundle's
+  // ad-hoc seal, and macOS refuses Notification Center registration for
+  // invalidly-signed apps — every dev notification fails with UNErrorDomain
+  // error 1 and the app never appears in System Settings > Notifications.
+  // An ad-hoc re-sign restores delivery, the permission prompt, and the
+  // notification-settings deep link for dev builds. Non-fatal: a signing
+  // failure should not block `pnpm dev`.
+  try {
+    execFileSync('/usr/bin/codesign', ['--force', '--deep', '--sign', '-', appPath])
+  } catch (error) {
+    console.warn(
+      `[orca-dev] ad-hoc codesign failed (dev notifications will not deliver): ${error?.message ?? error}`
+    )
+  }
   writeFileSync(markerPath, expectedMarker, 'utf8')
   process.env.ELECTRON_EXEC_PATH = executablePath
 }
