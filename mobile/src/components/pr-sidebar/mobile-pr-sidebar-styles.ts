@@ -56,6 +56,13 @@ export const mobilePrSidebarStyles = StyleSheet.create({
     fontWeight: '600'
   },
   // Header section: state badge, title, author, base<-head branches.
+  // Badge + trailing open-on-web icon (hub chromeless has no panel chrome for it).
+  badgeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: spacing.sm
+  },
   badge: {
     alignSelf: 'flex-start',
     paddingHorizontal: spacing.sm,
@@ -67,6 +74,13 @@ export const mobilePrSidebarStyles = StyleSheet.create({
   badgeText: {
     fontSize: typography.metaSize,
     fontWeight: '700'
+  },
+  openWebButton: {
+    minWidth: 32,
+    minHeight: 32,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: radii.button
   },
   prTitle: {
     color: colors.textPrimary,

@@ -4,6 +4,7 @@ import { colors } from '../theme/mobile-theme'
 import { styles } from './mobile-source-control-styles'
 import { MobileSourceControlPrChip } from './MobileSourceControlPrChip'
 import type { MobilePrChipSummary } from './mobile-pr-chip-summary'
+import { mobileConflictAbortLabel } from './mobile-source-control-conflict-abort'
 
 type Props = {
   branchLabel: string
@@ -12,7 +13,10 @@ type Props = {
   stagedCount: number
   branchCount: number
   conflictOperation: string | null
+  // True while any serial git IO is in flight — disables Abort so ops don't race.
   conflictBusy: boolean
+  // True only while abort-merge / abort-rebase itself is running (label accuracy).
+  conflictAborting: boolean
   onAbortConflict: (operation: string) => void
   // The PR chip is shown only on repos with a hosted-review remote; null hides it.
   prChip: MobilePrChipSummary | null
@@ -30,6 +34,7 @@ export function MobileSourceControlBranchCard({
   branchCount,
   conflictOperation,
   conflictBusy,
+  conflictAborting,
   onAbortConflict,
   prChip,
   onOpenPr
@@ -60,7 +65,7 @@ export function MobileSourceControlBranchCard({
                 onPress={() => onAbortConflict(conflictOperation)}
               >
                 <Text style={styles.abortText}>
-                  {conflictBusy ? 'Aborting…' : `Abort ${conflictOperation}`}
+                  {mobileConflictAbortLabel(conflictOperation, conflictAborting)}
                 </Text>
               </Pressable>
             ) : null}

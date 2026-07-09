@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { memo, useCallback, useEffect, useState } from 'react'
 import { ActivityIndicator, FlatList, Pressable, StyleSheet, Text, View } from 'react-native'
 import { ChevronDown, ChevronRight } from 'lucide-react-native'
 import { colors, radii, spacing, typography } from '../theme/mobile-theme'
@@ -26,7 +26,9 @@ type Props = {
 
 // Headerless commit-history list. Extracted from the /history route so the hub's
 // History segment and the standalone route render the same body over one code path.
-export function MobileGitHistoryList({
+// Memoized: it stays mounted (hidden) while the Changes segment is active, and must
+// not re-reconcile its FlatList on every commit-message keystroke re-render.
+export const MobileGitHistoryList = memo(function MobileGitHistoryList({
   client,
   connState,
   worktreeId,
@@ -217,7 +219,7 @@ export function MobileGitHistoryList({
       contentContainerStyle={{ paddingBottom: spacing.lg + bottomInset }}
     />
   )
-}
+})
 
 const styles = StyleSheet.create({
   state: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: spacing.lg },
