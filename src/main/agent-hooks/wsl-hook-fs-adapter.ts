@@ -5,8 +5,32 @@
 // `installer-utils-remote.ts` touches are implemented.
 import type { SFTPWrapper } from 'ssh2'
 
+import type { installRemoteManagedAgentHooks } from './remote-managed-hook-installers'
 import type { SshChannelMultiplexer } from '../ssh/ssh-channel-multiplexer'
+import { wslCodexRuntimeHomeForGuestHome } from '../pty/codex-home-wsl-env'
 import { WSL_HOOK_FS_METHODS, type WslFsResult } from '../../shared/wsl-hook-relay-contract'
+
+/** Run the shared remote hook installers against a WSL guest over the relay's
+ *  fs bridge. Codex is the one agent whose home Orca redirects for WSL
+ *  sessions, so its hooks go to the managed runtime home. */
+export async function installWslGuestHooks(options: {
+  mux: SshChannelMultiplexer
+  guestHome: string
+  distro: string
+  installHooks: typeof installRemoteManagedAgentHooks
+  warn: (message: string) => void
+}): Promise<void> {
+  const { mux, guestHome, distro, installHooks, warn } = options
+  const results = await installHooks(createWslHookSftpAdapter(mux), guestHome, {
+    codexHomeDir: wslCodexRuntimeHomeForGuestHome(guestHome)
+  })
+  const failed = results.filter((r) => r.state === 'error').length
+  if (failed > 0) {
+    warn(
+      `[agent-hooks] WSL hook install for '${distro}': ${failed}/${results.length} agents failed`
+    )
+  }
+}
 
 type SftpCallback<T = void> = (err: Error | null, value?: T) => void
 

@@ -5,19 +5,20 @@
 // configs into the guest over the relay's fs bridge.
 import type { ChildProcessWithoutNullStreams } from 'node:child_process'
 
-import { createWslHookSftpAdapter } from './wsl-hook-fs-adapter'
-import { buildGuestInstallScript, type WslRelayStartupFailure } from './wsl-hook-relay-launch'
-import { defaultWslHookRelayDeps, type WslHookRelayManagerDeps } from './wsl-hook-relay-deps'
-import { SshChannelMultiplexer, type MultiplexerTransport } from '../ssh/ssh-channel-multiplexer'
-import { addOrcaWslInteropEnv } from '../pty/wsl-orca-env'
+import { installWslGuestHooks } from './wsl-hook-fs-adapter'
 import {
-  AGENT_HOOK_NOTIFICATION_METHOD,
-  AGENT_HOOK_REQUEST_REPLAY_METHOD
-} from '../../shared/agent-hook-relay'
+  buildGuestInstallScript,
+  buildWslRelaySpawnEnv,
+  formatWslRelayFailure,
+  type WslRelayStartupFailure
+} from './wsl-hook-relay-launch'
+import { defaultWslHookRelayDeps, type WslHookRelayManagerDeps } from './wsl-hook-relay-deps'
+import { wireWslRelayLink } from './wsl-hook-relay-link'
+import { SshChannelMultiplexer, type MultiplexerTransport } from '../ssh/ssh-channel-multiplexer'
+import { AGENT_HOOK_REQUEST_REPLAY_METHOD } from '../../shared/agent-hook-relay'
 import {
   WSL_HOOK_FS_METHODS,
   WSL_HOOK_RELAY_NO_NODE_EXIT_CODE,
-  WSL_HOOK_RELAY_VERSION_ENV,
   wslHookRelayEndpointFilePath
 } from '../../shared/wsl-hook-relay-contract'
 
@@ -29,14 +30,26 @@ const FAILURE_COOLDOWN_MAX_MS = 10 * 60_000
 // Why: a distro without node >= 18 will not grow one mid-session; probe
 // rarely instead of once per PTY spawn.
 const NO_NODE_COOLDOWN_MS = 10 * 60_000
+// Why: a previously-healthy relay dying mid-session (mux protocol error, WSL
+// restart) must self-recover — a live agent session produces no new PTY
+// spawns, so waiting for the next ensure would leave status dead for good.
+const RUNNING_TEARDOWN_COOLDOWN_MS = 10_000
+// Why: re-running the (byte-equality idempotent) installers on later spawns
+// picks up configs that appeared after first install — e.g. Codex's runtime
+// home config.toml is seeded by the launch path, so its hook-trust entries
+// can only be written once that file exists. Throttled: cheap but not free.
+const REINSTALL_MIN_INTERVAL_MS = 30_000
 
 type DistroState = {
   phase: 'starting' | 'running' | 'failed'
   child?: ChildProcessWithoutNullStreams
   mux?: SshChannelMultiplexer
+  guestHome?: string
   guestEndpointFilePath?: string
   failures: number
   cooldownUntil: number
+  restartTimer?: ReturnType<typeof setTimeout>
+  lastInstallAt?: number
 }
 
 export class WslHookRelayManager {
@@ -76,6 +89,9 @@ export class WslHookRelayManager {
   disposeAll(): void {
     this.disposed = true
     for (const state of this.states.values()) {
+      if (state.restartTimer) {
+        clearTimeout(state.restartTimer)
+      }
       state.mux?.dispose()
       state.child?.kill()
     }
@@ -89,6 +105,10 @@ export class WslHookRelayManager {
     }
     const existing = this.states.get(distro)
     if (existing) {
+      if (existing.phase === 'running') {
+        void this.maybeReinstallHooks(distro, existing)
+        return
+      }
       if (existing.phase !== 'failed' || Date.now() < existing.cooldownUntil) {
         return
       }
@@ -103,6 +123,9 @@ export class WslHookRelayManager {
       this.deps.warn('[agent-hooks] WSL hook relay bundle not found; run build:relay')
       return
     }
+    if (existing?.restartTimer) {
+      clearTimeout(existing.restartTimer)
+    }
     const state: DistroState = {
       phase: 'starting',
       failures: existing?.failures ?? 0,
@@ -110,28 +133,21 @@ export class WslHookRelayManager {
     }
     this.states.set(distro, state)
 
-    const env: NodeJS.ProcessEnv = {
-      ...process.env,
-      ORCA_AGENT_HOOK_PORT: coords.ORCA_AGENT_HOOK_PORT,
-      ORCA_AGENT_HOOK_TOKEN: coords.ORCA_AGENT_HOOK_TOKEN,
-      ORCA_AGENT_HOOK_ENV: coords.ORCA_AGENT_HOOK_ENV,
-      ORCA_AGENT_HOOK_VERSION: coords.ORCA_AGENT_HOOK_VERSION,
-      [WSL_HOOK_RELAY_VERSION_ENV]: bundle.version
-    }
-    // Why: the relay derives its own guest endpoint path; a /p-translated
-    // Windows endpoint here would only add WSLENV noise.
-    delete env.ORCA_AGENT_HOOK_ENDPOINT
-    addOrcaWslInteropEnv(env as Record<string, string>)
+    const env = buildWslRelaySpawnEnv(coords, bundle.version)
 
     try {
       await this.launchWithInstall(distro, state, env, bundle.jsPath, bundle.version, port)
     } catch (err) {
-      this.markFailed(
-        distro,
-        state,
-        err instanceof Error ? err.message : String(err),
-        FAILURE_COOLDOWN_BASE_MS
-      )
+      // Why: the teardown handler may have already recorded this failure
+      // (child died mid-connect); don't double-count it.
+      if (state.phase !== 'failed') {
+        this.markFailed(
+          distro,
+          state,
+          err instanceof Error ? err.message : String(err),
+          FAILURE_COOLDOWN_BASE_MS
+        )
+      }
     }
   }
 
@@ -174,7 +190,7 @@ export class WslHookRelayManager {
           transientRetries < TRANSIENT_RETRY_LIMIT
         ) {
           transientRetries++
-          await delay(this.deps.transientRetryDelayMs)
+          await new Promise((resolve) => setTimeout(resolve, this.deps.transientRetryDelayMs))
           continue
         }
         if (!installTried) {
@@ -192,7 +208,7 @@ export class WslHookRelayManager {
           )
           return
         }
-        this.markFailed(distro, state, formatFailure(failure), FAILURE_COOLDOWN_BASE_MS)
+        this.markFailed(distro, state, formatWslRelayFailure(failure), FAILURE_COOLDOWN_BASE_MS)
         return
       }
     }
@@ -207,29 +223,26 @@ export class WslHookRelayManager {
   ): Promise<void> {
     const mux = new SshChannelMultiplexer(transport)
     state.mux = mux
-    const connectionId = `wsl:${distro}`
-    mux.onNotification((method, params) => {
-      if (method !== AGENT_HOOK_NOTIFICATION_METHOD) {
-        return
+    wireWslRelayLink({
+      mux,
+      child,
+      distro,
+      ingest: this.deps.ingest,
+      warn: this.deps.warn,
+      onDead: (reason) => {
+        if (this.disposed || state.mux !== mux) {
+          return
+        }
+        state.mux = undefined
+        const wasRunning = state.phase === 'running'
+        this.markFailed(
+          distro,
+          state,
+          `relay link for '${distro}' ${reason}; scheduling restart`,
+          wasRunning ? RUNNING_TEARDOWN_COOLDOWN_MS : FAILURE_COOLDOWN_BASE_MS
+        )
+        this.scheduleRestart(distro, state)
       }
-      if (typeof (params as { paneKey?: unknown }).paneKey !== 'string') {
-        return
-      }
-      // Trust boundary: ingestRemote re-validates paneKey/tabId and
-      // re-normalizes the payload, same as the SSH relay path.
-      this.deps.ingest(params, connectionId)
-    })
-    child.on('close', () => {
-      if (state.mux !== mux || this.disposed) {
-        return
-      }
-      mux.dispose()
-      this.markFailed(
-        distro,
-        state,
-        `relay for '${distro}' exited; will re-ensure on next WSL PTY spawn`,
-        FAILURE_COOLDOWN_BASE_MS
-      )
     })
 
     const homeResult = (await mux.request(WSL_HOOK_FS_METHODS.home)) as {
@@ -237,14 +250,9 @@ export class WslHookRelayManager {
       home?: string
     }
     if (homeResult?.ok === true && typeof homeResult.home === 'string') {
+      state.guestHome = homeResult.home
       state.guestEndpointFilePath = wslHookRelayEndpointFilePath(homeResult.home, windowsPort)
-      const results = await this.deps.installHooks(createWslHookSftpAdapter(mux), homeResult.home)
-      const failed = results.filter((r) => r.state === 'error').length
-      if (failed > 0) {
-        this.deps.warn(
-          `[agent-hooks] WSL hook install for '${distro}': ${failed}/${results.length} agents failed`
-        )
-      }
+      await this.runInstallers(distro, state, mux, homeResult.home)
     } else {
       this.deps.warn(`[agent-hooks] WSL hook relay for '${distro}' returned no home dir`)
     }
@@ -259,6 +267,57 @@ export class WslHookRelayManager {
     void mux.request(AGENT_HOOK_REQUEST_REPLAY_METHOD).catch(() => {
       // Fresh relays have nothing to replay; tolerate.
     })
+  }
+
+  private async runInstallers(
+    distro: string,
+    state: DistroState,
+    mux: SshChannelMultiplexer,
+    guestHome: string
+  ): Promise<void> {
+    state.lastInstallAt = Date.now()
+    await installWslGuestHooks({
+      mux,
+      guestHome,
+      distro,
+      installHooks: this.deps.installHooks,
+      warn: this.deps.warn
+    })
+  }
+
+  /** Re-run the byte-equality-idempotent installers on later ensure calls so
+   *  configs that appear after first install (e.g. Codex's launch-seeded
+   *  runtime-home config.toml) pick up their hook entries. */
+  private async maybeReinstallHooks(distro: string, state: DistroState): Promise<void> {
+    const mux = state.mux
+    const guestHome = state.guestHome
+    if (
+      !mux ||
+      !guestHome ||
+      mux.isDisposed() ||
+      Date.now() - (state.lastInstallAt ?? 0) < REINSTALL_MIN_INTERVAL_MS
+    ) {
+      return
+    }
+    try {
+      await this.runInstallers(distro, state, mux, guestHome)
+    } catch (err) {
+      this.deps.warn(
+        `[agent-hooks] WSL hook reinstall for '${distro}' failed: ${err instanceof Error ? err.message : String(err)}`
+      )
+    }
+  }
+
+  private scheduleRestart(distro: string, state: DistroState): void {
+    if (this.disposed || state.restartTimer) {
+      return
+    }
+    const delayMs = Math.max(state.cooldownUntil - Date.now(), 0) + 250
+    state.restartTimer = setTimeout(() => {
+      state.restartTimer = undefined
+      this.ensureForDistro(distro)
+    }, delayMs)
+    state.restartTimer.unref?.()
   }
 
   private markFailed(
@@ -288,15 +347,6 @@ export class WslHookRelayManager {
     }
     return this.defaultDistro
   }
-}
-
-function formatFailure(failure: WslRelayStartupFailure): string {
-  const detail = failure.stderr.trim()
-  return `startup failed (${failure.kind}, code ${failure.code ?? 'unknown'})${detail ? `: ${detail}` : ''}`
-}
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
 export const wslHookRelayManager = new WslHookRelayManager()

@@ -206,6 +206,30 @@ config); harmless under mirrored networking and inert on non-WSL platforms. Afte
 restart with the WSL agent still running (daemon-surviving PTY), status events resume
 without relaunching the agent.
 
+## 2026-07-09 Windows-rig validation follow-ups
+
+The first live GUI run proved every mechanism in isolation but failed end-to-end, yielding
+two fixes:
+
+1. **Link death must be handled, not just child death.** A mux protocol error or timeout
+   can kill the host↔guest link while the guest process (and its 204-returning receiver)
+   stays alive — the exact observed signature: hooks POST 204, store never populates.
+   `wsl-hook-relay-link.ts` now guarantees exactly-once death handling from either signal;
+   the manager breadcrumbs it, kills the child, and self-restarts after a short cooldown
+   (a live agent session produces no new PTY spawns to re-trigger ensure).
+   `ORCA_WSL_HOOK_RELAY_DEBUG=1` traces every received envelope pre-ingest so a live rig
+   can pinpoint any residual drop. The full host chain is pinned by a live integration
+   test (real bundle over real child stdio through the real manager into a real
+   `ingestRemote`).
+2. **Codex reads a redirected home.** Orca launches WSL Codex with `CODEX_HOME` pointed at
+   the managed runtime home (`~/.local/share/orca/codex-runtime-home/home`), so installing
+   hooks to `~/.codex` left Codex dark. The installers now accept an explicit codex home;
+   the trust write into `config.toml` is deferred while that file doesn't exist (the
+   launch path seeds it only-if-absent — creating it first would cancel the seed), and the
+   manager re-runs the idempotent installers on later ensures (throttled) to upsert trust
+   once the seed lands. Consequence: the very first WSL Codex session after a cold relay
+   may miss hooks; the next one has them.
+
 ## Implementation map
 
 - Guest: `src/relay/wsl-agent-hook-relay.ts` (entry; exits on stdin close),
@@ -213,9 +237,10 @@ without relaunching the agent.
   `src/relay/agent-hook-server.ts` (`token`/`preferredPort` options + `EADDRINUSE`
   fallback). Bundled by `config/scripts/build-relay.mjs` → `out/relay/wsl/`.
 - Host: `src/main/agent-hooks/wsl-hook-relay-manager.ts` (per-distro state machine),
-  `wsl-hook-relay-launch.ts` (bundle resolve, guest launch/install scripts, sentinel wait),
-  `wsl-hook-relay-deps.ts` (DI seam), `wsl-hook-fs-adapter.ts` (SFTP-shaped adapter so the
-  unchanged `installRemoteManagedAgentHooks` writes into the guest home).
+  `wsl-hook-relay-launch.ts` (bundle resolve, guest launch/install scripts, spawn env,
+  sentinel wait), `wsl-hook-relay-link.ts` (envelope forward + exactly-once link-death
+  handling), `wsl-hook-relay-deps.ts` (DI seam), `wsl-hook-fs-adapter.ts` (SFTP-shaped
+  adapter + `installWslGuestHooks`, which targets Codex's managed runtime home).
 - Wiring: `buildPtyHostEnv` (`src/main/ipc/pty.ts`) ensures the relay on every WSL spawn
   and repoints `ORCA_AGENT_HOOK_ENDPOINT` at the guest endpoint file once known;
   `src/main/pty/wsl-orca-env.ts` picks `/u` vs `/p` by value shape.

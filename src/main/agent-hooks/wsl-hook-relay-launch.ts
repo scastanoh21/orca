@@ -10,6 +10,7 @@ import { app } from 'electron'
 
 import { RELAY_SENTINEL, RELAY_SENTINEL_TIMEOUT_MS } from '../ssh/relay-protocol'
 import type { MultiplexerTransport } from '../ssh/ssh-channel-multiplexer'
+import { addOrcaWslInteropEnv } from '../pty/wsl-orca-env'
 import {
   WSL_HOOK_RELAY_BUNDLE_NAME,
   WSL_HOOK_RELAY_DIR,
@@ -253,4 +254,30 @@ function formatStartupFailure(failure: WslRelayStartupFailure): string {
     return `WSL hook relay did not become ready within ${RELAY_SENTINEL_TIMEOUT_MS / 1000}s${detail ? `: ${detail}` : ''}`
   }
   return `WSL hook relay exited (code ${failure.code ?? 'unknown'})${detail ? `: ${detail}` : ''}`
+}
+
+export function formatWslRelayFailure(failure: WslRelayStartupFailure): string {
+  const detail = failure.stderr.trim()
+  return `startup failed (${failure.kind}, code ${failure.code ?? 'unknown'})${detail ? `: ${detail}` : ''}`
+}
+
+/** Env for the relay's wsl.exe spawn: the live hook coordinates plus the
+ *  host-expected bundle version, all crossed via WSLENV. */
+export function buildWslRelaySpawnEnv(
+  coords: Record<string, string>,
+  bundleVersion: string
+): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    ORCA_AGENT_HOOK_PORT: coords.ORCA_AGENT_HOOK_PORT,
+    ORCA_AGENT_HOOK_TOKEN: coords.ORCA_AGENT_HOOK_TOKEN,
+    ORCA_AGENT_HOOK_ENV: coords.ORCA_AGENT_HOOK_ENV,
+    ORCA_AGENT_HOOK_VERSION: coords.ORCA_AGENT_HOOK_VERSION,
+    [WSL_HOOK_RELAY_VERSION_ENV]: bundleVersion
+  }
+  // Why: the relay derives its own guest endpoint path; a /p-translated
+  // Windows endpoint here would only add WSLENV noise.
+  delete env.ORCA_AGENT_HOOK_ENDPOINT
+  addOrcaWslInteropEnv(env as Record<string, string>)
+  return env
 }
