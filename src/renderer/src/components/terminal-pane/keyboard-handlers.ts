@@ -16,6 +16,10 @@ import {
 import type { PaneCwdMap } from './resolve-split-cwd'
 import type { TerminalKittyKeyboardModeTracker } from '../../../../shared/terminal-kitty-keyboard-mode-tracker'
 import { keyboardEventBelongsToScope } from './terminal-keyboard-scope'
+import {
+  getLayoutBaseCharacterForCode,
+  prefetchLayoutBaseCharacters
+} from '@/lib/keyboard-layout/layout-base-character'
 import { normalizeSelectedTextForFileSearch } from '@/lib/file-search-selection'
 import { isFindQueryTooLarge } from '@/lib/find-query-bounds'
 import { handleEmptyFloatingWorkspacePanelCloseShortcut } from '@/lib/floating-workspace-terminal-actions'
@@ -209,6 +213,12 @@ export function useTerminalKeyboardShortcuts({
     const isWindows = navigator.userAgent.includes('Windows')
     const shortcutPlatform: KeybindingPlatform = isMac ? 'darwin' : isWindows ? 'win32' : 'linux'
 
+    // Why: kitty Option-chord encoding resolves base keys through the async
+    // KeyboardLayoutMap; prefetch so the map is cached before the first chord.
+    if (isMac) {
+      prefetchLayoutBaseCharacters()
+    }
+
     // Why: KeyboardEvent.location on a character key (e.g. Period) always
     // reports that key's own position (0 = standard), not which modifier is
     // held. To distinguish left vs right Option, we record the Option key's
@@ -315,7 +325,8 @@ export function useTerminalKeyboardShortcuts({
         isWindows,
         keybindings,
         isLocalWindowsConptyPane,
-        isKittyKeyboardActivePane
+        isKittyKeyboardActivePane,
+        getLayoutBaseCharacterForCode
       )
       if (!action) {
         return

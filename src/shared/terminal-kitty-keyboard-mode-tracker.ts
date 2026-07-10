@@ -10,7 +10,8 @@ const KITTY_STACK_LIMIT = 16
  * Mirrors the kitty keyboard protocol flag state (CSI > u push, CSI < u pop,
  * CSI = u set) by scanning the raw PTY output stream, replicating xterm's
  * exact stack/screen algorithm including the per-screen flag slots swapped by
- * DECSET/DECRST 47/1047/1049 and the full reset on RIS.
+ * DECSET/DECRST 47/1047/1049, the full reset on RIS, and the soft reset on
+ * DECSTR (CSI ! p).
  *
  * Why a mirror instead of reading xterm's internal state: Orca defensively
  * wipes the renderer terminal's kitty flags at moments when the TUI may have
@@ -46,10 +47,29 @@ export class TerminalKittyKeyboardModeTracker {
   }
 
   scan(data: string): void {
+    this.scanInternal(data, false)
+  }
+
+  /**
+   * Scan bytes replayed from a retained history window (reattach payloads,
+   * relay replays, daemon snapshots). Replays can redeliver the application's
+   * one-time CSI > u push — applying it with stack semantics on every delivery
+   * grows the mirrored stack, so the TUI's eventual single pop lands on a
+   * stale frame and Option chords stay kitty-encoded in a plain shell. Pushes
+   * seen during replay therefore apply as idempotent sets. Known limit: a
+   * NESTED push/push/pop inside the window collapses to flags 0 on the pop —
+   * unavoidable stackless-replay tradeoff (a redelivered push is byte-wise
+   * indistinguishable from a new one); real TUIs push once at startup.
+   */
+  scanReplay(data: string): void {
+    this.scanInternal(data, true)
+  }
+
+  private scanInternal(data: string, replay: boolean): void {
     const input = this.scanTail + data
     this.scanTail = this.extractScanTail(input)
     // oxlint-disable-next-line no-control-regex -- terminal escape sequences require control chars
-    const kittyModeRe = /\x1bc|(?:\x1b\[|\x9b)(?:\?([0-9;]+)([hl])|([<>=])([0-9;]*)u)/g
+    const kittyModeRe = /\x1bc|(?:\x1b\[|\x9b)(?:!p|\?([0-9;]+)([hl])|([<>=])([0-9;]*)u)/g
     let match: RegExpExecArray | null
     while ((match = kittyModeRe.exec(input)) !== null) {
       if (match[0] === '\x1bc') {
@@ -59,12 +79,27 @@ export class TerminalKittyKeyboardModeTracker {
         this.scanTail = tail
         continue
       }
+      if (match[0].endsWith('!p')) {
+        this.applySoftReset()
+        continue
+      }
       if (match[1] !== undefined) {
         this.applyScreenSwitch(match[1], match[2] === 'h')
         continue
       }
-      this.applyKittySequence(match[3], match[4] ?? '')
+      this.applyKittySequence(match[3], match[4] ?? '', replay)
     }
+  }
+
+  private applySoftReset(): void {
+    // Why: xterm's DECSTR (CSI ! p) wipes kitty flags and stacks for both
+    // screens via coreService.reset but does not switch buffers — mirror that
+    // so a soft-resetting TUI stops receiving kitty-encoded Option chords.
+    this.currentFlags = 0
+    this.mainFlags = 0
+    this.altFlags = 0
+    this.mainStack = []
+    this.altStack = []
   }
 
   private applyScreenSwitch(params: string, enabled: boolean): void {
@@ -88,14 +123,16 @@ export class TerminalKittyKeyboardModeTracker {
     }
   }
 
-  private applyKittySequence(prefix: string, params: string): void {
+  private applyKittySequence(prefix: string, params: string, replay: boolean): void {
     const parsed = params.split(';').map((entry) => Number(entry))
     const stack = this.alternateScreenActive ? this.altStack : this.mainStack
     if (prefix === '>') {
-      if (stack.length >= KITTY_STACK_LIMIT) {
-        stack.shift()
+      if (!replay) {
+        if (stack.length >= KITTY_STACK_LIMIT) {
+          stack.shift()
+        }
+        stack.push(this.currentFlags)
       }
-      stack.push(this.currentFlags)
       this.currentFlags = parsed[0] || 0
       return
     }
@@ -144,6 +181,6 @@ export class TerminalKittyKeyboardModeTracker {
   }
 
   private isIncompleteSequenceBody(body: string): boolean {
-    return /^[<>=?]?[0-9;]*$/.test(body)
+    return body === '!' || /^[<>=?]?[0-9;]*$/.test(body)
   }
 }

@@ -571,6 +571,26 @@ describe('kitty keyboard protocol panes', () => {
     expect(resolveKitty(event({ key: 'p', code: 'KeyP', altKey: true }), 'true')).toBeNull()
   })
 
+  it('keeps shift+Option composition untouched in non-kitty panes', () => {
+    expect(
+      resolveKitty(
+        event({ key: '∏', code: 'KeyP', altKey: true, shiftKey: true }),
+        'false',
+        0,
+        kittyInactive
+      )
+    ).toBeNull()
+    // Meta-side Option in 'left' mode stays shift-exempt without kitty.
+    expect(
+      resolveKitty(
+        event({ key: '∏', code: 'KeyP', altKey: true, shiftKey: true }),
+        'left',
+        1,
+        kittyInactive
+      )
+    ).toBeNull()
+  })
+
   it('keeps compose-mode behavior unchanged when the pane is not kitty-active', () => {
     expect(
       resolveKitty(event({ key: 'π', code: 'KeyP', altKey: true }), 'false', 0, kittyInactive)
@@ -620,5 +640,44 @@ describe('kitty keyboard protocol panes', () => {
   it('does not intercept Option chords with Cmd or Ctrl held', () => {
     expect(resolveKitty(event({ key: 'π', code: 'KeyP', altKey: true, metaKey: true }))).toBeNull()
     expect(resolveKitty(event({ key: 'π', code: 'KeyP', altKey: true, ctrlKey: true }))).toBeNull()
+  })
+
+  it('resolves the kitty base key through the active layout map when provided', () => {
+    const resolveWithLayout = (
+      input: TerminalShortcutEvent,
+      layoutBaseCharacterForCode: (code: string) => string | undefined
+    ) =>
+      resolveTerminalShortcutAction(
+        input,
+        true,
+        'false',
+        0,
+        false,
+        undefined,
+        undefined,
+        kittyActive,
+        layoutBaseCharacterForCode
+      )
+
+    // AZERTY types M at the physical Semicolon position; the layout map must
+    // win over the US punctuation table so the chord reports alt+m, not alt+;.
+    const azerty = (code: string): string | undefined => (code === 'Semicolon' ? 'm' : undefined)
+    expect(resolveWithLayout(event({ key: 'µ', code: 'Semicolon', altKey: true }), azerty)).toEqual(
+      { type: 'sendInput', data: '\x1b[109;3u' }
+    )
+
+    // Colemak types P at the physical KeyR position.
+    const colemak = (code: string): string | undefined => (code === 'KeyR' ? 'p' : undefined)
+    expect(resolveWithLayout(event({ key: 'π', code: 'KeyR', altKey: true }), colemak)).toEqual({
+      type: 'sendInput',
+      data: '\x1b[112;3u'
+    })
+
+    // Falls back to the US table when the layout map has no entry.
+    const empty = (): string | undefined => undefined
+    expect(resolveWithLayout(event({ key: 'π', code: 'KeyP', altKey: true }), empty)).toEqual({
+      type: 'sendInput',
+      data: '\x1b[112;3u'
+    })
   })
 })

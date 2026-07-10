@@ -82,7 +82,12 @@ export function resolveTerminalShortcutAction(
   // Why: lazily reports whether the active pane's application has enabled the
   // kitty keyboard protocol (CSI > u). Gates the Option-as-Alt compensation
   // below on the application's own opt-in, so shells keep composition.
-  isKittyKeyboardActivePane?: () => boolean
+  isKittyKeyboardActivePane?: () => boolean,
+  // Why: kitty key reports carry the key's unshifted codepoint in the active
+  // layout; the physical-code table above is US QWERTY and reports the wrong
+  // key on Dvorak/Colemak/AZERTY-class layouts. This resolves through
+  // Chromium's KeyboardLayoutMap when it is available.
+  layoutBaseCharacterForCode?: (code: string) => string | undefined
 ): TerminalShortcutAction | null {
   const platform: NodeJS.Platform = isMac ? 'darwin' : isWindows ? 'win32' : 'linux'
   if (!event.repeat) {
@@ -286,7 +291,9 @@ export function resolveTerminalShortcutAction(
   //   for any single letter); the other key composes, with B/F/D compensated.
   if (isMac && !event.metaKey && !event.ctrlKey && event.altKey && macOptionAsAlt !== 'true') {
     if (event.key !== 'Dead' && isKittyKeyboardActivePane?.()) {
-      const baseCharacter = resolveUnshiftedCharacterForCode(event.code)
+      const baseCharacter =
+        (event.code ? layoutBaseCharacterForCode?.(event.code) : undefined) ??
+        resolveUnshiftedCharacterForCode(event.code)
       if (baseCharacter) {
         return {
           type: 'sendInput',

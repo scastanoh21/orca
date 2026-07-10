@@ -4135,8 +4135,10 @@ export function connectPanePty(
           rememberReattachPayloadAgentSignal(data, { fullScreenReplay: clearBeforeReplay })
         }
         // Why: replayed application bytes carry the live TUI's kitty keyboard
-        // negotiation; the mirror must re-arm from them after a reload.
-        kittyKeyboardModes.scan(data)
+        // negotiation; the mirror must re-arm from them after a reload. Replay
+        // semantics: relay reconnects redeliver the same window, so pushes
+        // apply as sets to keep the mirrored stack from accumulating frames.
+        kittyKeyboardModes.scanReplay(data)
         await writeReplayDataAsync(data)
         if (clearBeforeReplay || data.length > 0) {
           await writeReplayDataAsync(reattachReplayResetSequence(data))
@@ -5532,7 +5534,7 @@ export function connectPanePty(
         // Why: the daemon snapshot's rehydrate preamble carries the live
         // session's kitty keyboard flags; re-arm the mirror from it so Option
         // chords keep their kitty encoding after a window reload.
-        kittyKeyboardModes.scan(connectResult.snapshot)
+        kittyKeyboardModes.scanReplay(connectResult.snapshot)
         writeReplayData(connectResult.snapshot)
         // Snapshot reattach keeps a live session, so avoid the broader mode
         // reset. We only drop renderer-owned state that should not leak from
@@ -5560,8 +5562,9 @@ export function connectPanePty(
         // tearing down the still-running TUI's live modes.
         writeReplayData('\x1b[2J\x1b[3J\x1b[H')
         // Why: raw relay replay contains the application's own kitty pushes
-        // when they fall inside the retained window; re-arm the mirror.
-        kittyKeyboardModes.scan(connectResult.replay)
+        // when they fall inside the retained window; re-arm the mirror with
+        // replay (set) semantics so redelivery cannot grow the stack.
+        kittyKeyboardModes.scanReplay(connectResult.replay)
         writeReplayData(connectResult.replay)
         writeReplayData(reattachReplayResetSequence(connectResult.replay))
         sendFocusedReattachFocusInAfterReplay()

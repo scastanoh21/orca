@@ -95,4 +95,53 @@ describe('TerminalKittyKeyboardModeTracker', () => {
     tracker.scan('\x1b[?1049l')
     expect(tracker.flags).toBe(0)
   })
+
+  it('clears kitty state on DECSTR (CSI ! p) like xterm, without switching screens', () => {
+    const tracker = new TerminalKittyKeyboardModeTracker()
+    tracker.scan('\x1b[>1u\x1b[!p')
+    expect(tracker.flags).toBe(0)
+
+    // xterm's soft reset wipes both screens' slots but stays on the current
+    // buffer; a later alt-screen exit must not resurrect pre-reset flags.
+    const onAlt = new TerminalKittyKeyboardModeTracker()
+    onAlt.scan('\x1b[>1u\x1b[?1049h\x1b[>2u')
+    expect(onAlt.flags).toBe(2)
+    onAlt.scan('\x1b[!p')
+    expect(onAlt.flags).toBe(0)
+    onAlt.scan('\x1b[?1049l')
+    expect(onAlt.flags).toBe(0)
+  })
+
+  it('handles DECSTR split across chunks', () => {
+    const tracker = new TerminalKittyKeyboardModeTracker()
+    tracker.scan('\x1b[>1u\x1b[!')
+    expect(tracker.flags).toBe(1)
+    tracker.scan('p')
+    expect(tracker.flags).toBe(0)
+  })
+
+  it('applies replayed pushes as sets so redelivered windows cannot grow the stack', () => {
+    const tracker = new TerminalKittyKeyboardModeTracker()
+    // Live negotiation, then two relay reconnects redelivering the same
+    // retained window containing the app's one-time push.
+    tracker.scan('\x1b[>1u')
+    tracker.scanReplay('\x1b[>1u')
+    tracker.scanReplay('\x1b[>1u')
+    expect(tracker.flags).toBe(1)
+    // The TUI's single exit pop must drain to zero despite the redeliveries.
+    tracker.scan('\x1b[<u')
+    expect(tracker.flags).toBe(0)
+  })
+
+  it('replay scans arm a fresh tracker and honor pops inside the window', () => {
+    const fresh = new TerminalKittyKeyboardModeTracker()
+    fresh.scanReplay('\x1b[>1u')
+    expect(fresh.flags).toBe(1)
+    fresh.scan('\x1b[<u')
+    expect(fresh.flags).toBe(0)
+
+    const ranAndExited = new TerminalKittyKeyboardModeTracker()
+    ranAndExited.scanReplay('\x1b[>1uoutput\x1b[<u')
+    expect(ranAndExited.flags).toBe(0)
+  })
 })
