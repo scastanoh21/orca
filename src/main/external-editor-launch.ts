@@ -6,6 +6,7 @@ import { getCmdExePath } from './win32-utils'
 
 export const EXTERNAL_EDITOR_CLI_COMMAND = 'code'
 const WINDOWS_CONSOLE_EDITORS = new Set(['nvim', 'vim'])
+const VSCODE_REMOTE_EDITORS = new Set(['code', 'code-insiders', 'code - insiders'])
 
 export type ExternalEditorLaunchSpec =
   | {
@@ -112,12 +113,13 @@ function buildExecutableArgs(
   pathValue: string,
   platform: NodeJS.Platform
 ): string[] {
-  if (getLauncherBaseName(editorCommand) === 'cursor') {
+  const launcherBaseName = getLauncherBaseName(editorCommand)
+  if (launcherBaseName === 'cursor') {
     // Why: Cursor can route bare folder launches through the last active
     // workbench. A new window keeps "Open in Cursor" scoped to this worktree.
     return ['--new-window', pathValue]
   }
-  if (platform === 'win32' && getLauncherBaseName(editorCommand) === 'code') {
+  if (platform === 'win32' && VSCODE_REMOTE_EDITORS.has(launcherBaseName)) {
     const wslPath = parseWslUncPath(pathValue)
     if (wslPath) {
       // Why: VS Code otherwise treats a WSL UNC path as a local Windows folder.

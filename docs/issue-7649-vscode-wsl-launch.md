@@ -20,7 +20,7 @@ The deterministic reproduction for `\\wsl.localhost\Ubuntu\home\aliuq\project` p
 ## Design
 
 1. In the external-editor launch-spec builder, parse the target path with the shared WSL UNC parser when the host platform is Windows.
-2. For direct/executable VS Code launchers only, reuse the existing normalized launcher-basename check and translate a recognized WSL target into `['--remote', 'wsl+<distro>', '<linuxPath>']`. The match is case-insensitive and strips every Windows launcher suffix already supported by Orca (`.cmd`, `.exe`, and `.bat`), so direct paths such as `Code.exe` and resolved shims such as `CODE.CMD` or `code.bat` all identify as basename `code`.
+2. For direct/executable VS Code Stable or Insiders launchers only, reuse the existing normalized launcher-basename check and translate a recognized WSL target into `['--remote', 'wsl+<distro>', '<linuxPath>']`. The exact allowlist recognizes Stable's `code`, Insiders' `code-insiders`, and the direct `Code - Insiders.exe` basename without matching unrelated `code-*` editors. Matching is case-insensitive and strips every Windows launcher suffix already supported by Orca (`.cmd`, `.exe`, and `.bat`).
 3. Keep local paths, non-Windows hosts, non-VS-Code applications, and compound commands on their existing argument paths. The existing main-process spawn and Windows shim handling remain unchanged.
 4. Replace the temporary reproduction harness with focused regression cases in `src/main/external-editor-launch.test.ts` covering modern and legacy WSL UNC forms plus unaffected local/custom-editor behavior.
 
@@ -49,7 +49,7 @@ The deterministic reproduction for `\\wsl.localhost\Ubuntu\home\aliuq\project` p
 - Unit: demonstrate the pre-fix launch spec lacks `--remote` for a modern WSL UNC path.
 - Unit: assert the fixed modern UNC launch is `--remote`, `wsl+Ubuntu`, `/home/...`.
 - Unit: assert legacy `\\wsl$` and distro-root paths produce the same Remote - WSL form.
-- Unit: assert direct and resolved Windows VS Code launchers are matched case-insensitively across `.exe`, `.cmd`, and `.bat` suffixes.
+- Unit: assert direct and resolved Windows VS Code Stable and Insiders launchers are matched case-insensitively across `.exe`, `.cmd`, and `.bat` suffixes.
 - Unit: assert distro names and Linux folder paths containing spaces remain intact arguments through launch-spec construction and Windows shim forwarding.
 - Unit: assert a Windows local path remains unchanged and explicit `darwin` and `linux` hosts do not acquire WSL remote arguments.
 - Unit: assert Cursor and another custom editor are not given VS Code remote arguments.

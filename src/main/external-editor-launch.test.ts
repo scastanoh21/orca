@@ -136,13 +136,18 @@ describe('resolveExternalEditorLaunchSpec', () => {
     })
   })
 
-  it('opens modern WSL UNC workspaces in the matching VS Code remote', () => {
-    expect(
-      resolveExternalEditorLaunchSpec('code', '\\\\wsl.localhost\\Ubuntu\\home\\aliuq\\project', {
-        platform: 'win32'
-      }).spawnArgs
-    ).toEqual(['--remote', 'wsl+Ubuntu', '/home/aliuq/project'])
-  })
+  it.each(['code', 'code-insiders'])(
+    'opens modern WSL UNC workspaces with %s in the matching VS Code remote',
+    (editorCommand) => {
+      expect(
+        resolveExternalEditorLaunchSpec(
+          editorCommand,
+          '\\\\wsl.localhost\\Ubuntu\\home\\aliuq\\project',
+          { platform: 'win32' }
+        ).spawnArgs
+      ).toEqual(['--remote', 'wsl+Ubuntu', '/home/aliuq/project'])
+    }
+  )
 
   it.each([
     [
@@ -161,8 +166,10 @@ describe('resolveExternalEditorLaunchSpec', () => {
 
   it.each([
     'C:\\Program Files\\Microsoft VS Code\\Code.exe',
+    'C:\\Program Files\\Microsoft VS Code Insiders\\Code - Insiders.exe',
     'C:\\Tools\\CODE.CMD',
-    'C:\\Tools\\code.bat'
+    'C:\\Tools\\code.bat',
+    'C:\\Tools\\code-insiders.cmd'
   ])('recognizes the direct Windows VS Code launcher %s', (editorCommand) => {
     expect(
       resolveExternalEditorLaunchSpec(
@@ -173,23 +180,26 @@ describe('resolveExternalEditorLaunchSpec', () => {
     ).toEqual(['--remote', 'wsl+Ubuntu', '/home/ada/project'])
   })
 
-  it.each(['C:\\Tools\\CODE.CMD', 'C:\\Tools\\code.bat'])(
-    'recognizes the resolved Windows VS Code launcher %s',
-    (resolvedCommand) => {
-      resolveCliCommandMock.mockReturnValueOnce(resolvedCommand)
+  it.each([
+    ['code', 'C:\\Tools\\CODE.CMD'],
+    ['code', 'C:\\Tools\\code.bat'],
+    ['code-insiders', 'C:\\Tools\\code-insiders.cmd']
+  ])('recognizes the resolved Windows VS Code launcher %s', (editorCommand, resolvedCommand) => {
+    resolveCliCommandMock.mockReturnValueOnce(resolvedCommand)
 
-      expect(
-        resolveExternalEditorLaunchSpec('code', '\\\\wsl.localhost\\Ubuntu\\home\\ada\\project', {
-          platform: 'win32'
-        })
-      ).toEqual({
-        kind: 'executable',
-        hideWindowsConsole: true,
-        spawnCmd: resolvedCommand,
-        spawnArgs: ['--remote', 'wsl+Ubuntu', '/home/ada/project']
-      })
-    }
-  )
+    expect(
+      resolveExternalEditorLaunchSpec(
+        editorCommand,
+        '\\\\wsl.localhost\\Ubuntu\\home\\ada\\project',
+        { platform: 'win32' }
+      )
+    ).toEqual({
+      kind: 'executable',
+      hideWindowsConsole: true,
+      spawnCmd: resolvedCommand,
+      spawnArgs: ['--remote', 'wsl+Ubuntu', '/home/ada/project']
+    })
+  })
 
   it('preserves spaces in WSL distro and folder arguments', () => {
     expect(
