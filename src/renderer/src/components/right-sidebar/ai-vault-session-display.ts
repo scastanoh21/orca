@@ -5,5 +5,6 @@ export {
   latestSessionConversationTurn,
   recentSessionConversationTurns,
   sessionDetailConversationTurns,
+  sessionModelLabel,
   sessionPreviewSearchText
 } from '../../../../shared/ai-vault-session-display'

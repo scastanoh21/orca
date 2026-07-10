@@ -14,6 +14,7 @@ import {
   resolveTerminalCursorInactiveStyle
 } from '@/lib/pane-manager/pane-terminal-options'
 import { normalizeDesktopTerminalScrollbackRows } from '../../../../shared/terminal-scrollback-policy'
+import { normalizeTerminalLineHeight } from '../../../../shared/terminal-line-height-settings'
 import { normalizeTerminalTuiMouseWheelMultiplier } from '@/lib/pane-manager/pane-terminal-mouse-wheel'
 import { buildWindowsPtyCompatibilityOptions } from '@/lib/pane-manager/windows-pty-compatibility'
 import { buildTerminalKeyboardProtocolOptions } from '@/lib/pane-manager/terminal-keyboard-protocol'
@@ -1407,7 +1408,7 @@ export function useTerminalPaneLifecycle({
             currentSettings?.terminalFastScrollSensitivity
           ),
           macOptionIsMeta: effectiveMacOptionAsAltRef.current === 'true',
-          lineHeight: currentSettings?.terminalLineHeight ?? 1,
+          lineHeight: normalizeTerminalLineHeight(currentSettings?.terminalLineHeight),
           wordSeparator: currentSettings?.terminalWordSeparator
         }
       },
@@ -1760,9 +1761,18 @@ export function useTerminalPaneLifecycle({
         return
       }
       for (const panePtyBinding of panePtyBindingsRef.current.values()) {
-        ;(
-          panePtyBinding as IDisposable & { wakeHibernatedAgentIfArmed?: () => void }
-        ).wakeHibernatedAgentIfArmed?.()
+        const claimKey = (
+          panePtyBinding as IDisposable & {
+            wakeHibernatedAgentIfArmed?: (claimedProviderSessions?: Set<string>) => string | null
+          }
+        ).wakeHibernatedAgentIfArmed?.(detail.wokenClaimKeys)
+        // Why: the dispatcher's follow-up generic resume must skip provider
+        // sessions this pane woke (or latched) in place — the sleeping record
+        // is only cleared after the in-place spawn succeeds, so without this
+        // the same session would resume twice.
+        if (claimKey) {
+          detail.wokenClaimKeys?.add(claimKey)
+        }
       }
     }
     window.addEventListener(WAKE_HIBERNATED_AGENTS_WORKTREE_EVENT, onWakeHibernatedAgents)

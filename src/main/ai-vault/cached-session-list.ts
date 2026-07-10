@@ -80,7 +80,9 @@ export async function listAiVaultSessions(args?: AiVaultListArgs): Promise<AiVau
   return inflightList
 }
 
-async function getAiVaultWslHomeDirs(): Promise<string[]> {
+// Exported for the subagent-transcript IPC path, which validates
+// renderer-supplied paths against the same WSL-aware Claude roots the scan uses.
+export async function getAiVaultWslHomeDirs(): Promise<string[]> {
   if (process.platform !== 'win32') {
     return []
   }
