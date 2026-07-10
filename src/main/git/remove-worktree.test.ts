@@ -272,6 +272,14 @@ branch refs/heads/main
     expect(getGitCalls()).toContain('git worktree remove --force /repo-feature')
   })
 
+  it('rejects lock override without dirty-file force before invoking Git', async () => {
+    await expect(
+      removeWorktree('/repo', '/repo-feature', false, { overrideLock: true })
+    ).rejects.toThrow('Worktree lock override requires force deletion permission.')
+
+    expect(getGitCalls()).toEqual([])
+  })
+
   it('passes double --force only for explicit lock override', async () => {
     mockGitCommands({
       'git worktree list --porcelain': {

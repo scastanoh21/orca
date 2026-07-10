@@ -287,6 +287,16 @@ describe('removeWorktreeOp', () => {
     )
   })
 
+  it('rejects SSH lock override without dirty-file force before invoking Git', async () => {
+    const git = vi.fn<GitExec>()
+
+    await expect(
+      removeWorktreeOp(git, { worktreePath: '/repo-feature', overrideLock: true })
+    ).rejects.toThrow('Worktree lock override requires force deletion permission.')
+
+    expect(git).not.toHaveBeenCalled()
+  })
+
   it('skips branch deletion entirely when deleteBranch is false', async () => {
     const calls: string[] = []
     const git = vi.fn<GitExec>(async (args, cwd) => {

@@ -13,7 +13,10 @@ import type {
   LocalBaseRefUpdateSuggestion,
   RemoveWorktreeResult
 } from '../../shared/types'
-import { assertWorktreeUnlockedForRemoval } from '../../shared/worktree-removal'
+import {
+  assertWorktreeRemovalForcePermissions,
+  assertWorktreeUnlockedForRemoval
+} from '../../shared/worktree-removal'
 import { decodeGitCQuotedPath } from '../../shared/git-cquoted-path'
 import { parseGitRevListAheadBehindCounts } from '../../shared/git-rev-list-output'
 import { parseWslUncPath } from '../../shared/wsl-paths'
@@ -1077,6 +1080,7 @@ async function performRemoveWorktree(
   force = false,
   options: RemoveWorktreeOptions = {}
 ): Promise<RemoveWorktreeResult> {
+  assertWorktreeRemovalForcePermissions(force, options.overrideLock)
   const removedWorktree =
     options.knownRemovedWorktree ??
     (await listWorktrees(repoPath, options)).find((worktree) =>

@@ -1,6 +1,8 @@
 import type { GitWorktreeInfo } from './types'
 
 export const LOCKED_WORKTREE_REMOVAL_PREFIX = 'Worktree is locked by Git.'
+export const LOCK_OVERRIDE_REQUIRES_FORCE_MESSAGE =
+  'Worktree lock override requires force deletion permission.'
 
 export type WorktreeForceDeleteReason =
   | 'dirty'
@@ -23,6 +25,14 @@ export function assertWorktreeUnlockedForRemoval(
 ): void {
   if (!overrideLock && worktree?.locked) {
     throw createLockedWorktreeRemovalError(worktree.lockReason)
+  }
+}
+
+export function assertWorktreeRemovalForcePermissions(force = false, overrideLock = false): void {
+  if (overrideLock && !force) {
+    // Why: Git's second force also discards dirty files, so lock override must
+    // never grant a permission the caller did not explicitly provide.
+    throw new Error(LOCK_OVERRIDE_REQUIRES_FORCE_MESSAGE)
   }
 }
 

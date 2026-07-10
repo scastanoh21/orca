@@ -26762,6 +26762,21 @@ describe('OrcaRuntimeService', () => {
     expect(removeWorktree).not.toHaveBeenCalled()
   })
 
+  it('rejects lock override without dirty-file force before any removal work', async () => {
+    const runtime = new OrcaRuntimeService(store)
+    const listCallCount = vi.mocked(listWorktreesStrict).mock.calls.length
+    const hookCallCount = vi.mocked(runHook).mock.calls.length
+    const removeCallCount = vi.mocked(removeWorktree).mock.calls.length
+
+    await expect(
+      runtime.removeManagedWorktree(TEST_WORKTREE_ID, false, false, true)
+    ).rejects.toThrow('Worktree lock override requires force deletion permission.')
+
+    expect(vi.mocked(listWorktreesStrict).mock.calls).toHaveLength(listCallCount)
+    expect(vi.mocked(runHook).mock.calls).toHaveLength(hookCallCount)
+    expect(vi.mocked(removeWorktree).mock.calls).toHaveLength(removeCallCount)
+  })
+
   it('fails locked dirty-force deletes before hooks, link cleanup, or PTY teardown', async () => {
     const repo = { ...store.getRepos()[0], symlinkPaths: ['node_modules'] }
     const runtimeStore = {

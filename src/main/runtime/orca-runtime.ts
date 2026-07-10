@@ -127,7 +127,10 @@ import type {
   WorkspaceSessionState,
   DirEntry
 } from '../../shared/types'
-import { assertWorktreeUnlockedForRemoval } from '../../shared/worktree-removal'
+import {
+  assertWorktreeRemovalForcePermissions,
+  assertWorktreeUnlockedForRemoval
+} from '../../shared/worktree-removal'
 import {
   getRepoExecutionHostId,
   parseExecutionHostId,
@@ -15537,6 +15540,7 @@ export class OrcaRuntimeService {
     if (!this.store) {
       throw new Error('runtime_unavailable')
     }
+    assertWorktreeRemovalForcePermissions(force, overrideLock)
     const store = this.store
     const removalTarget = await this.resolveWorktreeRemovalTarget(worktreeSelector)
     const optionsKey = getRuntimeWorktreeRemovalOptionsKey(force, runHooks, overrideLock)

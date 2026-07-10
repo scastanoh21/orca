@@ -1,6 +1,9 @@
 import * as path from 'node:path'
 import type { RemoveWorktreeResult } from '../shared/types'
-import { assertWorktreeUnlockedForRemoval } from '../shared/worktree-removal'
+import {
+  assertWorktreeRemovalForcePermissions,
+  assertWorktreeUnlockedForRemoval
+} from '../shared/worktree-removal'
 import { deleteAlreadyMergedRelayBranchAfterSafeDeleteFailure } from './git-handler-branch-cleanup'
 import type { GitExec } from './git-handler-ops'
 import { isUnsupportedWorktreeListZError, parseWorktreeList } from './git-handler-utils'
@@ -160,6 +163,7 @@ export async function removeWorktreeOp(
   const overrideLock = params.overrideLock === true
   const deleteBranch = params.deleteBranch !== false
   const forceBranchDelete = params.forceBranchDelete === true
+  assertWorktreeRemovalForcePermissions(force === true, overrideLock)
 
   let repoPath = worktreePath
   try {

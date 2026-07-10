@@ -23,6 +23,8 @@ export function getDeleteWorktreeDirtyChangeCounts({
     if ((changeCount ?? 0) > 0) {
       result.set(item.id, changeCount ?? 0)
     } else if (forceDeleteReason === 'dirty') {
+      // Why: Git proved the worktree dirty even when renderer status has not
+      // loaded; keep the warning visible without inventing a file count.
       result.set(item.id, 0)
     }
   }

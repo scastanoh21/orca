@@ -7798,6 +7798,19 @@ describe('registerWorktreeHandlers', () => {
     expect(removeWorktreeMock).not.toHaveBeenCalled()
   })
 
+  it('rejects lock override without dirty-file force before any removal work', async () => {
+    await expect(
+      handlers['worktrees:remove'](null, {
+        worktreeId: 'repo-1::/workspace/feature-wt',
+        overrideLock: true
+      })
+    ).rejects.toThrow('Worktree lock override requires force deletion permission.')
+
+    expect(listWorktreesMock).not.toHaveBeenCalled()
+    expect(runHookMock).not.toHaveBeenCalled()
+    expect(removeWorktreeMock).not.toHaveBeenCalled()
+  })
+
   it('fails locked dirty-force deletes before hooks, link cleanup, or PTY teardown', async () => {
     listWorktreesMock.mockResolvedValue([
       {

@@ -29,7 +29,10 @@ import type {
   Worktree,
   WorktreeMeta
 } from '../../shared/types'
-import { assertWorktreeUnlockedForRemoval } from '../../shared/worktree-removal'
+import {
+  assertWorktreeRemovalForcePermissions,
+  assertWorktreeUnlockedForRemoval
+} from '../../shared/worktree-removal'
 import {
   buildKnownOrcaWorkspaceLayouts,
   isLegacyRepoForExternalWorktreeVisibility,
@@ -1360,6 +1363,7 @@ export function registerWorktreeHandlers(
         skipArchive?: boolean
       }
     ) => {
+      assertWorktreeRemovalForcePermissions(args.force === true, args.overrideLock === true)
       const optionsKey = getWorktreeRemovalOptionsKey(args)
       const inFlightRemoval = worktreeRemovalsInFlight.get(args.worktreeId)
       if (inFlightRemoval) {
