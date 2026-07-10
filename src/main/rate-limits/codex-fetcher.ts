@@ -34,6 +34,9 @@ const RPC_TIMEOUT_MS = 10_000
 const WSL_RPC_TIMEOUT_MS = 25_000
 const PTY_TIMEOUT_MS = 15_000
 const BACKEND_TIMEOUT_MS = 10_000
+// Why: redeeming a reset credit is an explicit user action, not a background
+// poll — give it more room before failing so a slow backend can still finish.
+const REDEEM_BACKEND_TIMEOUT_MS = 30_000
 const MAX_DIAGNOSTIC_OUTPUT_LENGTH = 100_000
 
 export type FetchCodexRateLimitsOptions = {
@@ -289,8 +292,11 @@ function mapBackendRateLimitResetCredits(
   }
 }
 
-function createBackendRequestSignal(callerSignal?: AbortSignal): AbortSignal {
-  const timeoutSignal = AbortSignal.timeout(BACKEND_TIMEOUT_MS)
+function createBackendRequestSignal(
+  callerSignal?: AbortSignal,
+  timeoutMs = BACKEND_TIMEOUT_MS
+): AbortSignal {
+  const timeoutSignal = AbortSignal.timeout(timeoutMs)
   return callerSignal ? AbortSignal.any([callerSignal, timeoutSignal]) : timeoutSignal
 }
 
@@ -424,7 +430,7 @@ export async function consumeCodexRateLimitResetCredit(options: {
   if (!options.idempotencyKey.trim()) {
     throw new Error('Codex reset idempotency key is required')
   }
-  const signal = createBackendRequestSignal()
+  const signal = createBackendRequestSignal(undefined, REDEEM_BACKEND_TIMEOUT_MS)
   const auth = await getCodexBackendAuthHeaders(options, signal)
   if (!auth) {
     throw new Error('Codex not signed in')

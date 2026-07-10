@@ -321,6 +321,9 @@ describe('codex settings write-back promotion', () => {
       syncSystemConfigIntoManagedCodexHome()
 
       expect(statSync(systemConfigPath()).mode & 0o777).toBe(0o600)
+      // The created ~/.codex itself is owner-only — it will also hold
+      // auth.json once the user signs in.
+      expect(statSync(join(tmpHome, '.codex')).mode & 0o777).toBe(0o700)
     }
   )
 
@@ -346,7 +349,6 @@ describe('codex settings write-back promotion', () => {
     () => {
       mkdirSync(join(tmpHome, '.codex'), { recursive: true })
       const realConfigPath = join(tmpHome, 'dotfiles', 'config.toml')
-      mkdirSync(join(tmpHome, 'dotfiles'), { recursive: true })
       symlinkSync(realConfigPath, systemConfigPath())
       syncSystemConfigIntoManagedCodexHome()
 

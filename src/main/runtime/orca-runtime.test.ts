@@ -14958,27 +14958,28 @@ describe('OrcaRuntimeService', () => {
       [TEST_WORKTREE_ID]: makeWorktreeMeta({ isUnread: false })
     }
     const resumeSleepingAgents = vi.fn()
+    const getWorkspaceSession = vi.fn(() => ({
+      ...getDefaultWorkspaceSession(),
+      sleepingAgentSessionsByPaneKey: {
+        'tab-1:leaf-1': {
+          paneKey: 'tab-1:leaf-1',
+          tabId: 'tab-1',
+          worktreeId: TEST_WORKTREE_ID,
+          agent: 'codex',
+          providerSession: { key: 'session_id', id: 'session-1' },
+          prompt: 'test',
+          state: 'done',
+          capturedAt: 1,
+          updatedAt: 1,
+          origin: 'worktree-sleep'
+        }
+      }
+    }))
     const runtime = new OrcaRuntimeService({
       ...store,
       getAllWorktreeMeta: () => metaById,
       getWorktreeMeta: (worktreeId: string) => metaById[worktreeId],
-      getWorkspaceSession: () => ({
-        ...getDefaultWorkspaceSession(),
-        sleepingAgentSessionsByPaneKey: {
-          'tab-1:leaf-1': {
-            paneKey: 'tab-1:leaf-1',
-            tabId: 'tab-1',
-            worktreeId: TEST_WORKTREE_ID,
-            agent: 'codex',
-            providerSession: { key: 'session_id', id: 'session-1' },
-            prompt: 'test',
-            state: 'done',
-            capturedAt: 1,
-            updatedAt: 1,
-            origin: 'worktree-sleep'
-          }
-        }
-      })
+      getWorkspaceSession
     } as never)
     runtime.setNotifier({
       worktreesChanged: vi.fn(),
@@ -15008,6 +15009,9 @@ describe('OrcaRuntimeService', () => {
 
     expect(result.activated).toBe(true)
     expect(result.sleepingAgentWake).toBe('unsupported-headless')
+    // Why: sleeping records are host-partitioned; the check must read the
+    // repo's execution host partition, not always the local one.
+    expect(getWorkspaceSession).toHaveBeenCalledWith('local')
     expect(resumeSleepingAgents).not.toHaveBeenCalled()
   })
 

@@ -10,6 +10,7 @@ import {
 } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { writeFileAtomically } from '../codex-accounts/fs-utils'
+import { parseWslUncPath } from '../../shared/wsl-paths'
 import { getOrcaManagedCodexHomePath, getSystemCodexHomePath } from './codex-home-paths'
 import {
   createTomlLineScanState,
@@ -221,10 +222,25 @@ function promoteCodexRuntimeSettingsToSystemUnsafe(homes: CodexSettingsPromotion
   }
   // Why: a genuinely fresh host has no ~/.codex yet; without the directory
   // the atomic write ENOENTs and the following mirror wipes the setting.
-  mkdirSync(systemHomePath, { recursive: true })
+  // Owner-only: the directory holds auth.json and the full user config.
+  mkdirSync(systemHomePath, { recursive: true, mode: 0o700 })
   const writeTarget = resolvePromotionWriteTarget(systemTomlPath)
-  const systemContent = existsSync(writeTarget.path) ? readFileSync(writeTarget.path, 'utf-8') : ''
-  writeFileAtomically(writeTarget.path, upsertTopLevelSettingsInContent(systemContent, updates), {
+  // Why: a dangling dotfile-manager symlink can point into a directory tree
+  // that has not been materialized yet; preserve the link and create its real
+  // parent so the atomic temp file can be written beside the target.
+  mkdirSync(dirname(writeTarget.path), { recursive: true, mode: 0o700 })
+  const targetExists = existsSync(writeTarget.path)
+  const systemContent = targetExists ? readFileSync(writeTarget.path, 'utf-8') : ''
+  const nextContent = upsertTopLevelSettingsInContent(systemContent, updates)
+  if (targetExists && parseWslUncPath(writeTarget.path)) {
+    // Why: symlink metadata through the \\wsl$ 9P provider is not reliable
+    // enough for realpath/lstat detection, and an atomic rename would replace
+    // a WSL-side dotfile symlink with a plain file. Writing through the
+    // existing file preserves the Linux-side inode (and its mode).
+    writeFileSync(writeTarget.path, nextContent, 'utf-8')
+    return
+  }
+  writeFileAtomically(writeTarget.path, nextContent, {
     mode: writeTarget.mode
   })
 }

@@ -148,7 +148,8 @@ describe('Codex backend rate-limit requests', () => {
       idempotencyKey: 'redeem-timeout'
     })
     await vi.advanceTimersByTimeAsync(0)
-    expect(timeout).toHaveBeenCalledWith(10_000)
+    // Why: redeem is user-triggered, so it gets the longer redeem deadline.
+    expect(timeout).toHaveBeenCalledWith(30_000)
     expect(readFileMock).toHaveBeenCalledWith(join('/managed/deadline-home', 'auth.json'), 'utf8')
 
     timeoutController.abort(deadlineError)

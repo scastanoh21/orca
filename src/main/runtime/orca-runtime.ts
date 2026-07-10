@@ -127,7 +127,11 @@ import type {
   WorkspaceSessionState,
   DirEntry
 } from '../../shared/types'
-import { parseExecutionHostId, type ExecutionHostId } from '../../shared/execution-host'
+import {
+  getRepoExecutionHostId,
+  parseExecutionHostId,
+  type ExecutionHostId
+} from '../../shared/execution-host'
 import type { SleepingAgentLaunchConfig } from '../../shared/agent-session-resume'
 import type { RuntimeClientEvent } from '../../shared/runtime-client-events'
 import { toRuntimeActivateWorktreeEvent } from '../../shared/runtime-client-events'
@@ -12665,8 +12669,12 @@ export class OrcaRuntimeService {
           this.notifier?.resumeSleepingAgents?.(worktree.id)
           sleepingAgentWake = 'requested'
         } else if (
+          // Why: sleeping records are partitioned by execution host; reading
+          // only the local partition would miss slept agents on SSH-host
+          // worktrees and skip the headless warning for them.
           Object.values(
-            this.store?.getWorkspaceSession?.().sleepingAgentSessionsByPaneKey ?? {}
+            this.store?.getWorkspaceSession?.(getRepoExecutionHostId(repo))
+              .sleepingAgentSessionsByPaneKey ?? {}
           ).some((record) => record.worktreeId === worktree.id)
         ) {
           // Why: headless is only degraded when this worktree actually has a
