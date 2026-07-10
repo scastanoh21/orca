@@ -19,7 +19,7 @@ import { OpenCodeUsageStore, normalizePersistedState } from './store'
 
 function getDefaultState(): OpenCodeUsagePersistedState {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     worktreeFingerprint: null,
     processedDatabases: [],
     sessions: [],
@@ -283,7 +283,8 @@ describe('OpenCodeUsageStore', () => {
             mtimeMs: 1,
             size: 2,
             sessions: [makeSession()],
-            dailyAggregates: [makeDaily()]
+            dailyAggregates: [makeDaily()],
+            ownedSessionIds: ['session-1']
           }
         ],
         sessions: [makeSession()],
@@ -300,7 +301,8 @@ describe('OpenCodeUsageStore', () => {
             mtimeMs: 1,
             size: 2,
             sessions: [],
-            dailyAggregates: []
+            dailyAggregates: [],
+            ownedSessionIds: []
           }
         ]
       }).processedDatabases

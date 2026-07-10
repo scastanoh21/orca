@@ -165,6 +165,128 @@ describe('scanClaudeUsageFiles', () => {
     expect(second.dailyAggregates[0]?.inputTokens).toBe(999)
   })
 
+  it('counts turns copied into forked session files exactly once', async () => {
+    const root = await makeClaudeProjectsRoot()
+    const projectDir = join(root, '.claude', 'projects', 'project-a')
+    const originalFile = join(projectDir, 'aaaa-original.jsonl')
+    const forkFile = join(projectDir, 'bbbb-fork.jsonl')
+
+    const turn = (
+      sessionId: string,
+      messageId: string,
+      requestId: string,
+      inputTokens: number
+    ): string =>
+      JSON.stringify({
+        type: 'assistant',
+        sessionId,
+        timestamp: '2026-04-09T10:00:00.000Z',
+        requestId,
+        cwd: '/workspace/repo-a',
+        message: {
+          id: messageId,
+          model: 'claude-sonnet-4-6',
+          usage: { input_tokens: inputTokens, output_tokens: 10 }
+        }
+      })
+
+    await writeFile(
+      originalFile,
+      [turn('session-1', 'msg_1', 'req_1', 100), turn('session-1', 'msg_2', 'req_2', 200)].join(
+        '\n'
+      )
+    )
+    // Fork copies the original history with preserved message/request IDs but a
+    // rewritten sessionId, then appends its own new turn.
+    await writeFile(
+      forkFile,
+      [
+        turn('session-2', 'msg_1', 'req_1', 100),
+        turn('session-2', 'msg_2', 'req_2', 200),
+        turn('session-2', 'msg_3', 'req_3', 400)
+      ].join('\n')
+    )
+
+    vi.resetModules()
+    vi.doMock('os', async () => ({
+      ...(await vi.importActual<typeof Os>('os')),
+      homedir: () => root
+    }))
+    const { scanClaudeUsageFiles } = await import('./scanner')
+
+    const result = await scanClaudeUsageFiles([])
+    const totalInput = result.dailyAggregates.reduce(
+      (sum, aggregate) => sum + aggregate.inputTokens,
+      0
+    )
+
+    expect(totalInput).toBe(700)
+    expect(result.processedFiles[0]?.ownedDedupeKeys).toEqual(['msg_1:req_1', 'msg_2:req_2'])
+    expect(result.processedFiles[1]?.ownedDedupeKeys).toEqual(['msg_3:req_3'])
+  })
+
+  it('keeps fork dedupe stable when the original file projection is reused from cache', async () => {
+    const root = await makeClaudeProjectsRoot()
+    const projectDir = join(root, '.claude', 'projects', 'project-a')
+    const originalFile = join(projectDir, 'aaaa-original.jsonl')
+    const forkFile = join(projectDir, 'zzzz-fork.jsonl')
+
+    const turn = (
+      sessionId: string,
+      messageId: string,
+      requestId: string,
+      inputTokens: number
+    ): string =>
+      JSON.stringify({
+        type: 'assistant',
+        sessionId,
+        timestamp: '2026-04-09T10:00:00.000Z',
+        requestId,
+        cwd: '/workspace/repo-a',
+        message: {
+          id: messageId,
+          model: 'claude-sonnet-4-6',
+          usage: { input_tokens: inputTokens, output_tokens: 10 }
+        }
+      })
+
+    await writeFile(originalFile, turn('session-1', 'msg_1', 'req_1', 100))
+
+    vi.resetModules()
+    vi.doMock('os', async () => ({
+      ...(await vi.importActual<typeof Os>('os')),
+      homedir: () => root
+    }))
+    const { scanClaudeUsageFiles } = await import('./scanner')
+
+    const first = await scanClaudeUsageFiles([])
+    expect(first.processedFiles[0]?.ownedDedupeKeys).toEqual(['msg_1:req_1'])
+
+    // A fork appears later while the original stays unchanged (cache reuse).
+    await writeFile(
+      forkFile,
+      [turn('session-2', 'msg_1', 'req_1', 100), turn('session-2', 'msg_9', 'req_9', 50)].join('\n')
+    )
+
+    const second = await scanClaudeUsageFiles([], first.processedFiles)
+    const totalInput = second.dailyAggregates.reduce(
+      (sum, aggregate) => sum + aggregate.inputTokens,
+      0
+    )
+
+    expect(totalInput).toBe(150)
+    expect(second.processedFiles.map((file) => file.ownedDedupeKeys)).toEqual([
+      ['msg_1:req_1'],
+      ['msg_9:req_9']
+    ])
+
+    // Rescanning with the full cache stays stable.
+    const third = await scanClaudeUsageFiles([], second.processedFiles)
+    expect(third.dailyAggregates.reduce((sum, aggregate) => sum + aggregate.inputTokens, 0)).toBe(
+      150
+    )
+  })
+
   it('canonicalizes repeated cwd paths once per scan file', async () => {
     const root = await makeClaudeProjectsRoot()
     const projectDir = join(root, '.claude', 'projects', 'project-a')

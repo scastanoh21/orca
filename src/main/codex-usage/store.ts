@@ -19,7 +19,9 @@ import { loadKnownUsageWorktreesByRepo, type UsageWorktreeRef } from '../usage-w
 import type { CodexUsagePersistedState } from './types'
 import { createWorktreeRefs, scanCodexUsageFiles } from './scanner'
 
-const SCHEMA_VERSION = 3
+// Why: v4 adds cross-file event ownership (fork/resume-copied rollout dedupe).
+// Older caches were built without it and can carry multiply-counted events (#8006).
+const SCHEMA_VERSION = 4
 const STALE_MS = 5 * 60_000
 const AUTOMATION_ATTRIBUTION_WINDOW_MS = 5 * 60_000
 

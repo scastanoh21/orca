@@ -66,6 +66,10 @@ export type ClaudeUsagePersistedState = {
 export type ClaudeUsagePersistedFile = ClaudeUsageProcessedFile & {
   sessions: ClaudeUsageSession[]
   dailyAggregates: ClaudeUsageDailyAggregate[]
+  /** Dedupe keys (message.id:requestId) this file counted. Forked/resumed
+   *  sessions copy earlier turns into new files; ownership keeps each turn
+   *  counted by exactly one cached file across incremental scans. */
+  ownedDedupeKeys: string[]
 }
 
 export type ClaudeUsageParsedTurn = {

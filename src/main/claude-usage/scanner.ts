@@ -209,9 +209,11 @@ function stripClaudeSourceMetadata(turn: ClaudeUsageParsedSourceTurn): ClaudeUsa
   }
 }
 
-function dedupeClaudeUsageTurns(turns: ClaudeUsageParsedSourceTurn[]): ClaudeUsageParsedTurn[] {
+function dedupeClaudeUsageTurns(
+  turns: ClaudeUsageParsedSourceTurn[]
+): ClaudeUsageParsedSourceTurn[] {
   const dedupeIndexByKey = new Map<string, number>()
-  const deduped: ClaudeUsageParsedTurn[] = []
+  const deduped: ClaudeUsageParsedSourceTurn[] = []
 
   for (const turn of turns) {
     if (turn.dedupeKey) {
@@ -228,8 +230,7 @@ function dedupeClaudeUsageTurns(turns: ClaudeUsageParsedSourceTurn[]): ClaudeUsa
       }
     }
 
-    const stripped = stripClaudeSourceMetadata(turn)
-    deduped.push(stripped)
+    deduped.push({ ...turn })
     if (turn.dedupeKey) {
       dedupeIndexByKey.set(turn.dedupeKey, deduped.length - 1)
     }
@@ -302,12 +303,12 @@ export async function parseClaudeUsageFile(filePath: string): Promise<ClaudeUsag
     }
   }
 
-  return dedupeClaudeUsageTurns(turns)
+  return dedupeClaudeUsageTurns(turns).map(stripClaudeSourceMetadata)
 }
 
 async function readClaudeUsageScanFile(filePath: string): Promise<{
   processedFile: ClaudeUsageProcessedFile
-  turns: ClaudeUsageParsedTurn[]
+  turns: ClaudeUsageParsedSourceTurn[]
 }> {
   const fileStat = await stat(filePath)
   let lineCount = 0
@@ -597,18 +598,6 @@ export function aggregateClaudeUsage(turns: ClaudeUsageAttributedTurn[]): {
   }
 }
 
-async function parseClaudeUsagePersistedFile(
-  filePath: string,
-  worktreeLookup: Map<string, ClaudeUsageWorktreeRef>
-): Promise<ClaudeUsagePersistedFile> {
-  const { processedFile, turns } = await readClaudeUsageScanFile(filePath)
-  const attributed = await attributeClaudeUsageTurns(turns, worktreeLookup)
-  return {
-    ...processedFile,
-    ...aggregateClaudeUsage(attributed)
-  }
-}
-
 export async function scanClaudeUsageFiles(
   worktrees: ClaudeUsageWorktreeRef[],
   previousProcessedFiles: ClaudeUsagePersistedFile[] = []
@@ -619,14 +608,13 @@ export async function scanClaudeUsageFiles(
 }> {
   const files = await listClaudeTranscriptFiles()
   const previousByPath = new Map(previousProcessedFiles.map((file) => [file.path, file]))
-  const processedFiles: ClaudeUsagePersistedFile[] = []
   const worktreeLookup = await buildWorktreeLookup(worktrees)
-  const sessionsById = new Map<string, ClaudeUsageSession>()
-  const dailyByKey = new Map<string, ClaudeUsageDailyAggregate>()
 
+  const reusedByPath = new Map<string, ClaudeUsagePersistedFile>()
+  const pathsToParse: string[] = []
   for (let index = 0; index < files.length; index += FILE_SCAN_BATCH_SIZE) {
     const batch = files.slice(index, index + FILE_SCAN_BATCH_SIZE)
-    const results = await Promise.all(
+    const reusable = await Promise.all(
       batch.map(async (filePath) => {
         const fileInfo = await getProcessedFileStat(filePath)
         const previous = previousByPath.get(filePath)
@@ -637,21 +625,81 @@ export async function scanClaudeUsageFiles(
           previous.mtimeMs === fileInfo.mtimeMs &&
           previous.size === fileInfo.size &&
           Array.isArray(previous.sessions) &&
-          Array.isArray(previous.dailyAggregates)
-
-        return canReuse ? previous : parseClaudeUsagePersistedFile(filePath, worktreeLookup)
+          Array.isArray(previous.dailyAggregates) &&
+          Array.isArray(previous.ownedDedupeKeys)
+        return canReuse ? previous : null
       })
     )
-    for (const processed of results) {
-      processedFiles.push(processed)
-      mergeClaudeSessions(sessionsById, processed.sessions)
-      mergeClaudeDailyAggregates(dailyByKey, processed.dailyAggregates)
+    for (const [batchIndex, previous] of reusable.entries()) {
+      if (previous) {
+        reusedByPath.set(batch[batchIndex], previous)
+      } else {
+        pathsToParse.push(batch[batchIndex])
+      }
     }
-    // Why: transcript scans run in Electron's main process. Small parallel
-    // batches cut independent file I/O without letting Settings stay blocked.
     if (index + batch.length < files.length) {
       await yieldToEventLoop()
     }
+  }
+
+  // Why: resuming or forking a Claude session copies earlier turns — with their
+  // original message/request IDs — into a new transcript file under a new
+  // session id. Per-file dedupe cannot see those copies, so long-lived sessions
+  // get re-counted on every fork (issue #8006). Cross-file ownership counts each
+  // turn for exactly one file; cached files keep the claims they persisted.
+  const turnOwnerByDedupeKey = new Map<string, string>()
+  for (const [filePath, previous] of reusedByPath) {
+    for (const dedupeKey of previous.ownedDedupeKeys) {
+      turnOwnerByDedupeKey.set(dedupeKey, filePath)
+    }
+  }
+
+  const parsedByPath = new Map<string, ClaudeUsagePersistedFile>()
+  for (let index = 0; index < pathsToParse.length; index += FILE_SCAN_BATCH_SIZE) {
+    const batch = pathsToParse.slice(index, index + FILE_SCAN_BATCH_SIZE)
+    // Why: transcript scans run in Electron's main process. Small parallel
+    // batches cut independent file I/O without letting Settings stay blocked.
+    const reads = await Promise.all(batch.map((filePath) => readClaudeUsageScanFile(filePath)))
+    for (const [batchIndex, filePath] of batch.entries()) {
+      const { processedFile, turns } = reads[batchIndex]
+      // Why: ownership claims must be sequential in sorted-path order so
+      // rescans assign duplicated turns to the same file deterministically.
+      const ownedTurns: ClaudeUsageParsedTurn[] = []
+      const ownedDedupeKeys: string[] = []
+      for (const turn of turns) {
+        if (turn.dedupeKey) {
+          const owner = turnOwnerByDedupeKey.get(turn.dedupeKey)
+          if (owner !== undefined && owner !== filePath) {
+            continue
+          }
+          turnOwnerByDedupeKey.set(turn.dedupeKey, filePath)
+          ownedDedupeKeys.push(turn.dedupeKey)
+        }
+        ownedTurns.push(stripClaudeSourceMetadata(turn))
+      }
+      const attributed = await attributeClaudeUsageTurns(ownedTurns, worktreeLookup)
+      parsedByPath.set(filePath, {
+        ...processedFile,
+        ...aggregateClaudeUsage(attributed),
+        ownedDedupeKeys
+      })
+    }
+    if (index + batch.length < pathsToParse.length) {
+      await yieldToEventLoop()
+    }
+  }
+
+  const processedFiles: ClaudeUsagePersistedFile[] = []
+  const sessionsById = new Map<string, ClaudeUsageSession>()
+  const dailyByKey = new Map<string, ClaudeUsageDailyAggregate>()
+  for (const filePath of files) {
+    const processed = reusedByPath.get(filePath) ?? parsedByPath.get(filePath)
+    if (!processed) {
+      continue
+    }
+    processedFiles.push(processed)
+    mergeClaudeSessions(sessionsById, processed.sessions)
+    mergeClaudeDailyAggregates(dailyByKey, processed.dailyAggregates)
   }
 
   return {

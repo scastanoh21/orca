@@ -86,6 +86,10 @@ export type CodexUsageDailyAggregate = {
 export type CodexUsagePersistedFile = CodexUsageProcessedFile & {
   sessions: CodexUsageSession[]
   dailyAggregates: CodexUsageDailyAggregate[]
+  /** Event keys this file counted. Resumed/forked rollouts copy earlier
+   *  token_count records into new files; ownership keeps each record counted
+   *  by exactly one cached file across incremental scans. */
+  ownedEventKeys: string[]
 }
 
 export type CodexUsagePersistedState = {
@@ -105,6 +109,9 @@ export type CodexUsagePersistedState = {
 export type CodexUsageParsedEvent = {
   sessionId: string
   timestamp: string
+  /** Raw-record identity (session, timestamp, token tuples) used to dedupe
+   *  the same token_count record copied across fork/resume rollout files. */
+  eventKey: string
   model: string | null
   cwd: string | null
   hasInferredPricing: boolean

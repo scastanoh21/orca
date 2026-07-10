@@ -86,6 +86,10 @@ export type OpenCodeUsageDailyAggregate = {
 export type OpenCodeUsagePersistedDatabase = OpenCodeUsageProcessedDatabase & {
   sessions: OpenCodeUsageSession[]
   dailyAggregates: OpenCodeUsageDailyAggregate[]
+  /** Session ids this database counted. Sibling copies (opencode-backup.db)
+   *  duplicate sessions; ownership keeps each session counted by exactly one
+   *  cached database across incremental scans. */
+  ownedSessionIds: string[]
 }
 
 export type OpenCodeUsagePersistedState = {

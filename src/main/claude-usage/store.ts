@@ -19,7 +19,9 @@ import { loadKnownUsageWorktreesByRepo, type UsageWorktreeRef } from '../usage-w
 import type { ClaudeUsagePersistedState } from './types'
 import { createWorktreeRefs, getSessionProjectLabel, scanClaudeUsageFiles } from './scanner'
 
-const SCHEMA_VERSION = 3
+// Why: v4 adds cross-file turn ownership (fork-copied history dedupe). Older
+// caches were built without it and can carry multiply-counted turns (#8006).
+const SCHEMA_VERSION = 4
 const STALE_MS = 5 * 60_000
 const AUTOMATION_ATTRIBUTION_WINDOW_MS = 5 * 60_000
 

@@ -388,6 +388,28 @@ function resolveCodexUsageDelta(
   return null
 }
 
+function buildCodexUsageEventKey(
+  sessionId: string,
+  timestamp: string,
+  totalUsage: CodexUsageRawUsage | null,
+  lastUsage: CodexUsageRawUsage | null
+): string {
+  // Why: fork/resume copies token_count records byte-for-byte into a new
+  // rollout file. Keying on the raw record (not the derived delta) makes the
+  // copy and the original identical regardless of surrounding parse context.
+  const tupleOf = (usage: CodexUsageRawUsage | null): string =>
+    usage
+      ? [
+          usage.inputTokens,
+          usage.cachedInputTokens,
+          usage.outputTokens,
+          usage.reasoningOutputTokens,
+          usage.totalTokens
+        ].join(',')
+      : ''
+  return [sessionId, timestamp, tupleOf(totalUsage), tupleOf(lastUsage)].join('|')
+}
+
 function extractString(value: unknown): string | null {
   if (typeof value !== 'string') {
     return null
@@ -956,6 +978,7 @@ export function parseCodexUsageRecord(
   return {
     sessionId: context.sessionId,
     timestamp: parsed.timestamp,
+    eventKey: buildCodexUsageEventKey(context.sessionId, parsed.timestamp, totalUsage, lastUsage),
     cwd: context.currentCwd ?? context.sessionCwd,
     model: resolvedModel,
     hasInferredPricing,
@@ -970,7 +993,7 @@ export function parseCodexUsageRecord(
 export async function parseCodexUsageFile(
   filePath: string,
   worktrees: (CodexUsageWorktreeRef & { canonicalPath: string })[],
-  options: { skipInitialBytes?: number } = {}
+  options: { skipInitialBytes?: number; claimEventKey?: (eventKey: string) => boolean } = {}
 ): Promise<CodexUsagePersistedFile> {
   const processedFile = await getProcessedFileInfo(filePath)
   const lines = createInterface({
@@ -992,11 +1015,19 @@ export async function parseCodexUsageFile(
     totalOnlyBaselinePending: (options.skipInitialBytes ?? 0) > 0
   }
 
+  const ownedEventKeys = new Set<string>()
   for await (const line of lines) {
     const parsed = parseCodexUsageRecord(line, context)
     if (!parsed) {
       continue
     }
+    // Why: fork/resume rollouts start with a copied prefix of the parent file.
+    // Events another file already owns are dropped here, but the record still
+    // advanced context.previousTotals above, so later deltas stay correct.
+    if (options.claimEventKey && !options.claimEventKey(parsed.eventKey)) {
+      continue
+    }
+    ownedEventKeys.add(parsed.eventKey)
     const attributed = await attributeCodexUsageEvent(parsed, worktrees)
     if (attributed) {
       events.push(attributed)
@@ -1005,7 +1036,8 @@ export async function parseCodexUsageFile(
 
   return {
     ...processedFile,
-    ...aggregateCodexUsage(events)
+    ...aggregateCodexUsage(events),
+    ownedEventKeys: [...ownedEventKeys]
   }
 }
 
@@ -1019,12 +1051,11 @@ export async function scanCodexUsageFiles(
 }> {
   const files = await listCodexSessionFiles()
   const previousByPath = new Map(previousProcessedFiles.map((file) => [file.path, file]))
-  const processedFiles: CodexUsagePersistedFile[] = []
   const worktreesWithCanonicalPaths = await buildWorktreesWithCanonicalPaths(worktrees)
   const legacySourceSkipBytesByPath = getLegacySourceSkipBytesByPath(files)
-  const sessionsById = new Map<string, CodexUsageSession>()
-  const dailyByKey = new Map<string, CodexUsageDailyAggregate>()
 
+  const reusedByPath = new Map<string, CodexUsagePersistedFile>()
+  const pathsToParse: string[] = []
   for (const [index, filePath] of files.entries()) {
     const legacySourceSkipBytes = legacySourceSkipBytesByPath.get(filePath) ?? 0
     const fileInfo = await getProcessedFileInfo(filePath)
@@ -1033,17 +1064,45 @@ export async function scanCodexUsageFiles(
       legacySourceSkipBytes === 0 &&
       previous &&
       previous.mtimeMs === fileInfo.mtimeMs &&
-      previous.size === fileInfo.size
+      previous.size === fileInfo.size &&
+      Array.isArray(previous.ownedEventKeys)
+    if (canReuse) {
+      reusedByPath.set(filePath, previous)
+    } else {
+      pathsToParse.push(filePath)
+    }
+    if ((index + 1) % YIELD_EVERY_FILES === 0) {
+      await yieldToEventLoop()
+    }
+  }
 
-    const processed = canReuse
-      ? previous
-      : await parseCodexUsageFile(filePath, worktreesWithCanonicalPaths, {
-          skipInitialBytes: legacySourceSkipBytes
-        })
+  // Why: resuming or forking a Codex session copies the parent rollout's
+  // token_count records into a new file, so per-file parsing re-counts the
+  // whole copied history once per descendant (#8006). Cross-file ownership
+  // counts each record for exactly one file; cached files keep the claims
+  // they persisted, and new files claim in sorted-path order so rescans stay
+  // deterministic.
+  const eventOwnerByKey = new Map<string, string>()
+  for (const [filePath, previous] of reusedByPath) {
+    for (const eventKey of previous.ownedEventKeys) {
+      eventOwnerByKey.set(eventKey, filePath)
+    }
+  }
 
-    processedFiles.push(processed)
-    mergeSessions(sessionsById, processed.sessions)
-    mergeDailyAggregates(dailyByKey, processed.dailyAggregates)
+  const parsedByPath = new Map<string, CodexUsagePersistedFile>()
+  for (const [index, filePath] of pathsToParse.entries()) {
+    const processed = await parseCodexUsageFile(filePath, worktreesWithCanonicalPaths, {
+      skipInitialBytes: legacySourceSkipBytesByPath.get(filePath) ?? 0,
+      claimEventKey: (eventKey) => {
+        const owner = eventOwnerByKey.get(eventKey)
+        if (owner !== undefined && owner !== filePath) {
+          return false
+        }
+        eventOwnerByKey.set(eventKey, filePath)
+        return true
+      }
+    })
+    parsedByPath.set(filePath, processed)
 
     // Why: Codex session history can grow large, and scans run on the Electron
     // main process. Yield regularly so opening Settings does not stall while
@@ -1051,6 +1110,19 @@ export async function scanCodexUsageFiles(
     if ((index + 1) % YIELD_EVERY_FILES === 0) {
       await yieldToEventLoop()
     }
+  }
+
+  const processedFiles: CodexUsagePersistedFile[] = []
+  const sessionsById = new Map<string, CodexUsageSession>()
+  const dailyByKey = new Map<string, CodexUsageDailyAggregate>()
+  for (const filePath of files) {
+    const processed = reusedByPath.get(filePath) ?? parsedByPath.get(filePath)
+    if (!processed) {
+      continue
+    }
+    processedFiles.push(processed)
+    mergeSessions(sessionsById, processed.sessions)
+    mergeDailyAggregates(dailyByKey, processed.dailyAggregates)
   }
 
   return {

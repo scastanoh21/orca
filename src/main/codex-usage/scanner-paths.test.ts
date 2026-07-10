@@ -300,6 +300,102 @@ describe('listCodexSessionFiles', () => {
     ).toBe(3)
   })
 
+  it('counts token events copied into forked rollout files exactly once', async () => {
+    const sessionsDir = join(userDataDir, 'codex-runtime-home', 'home', 'sessions')
+    mkdirSync(sessionsDir, { recursive: true })
+    const originalPath = join(sessionsDir, 'aaaa-original.jsonl')
+    const forkPath = join(sessionsDir, 'bbbb-fork.jsonl')
+    const copiedPrefix = [
+      `${JSON.stringify({
+        type: 'session_meta',
+        payload: { id: 'session-1', cwd: join(fakeHomeDir, 'repo') }
+      })}\n`,
+      usageRecord('2026-05-26T12:00:00.000Z', 10),
+      usageRecord('2026-05-26T12:01:00.000Z', 5, 15)
+    ].join('')
+    writeFileSync(originalPath, copiedPrefix, 'utf-8')
+    writeFileSync(forkPath, `${copiedPrefix}${usageRecord('2026-05-26T12:02:00.000Z', 7, 22)}`)
+
+    const result = await scanCodexUsageFiles([], [])
+
+    expect(
+      result.dailyAggregates.reduce((total, aggregate) => total + aggregate.totalTokens, 0)
+    ).toBe(22)
+    expect(
+      result.dailyAggregates.reduce((total, aggregate) => total + aggregate.eventCount, 0)
+    ).toBe(3)
+    expect(result.sessions).toHaveLength(1)
+    expect(result.sessions[0]?.totalTokens).toBe(22)
+  })
+
+  it('does not re-count the cumulative session for copied total-only records', async () => {
+    const sessionsDir = join(userDataDir, 'codex-runtime-home', 'home', 'sessions')
+    mkdirSync(sessionsDir, { recursive: true })
+    const originalPath = join(sessionsDir, 'aaaa-original.jsonl')
+    const forkPath = join(sessionsDir, 'bbbb-fork.jsonl')
+    const copiedPrefix = [
+      `${JSON.stringify({
+        type: 'session_meta',
+        payload: { id: 'session-1', cwd: join(fakeHomeDir, 'repo') }
+      })}\n`,
+      totalOnlyUsageRecord('2026-05-26T12:00:00.000Z', 10),
+      totalOnlyUsageRecord('2026-05-26T12:01:00.000Z', 15)
+    ].join('')
+    writeFileSync(originalPath, copiedPrefix, 'utf-8')
+    // Without cross-file ownership the fork's first copied total-only record
+    // re-counts the entire cumulative session (10) as a fresh delta.
+    writeFileSync(
+      forkPath,
+      `${copiedPrefix}${totalOnlyUsageRecord('2026-05-26T12:02:00.000Z', 22)}`
+    )
+
+    const result = await scanCodexUsageFiles([], [])
+
+    expect(
+      result.dailyAggregates.reduce((total, aggregate) => total + aggregate.totalTokens, 0)
+    ).toBe(22)
+    expect(
+      result.dailyAggregates.reduce((total, aggregate) => total + aggregate.eventCount, 0)
+    ).toBe(3)
+  })
+
+  it('keeps fork dedupe stable when the original file is reused from cache', async () => {
+    const sessionsDir = join(userDataDir, 'codex-runtime-home', 'home', 'sessions')
+    mkdirSync(sessionsDir, { recursive: true })
+    const originalPath = join(sessionsDir, 'aaaa-original.jsonl')
+    const forkPath = join(sessionsDir, 'zzzz-fork.jsonl')
+    const copiedPrefix = [
+      `${JSON.stringify({
+        type: 'session_meta',
+        payload: { id: 'session-1', cwd: join(fakeHomeDir, 'repo') }
+      })}\n`,
+      usageRecord('2026-05-26T12:00:00.000Z', 10),
+      usageRecord('2026-05-26T12:01:00.000Z', 5, 15)
+    ].join('')
+    writeFileSync(originalPath, copiedPrefix, 'utf-8')
+
+    const first = await scanCodexUsageFiles([], [])
+    expect(
+      first.dailyAggregates.reduce((total, aggregate) => total + aggregate.totalTokens, 0)
+    ).toBe(15)
+    expect(first.processedFiles[0]?.ownedEventKeys).toHaveLength(2)
+
+    // A fork appears later while the original stays unchanged (cache reuse).
+    writeFileSync(forkPath, `${copiedPrefix}${usageRecord('2026-05-26T12:02:00.000Z', 7, 22)}`)
+
+    const second = await scanCodexUsageFiles([], first.processedFiles)
+    expect(
+      second.dailyAggregates.reduce((total, aggregate) => total + aggregate.totalTokens, 0)
+    ).toBe(22)
+    expect(second.processedFiles.map((file) => file.ownedEventKeys.length)).toEqual([2, 1])
+
+    // Rescanning with the full cache stays stable.
+    const third = await scanCodexUsageFiles([], second.processedFiles)
+    expect(
+      third.dailyAggregates.reduce((total, aggregate) => total + aggregate.totalTokens, 0)
+    ).toBe(22)
+  })
+
   it('treats a leading total-only source suffix record as baseline', async () => {
     const runtimeSessionsDir = join(userDataDir, 'codex-runtime-home', 'home', 'sessions')
     const runtimeBridgeMarkerDir = join(
