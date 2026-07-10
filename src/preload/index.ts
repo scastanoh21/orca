@@ -851,6 +851,9 @@ const api = {
     ackData: (id: string, charCount: number): void => {
       ipcRenderer.send('pty:ackData', { id, charCount })
     },
+    rendererDispatcherReady: (): void => {
+      ipcRenderer.send('pty:rendererDispatcherReady')
+    },
     setActiveRendererPty: (id: string, active: boolean): void => {
       ipcRenderer.send('pty:setActiveRendererPty', { id, active })
     },
@@ -893,6 +896,10 @@ const api = {
       peakRendererInFlightChars: number
       peakMaxRendererInFlightCharsByPty: number
       ackGatedFlushSkipCount: number
+      rendererLifecycleResetCount: number
+      lastLifecycleResetClearedChars: number
+      rendererPtyDispatcherReady: boolean
+      rendererDispatcherReadyForcedCount: number
     }> => ipcRenderer.invoke('pty:getRendererDeliveryDebugSnapshot'),
 
     resetRendererDeliveryDebug: (): Promise<void> =>
