@@ -63,8 +63,11 @@ import {
 } from '../ui/dialog'
 import { getCodexAccountAuthWarning } from './codex-account-auth-warning'
 import {
+  getProviderAccountActiveIdForView,
+  getProviderAccountRuntime,
   providerAccountIsActiveInView,
-  providerAccountMatchesView
+  providerAccountMatchesView,
+  type ProviderAccountRuntimeView
 } from './provider-account-visibility'
 import { translate } from '@/i18n/i18n'
 import { cn } from '@/lib/utils'
@@ -167,46 +170,6 @@ function getCodexAccountLabel(
     return 'System default'
   }
   return state.accounts.find((account) => account.id === accountId)?.email ?? 'Codex account'
-}
-
-function getActiveCodexAccountIdForRuntime(
-  state: CodexRateLimitAccountsState,
-  runtime: LocalAccountRuntime
-): string | null {
-  if (runtime.runtime === 'host') {
-    return state.activeAccountIdsByRuntime?.host ?? state.activeAccountId
-  }
-  if (runtime.wslDistro) {
-    return state.activeAccountIdsByRuntime?.wsl?.[runtime.wslDistro] ?? null
-  }
-  const defaultSelection = state.activeAccountIdsByRuntime?.wsl?.__default__
-  if (defaultSelection) {
-    return defaultSelection
-  }
-  const selectedIds = Array.from(
-    new Set(Object.values(state.activeAccountIdsByRuntime?.wsl ?? {}).filter(Boolean))
-  )
-  return selectedIds.length === 1 ? selectedIds[0] : null
-}
-
-function getActiveClaudeAccountIdForRuntime(
-  state: ClaudeRateLimitAccountsState,
-  runtime: LocalAccountRuntime
-): string | null {
-  if (runtime.runtime === 'host') {
-    return state.activeAccountIdsByRuntime?.host ?? state.activeAccountId
-  }
-  if (runtime.wslDistro) {
-    return state.activeAccountIdsByRuntime?.wsl?.[runtime.wslDistro] ?? null
-  }
-  const defaultSelection = state.activeAccountIdsByRuntime?.wsl?.__default__
-  if (defaultSelection) {
-    return defaultSelection
-  }
-  const selectedIds = Array.from(
-    new Set(Object.values(state.activeAccountIdsByRuntime?.wsl ?? {}).filter(Boolean))
-  )
-  return selectedIds.length === 1 ? selectedIds[0] : null
 }
 
 function getClaudeAccountLabel(
@@ -403,8 +366,8 @@ export function AccountsPane({
   const visibleCodexAccounts = codexAccounts.accounts.filter((account) =>
     providerAccountMatchesView(account, accountRuntime, accountVisibilityOptions)
   )
-  const activeCodexAccountId = getActiveCodexAccountIdForRuntime(codexAccounts, accountRuntime)
-  const activeClaudeAccountId = getActiveClaudeAccountIdForRuntime(claudeAccounts, accountRuntime)
+  const activeCodexAccountId = getProviderAccountActiveIdForView(codexAccounts, accountRuntime)
+  const activeClaudeAccountId = getProviderAccountActiveIdForView(claudeAccounts, accountRuntime)
   const accountActiveOptions = { remoteOwner: isRemoteAccountScope }
   // Why: the auth warning is derived from the desktop's own rate-limit poll;
   // with a remote owner it would misattribute local auth state to the server.
@@ -648,17 +611,20 @@ export function AccountsPane({
     </SearchableSetting>
   ) : null
 
+  // Why: remote Windows flattens host and WSL rows, so mutation follow-up must
+  // compare the selected row's runtime slot instead of the forced host view.
   const runCodexAccountAction = async (
     action: typeof codexAction,
-    operation: () => Promise<CodexRateLimitAccountsState>
+    operation: () => Promise<CodexRateLimitAccountsState>,
+    actionRuntime: ProviderAccountRuntimeView = accountRuntime
   ): Promise<void> => {
-    const previousActiveAccountId = getActiveCodexAccountIdForRuntime(codexAccounts, accountRuntime)
+    const previousActiveAccountId = getProviderAccountActiveIdForView(codexAccounts, actionRuntime)
     setCodexAction(action)
     try {
       const next = await operation()
       await syncCodexAccounts(next)
       recordFeatureInteraction('codex-account-switching')
-      const nextActiveAccountId = getActiveCodexAccountIdForRuntime(next, accountRuntime)
+      const nextActiveAccountId = getProviderAccountActiveIdForView(next, actionRuntime)
       const shouldPromptRestart =
         action === 'adding' ||
         (action.startsWith('select:') && previousActiveAccountId !== nextActiveAccountId) ||
@@ -689,18 +655,16 @@ export function AccountsPane({
 
   const runClaudeAccountAction = async (
     action: typeof claudeAction,
-    operation: () => Promise<ClaudeRateLimitAccountsState>
+    operation: () => Promise<ClaudeRateLimitAccountsState>,
+    actionRuntime: ProviderAccountRuntimeView = accountRuntime
   ): Promise<void> => {
-    const previousActiveAccountId = getActiveClaudeAccountIdForRuntime(
-      claudeAccounts,
-      accountRuntime
-    )
+    const previousActiveAccountId = getProviderAccountActiveIdForView(claudeAccounts, actionRuntime)
     setClaudeAction(action)
     try {
       const next = await operation()
       await syncClaudeAccounts(next)
       recordFeatureInteraction('claude-account-switching')
-      const nextActiveAccountId = getActiveClaudeAccountIdForRuntime(next, accountRuntime)
+      const nextActiveAccountId = getProviderAccountActiveIdForView(next, actionRuntime)
       const shouldPromptRestart =
         action === 'adding' ||
         previousActiveAccountId !== nextActiveAccountId ||
@@ -917,12 +881,15 @@ export function AccountsPane({
                       <button
                         type="button"
                         onClick={() =>
-                          void runClaudeAccountAction(`select:${account.id}`, () =>
-                            selectClaudeProviderAccount(settings, {
-                              accountId: account.id,
-                              runtime: account.managedAuthRuntime ?? 'host',
-                              wslDistro: account.wslDistro ?? null
-                            })
+                          void runClaudeAccountAction(
+                            `select:${account.id}`,
+                            () =>
+                              selectClaudeProviderAccount(settings, {
+                                accountId: account.id,
+                                runtime: account.managedAuthRuntime ?? 'host',
+                                wslDistro: account.wslDistro ?? null
+                              }),
+                            getProviderAccountRuntime(account)
                           )
                         }
                         disabled={isBusy}
@@ -1236,12 +1203,15 @@ export function AccountsPane({
                       <button
                         type="button"
                         onClick={() =>
-                          void runCodexAccountAction(`select:${account.id}`, () =>
-                            selectCodexProviderAccount(settings, {
-                              accountId: account.id,
-                              runtime: account.managedHomeRuntime ?? 'host',
-                              wslDistro: account.wslDistro ?? null
-                            })
+                          void runCodexAccountAction(
+                            `select:${account.id}`,
+                            () =>
+                              selectCodexProviderAccount(settings, {
+                                accountId: account.id,
+                                runtime: account.managedHomeRuntime ?? 'host',
+                                wslDistro: account.wslDistro ?? null
+                              }),
+                            getProviderAccountRuntime(account)
                           )
                         }
                         disabled={isBusy}
@@ -1837,9 +1807,12 @@ export function AccountsPane({
                 if (!accountId) {
                   return
                 }
+                const account = codexAccounts.accounts.find((entry) => entry.id === accountId)
                 setRemoveAccountId(null)
-                void runCodexAccountAction(`remove:${accountId}`, () =>
-                  removeCodexProviderAccount(settings, accountId)
+                void runCodexAccountAction(
+                  `remove:${accountId}`,
+                  () => removeCodexProviderAccount(settings, accountId),
+                  account ? getProviderAccountRuntime(account) : accountRuntime
                 )
               }}
             >
@@ -1878,9 +1851,12 @@ export function AccountsPane({
                 if (!accountId) {
                   return
                 }
+                const account = claudeAccounts.accounts.find((entry) => entry.id === accountId)
                 setRemoveClaudeAccountId(null)
-                void runClaudeAccountAction(`remove:${accountId}`, () =>
-                  removeClaudeProviderAccount(settings, accountId)
+                void runClaudeAccountAction(
+                  `remove:${accountId}`,
+                  () => removeClaudeProviderAccount(settings, accountId),
+                  account ? getProviderAccountRuntime(account) : accountRuntime
                 )
               }}
             >

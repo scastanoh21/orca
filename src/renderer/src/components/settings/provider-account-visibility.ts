@@ -20,7 +20,7 @@ export type ProviderAccountRuntimeView = {
   wslDistro?: string | null
 }
 
-function getAccountRuntime(account: ProviderAccount): {
+export function getProviderAccountRuntime(account: ProviderAccount): {
   runtime: 'host' | 'wsl'
   wslDistro: string | null
 } {
@@ -34,7 +34,7 @@ function getAccountRuntime(account: ProviderAccount): {
   }
 }
 
-function getSelectedAccountIdForRuntime(
+export function getProviderAccountActiveIdForView(
   selection: ProviderAccountSelection,
   runtime: ProviderAccountRuntimeView
 ): string | null {
@@ -60,7 +60,7 @@ export function providerAccountMatchesView(
     ownerPlatform: NodeJS.Platform | null
   }
 ): boolean {
-  const accountView = getAccountRuntime(account)
+  const accountView = getProviderAccountRuntime(account)
 
   if (options.remoteOwner) {
     // Why: provider accounts belong to the Orca runtime, not its client or a
@@ -87,7 +87,10 @@ export function providerAccountIsActiveInView(
   if (options.remoteOwner) {
     // Why: remote Windows lists host and WSL accounts in one roster; Active must
     // follow each account's own runtime slot, not the forced host view filter.
-    return getSelectedAccountIdForRuntime(selection, getAccountRuntime(account)) === account.id
+    return (
+      getProviderAccountActiveIdForView(selection, getProviderAccountRuntime(account)) ===
+      account.id
+    )
   }
-  return getSelectedAccountIdForRuntime(selection, runtime) === account.id
+  return getProviderAccountActiveIdForView(selection, runtime) === account.id
 }

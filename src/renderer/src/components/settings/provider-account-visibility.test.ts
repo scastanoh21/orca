@@ -4,6 +4,8 @@ import type {
   CodexRateLimitAccountsState
 } from '../../../../shared/types'
 import {
+  getProviderAccountActiveIdForView,
+  getProviderAccountRuntime,
   providerAccountIsActiveInView,
   providerAccountMatchesView
 } from './provider-account-visibility'
@@ -133,6 +135,32 @@ describe('providerAccountMatchesView', () => {
 })
 
 describe('providerAccountIsActiveInView', () => {
+  it('detects a remote WSL selection change even when the host selection is unchanged', () => {
+    const before = {
+      activeAccountId: 'codex-host',
+      activeAccountIdsByRuntime: {
+        host: 'codex-host',
+        wsl: { Ubuntu: 'codex-wsl-old' }
+      }
+    }
+    const after = {
+      ...before,
+      activeAccountIdsByRuntime: {
+        ...before.activeAccountIdsByRuntime,
+        wsl: { Ubuntu: 'codex-wsl' }
+      }
+    }
+    const actionRuntime = getProviderAccountRuntime(codexWslAccount)
+
+    // Why: AccountsPane's remote view is forced to host, but restart prompts
+    // must compare the WSL slot changed by selecting or removing this row.
+    expect(getProviderAccountActiveIdForView(before, actionRuntime)).toBe('codex-wsl-old')
+    expect(getProviderAccountActiveIdForView(after, actionRuntime)).toBe('codex-wsl')
+    expect(getProviderAccountActiveIdForView(before, { runtime: 'host' })).toBe(
+      getProviderAccountActiveIdForView(after, { runtime: 'host' })
+    )
+  })
+
   it('marks remote WSL accounts active from their own runtime selection', () => {
     const selection = {
       activeAccountId: 'codex-host',
