@@ -22,8 +22,8 @@ type EditorPanelRenderModelParams = {
   activeFile: OpenFile
   fileContents: Record<string, FileContent>
   editorDrafts: StoreState['editorDrafts']
-  gitStatusByWorktree: StoreState['gitStatusByWorktree']
-  gitBranchChangesByWorktree: StoreState['gitBranchChangesByWorktree']
+  gitStatusEntries: StoreState['gitStatusByWorktree'][string] | undefined
+  gitBranchEntries: StoreState['gitBranchChangesByWorktree'][string] | undefined
   markdownViewMode: StoreState['markdownViewMode']
   isChangesMode: boolean
 }
@@ -32,8 +32,8 @@ export function getEditorPanelRenderModel({
   activeFile,
   fileContents,
   editorDrafts,
-  gitStatusByWorktree,
-  gitBranchChangesByWorktree,
+  gitStatusEntries,
+  gitBranchEntries,
   markdownViewMode,
   isChangesMode
 }: EditorPanelRenderModelParams) {
@@ -62,8 +62,8 @@ export function getEditorPanelRenderModel({
   // to a plain source rendering here.
   const rawReadOnly = activeFile.mode === 'edit' && activeFile.readOnly === true
   const viewerLanguage = rawReadOnly ? 'plaintext' : resolvedLanguage
-  const worktreeEntries = gitStatusByWorktree[activeFile.worktreeId] ?? []
-  const branchEntries = gitBranchChangesByWorktree[activeFile.worktreeId] ?? []
+  const worktreeEntries = gitStatusEntries ?? []
+  const branchEntries = gitBranchEntries ?? []
   const matchingWorktreeEntry =
     activeFile.mode === 'diff' &&
     (activeFile.diffSource === 'staged' || activeFile.diffSource === 'unstaged')
