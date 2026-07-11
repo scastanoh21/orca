@@ -516,6 +516,27 @@ describe('launchAgentBackgroundSession', () => {
     expect(mockPasteDraftWhenAgentReady).not.toHaveBeenCalled()
   })
 
+  it('falls back to paste delivery when a Hermes prompt overflows the startup-query budget', async () => {
+    const oversizedPrompt = 'x'.repeat(30_000)
+    const { launchAgentBackgroundSession } = await import('./launch-agent-background-session')
+
+    const result = await launchAgentBackgroundSession({
+      agent: 'hermes',
+      worktreeId: 'wt-1',
+      prompt: oversizedPrompt
+    })
+
+    expect(result).not.toBeNull()
+    expect(mockSpawn).toHaveBeenCalledWith(
+      expect.objectContaining({ command: 'hermes --tui' })
+    )
+    const spawnArgs = mockSpawn.mock.calls[0]?.[0]
+    expect(spawnArgs?.env?.ORCA_HERMES_STARTUP_QUERY).toBeUndefined()
+    expect(mockPasteDraftWhenAgentReady).toHaveBeenCalledWith(
+      expect.objectContaining({ agent: 'hermes', content: oversizedPrompt, submit: true })
+    )
+  })
+
   it('uses the configured cmd shell for Windows Hermes background launches', async () => {
     mockGetAgentLaunchPlatformForRepo.mockReturnValue('win32')
     Object.assign(state.settings, { terminalWindowsShell: 'cmd.exe' })

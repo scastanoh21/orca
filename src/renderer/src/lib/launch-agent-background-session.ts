@@ -83,8 +83,8 @@ export async function launchAgentBackgroundSession(
   const hasPrompt = trimmedPrompt.length > 0
   const isFollowupPath = TUI_AGENT_CONFIG[agent].promptInjectionMode === 'stdin-after-start'
 
-  const pasteDraftAfterLaunch = hasPrompt && isFollowupPath ? trimmedPrompt : null
-  const startupPlan = buildAgentStartupPlan({
+  let pasteDraftAfterLaunch = hasPrompt && isFollowupPath ? trimmedPrompt : null
+  let startupPlan = buildAgentStartupPlan({
     agent,
     prompt: hasPrompt && !isFollowupPath ? trimmedPrompt : '',
     cmdOverrides,
@@ -95,6 +95,26 @@ export async function launchAgentBackgroundSession(
     isRemote,
     allowEmptyPromptLaunch: !hasPrompt || isFollowupPath
   })
+  if (!startupPlan && hasPrompt && !isFollowupPath) {
+    // Why: a large prompt (e.g. an automation PR diff) can overflow the Hermes
+    // native startup-query env budget, making buildAgentStartupPlan return null.
+    // Rather than fail the whole dispatch, launch the agent with no prompt and
+    // paste it after the TUI is ready — the pre-native-query delivery path.
+    startupPlan = buildAgentStartupPlan({
+      agent,
+      prompt: '',
+      cmdOverrides,
+      agentArgs,
+      agentEnv,
+      platform: launchPlatform,
+      shell: startupShell,
+      isRemote,
+      allowEmptyPromptLaunch: true
+    })
+    if (startupPlan) {
+      pasteDraftAfterLaunch = trimmedPrompt
+    }
+  }
   if (!startupPlan) {
     return null
   }
