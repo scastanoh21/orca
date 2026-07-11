@@ -2,13 +2,13 @@
 
 ## Problem
 
-Issue [#8303](https://github.com/stablyai/orca/issues/8303) reports that sending a browser annotation to an already-running agent on Windows can fail with “The selected terminal is not a recognized agent session.” The browser menu reaches the shared explicit-target path at `src/renderer/src/lib/active-agent-note-send.ts:82`; the message is the `no-agent` result at `src/renderer/src/lib/active-agent-note-send-result.ts:28`.
+Issue [#8303](https://github.com/stablyai/orca/issues/8303) reports that sending a browser annotation to an already-running agent on Windows can fail with “The selected terminal is not a recognized agent session.” The browser menu reaches the shared explicit-target path in `active-agent-note-send.ts`; the message is the `no-agent` result from `active-agent-note-send-result.ts`.
 
 ## Root cause
 
-`getTerminalAgentStatus` trusts fresh pane-scoped hook state unless current title/wait evidence blocks it or `terminalHasShellForegroundProcess` reports a shell (`src/main/runtime/orca-runtime.ts:10229`, `src/main/runtime/orca-runtime.ts:10334`). On Windows, the ordinary foreground read can return the ConPTY shell (for example `powershell.exe`) while a recognized agent remains a live descendant, so readiness and guarded writes incorrectly return `no-agent`.
+`getTerminalAgentStatus` trusts fresh pane-scoped hook state unless current title/wait evidence blocks it or `terminalHasShellForegroundProcess` reports a shell. On Windows, the ordinary foreground read can return the ConPTY shell (for example `powershell.exe`) while a recognized agent remains a live descendant, so readiness and guarded writes incorrectly return `no-agent`.
 
-Local and daemon PTY providers already expose `confirmForegroundProcess` (`src/main/providers/types.ts:212`). Their Windows implementations perform a fresh process scan with exact ConPTY membership (`src/main/providers/local-pty-provider.ts:994`, `src/main/daemon/pty-subprocess.ts:1055`), but the send guard does not use that stronger evidence.
+Local and daemon PTY providers already expose `confirmForegroundProcess`. Their Windows implementations perform a fresh process scan with exact ConPTY membership, but the send guard does not use that stronger evidence.
 
 ## Non-goals
 
@@ -54,7 +54,7 @@ Local and daemon PTY providers already expose `confirmForegroundProcess` (`src/m
 
 - Runtime unit: fresh explicit state + ordinary shell + confirmed recognized agent is sendable.
 - Runtime unit: shell/non-agent/null/throw/missing confirmation remains rejected; confirmation is skipped for permission/wait/title blockers and ordinary recognized foreground evidence.
-- Runtime unit: a deferred ordinary read or confirmation followed by PTY exit/rebind cannot authorize the stale or replacement PTY, and both process reads receive the originally captured `ptyId`.
+- Runtime unit: a deferred ordinary read, confirmation, or controller-less yield followed by PTY exit/rebind cannot authorize the stale or replacement PTY; both process reads receive the captured `ptyId`, and provider methods retain their controller receiver.
 - RPC unit: guarded callback checks the exact write `ptyId`; a rebind returns not writable and invokes no write.
 - PTY controller routing unit: confirmation reaches the provider that owns the captured `ptyId`; an unsupported provider or routing failure returns unavailable evidence.
 - Provider/daemon regression: existing fresh-scan ordering, ConPTY membership, delayed-exit, mixed-version, and cached-follow-up tests remain green.

@@ -10254,6 +10254,7 @@ export class OrcaRuntimeService {
       const isRunningAgent =
         !terminalTitleBlocksExplicitAgentStatus(terminal.title) &&
         !(await this.terminalHasShellForegroundProcess(handle, ptyId))
+      this.assertTerminalAgentStatusPtyBinding(handle, ptyId)
       return {
         handle,
         isRunningAgent,
@@ -10288,15 +10289,12 @@ export class OrcaRuntimeService {
   }
 
   private assertTerminalAgentStatusPtyBinding(handle: string, expectedPtyId: string): void {
-    try {
-      if (this.getTerminalAgentStatusPtyId(handle) === expectedPtyId) {
-        return
-      }
-    } catch {
-      // Fall through to the stable binding error below.
+    if (this.getTerminalAgentStatusPtyId(handle) === expectedPtyId) {
+      return
     }
-    // Why: delayed process evidence belongs only to the PTY that started the read.
-    throw new Error('terminal_not_writable')
+    // Why: delayed process evidence belongs only to the PTY that started the
+    // read, while callers still rely on the established stale-handle contract.
+    throw new Error('terminal_handle_stale')
   }
 
   private getTerminalAgentStatusSnapshot(
@@ -10382,13 +10380,13 @@ export class OrcaRuntimeService {
     if (!foregroundProcess || !isShellProcess(foregroundProcess)) {
       return false
     }
-    const confirmForegroundProcess = this.ptyController.confirmForegroundProcess
-    if (!confirmForegroundProcess) {
+    const confirmationController = this.ptyController
+    if (!confirmationController?.confirmForegroundProcess) {
       return true
     }
     let confirmedProcess: string | null
     try {
-      confirmedProcess = await confirmForegroundProcess(ptyId)
+      confirmedProcess = await confirmationController.confirmForegroundProcess(ptyId)
     } catch {
       this.assertTerminalAgentStatusPtyBinding(handle, ptyId)
       return true

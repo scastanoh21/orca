@@ -8563,6 +8563,25 @@ describe('OrcaRuntimeService', () => {
     expect(confirmForegroundProcess).toHaveBeenCalledWith('pty-1')
   })
 
+  it('calls foreground confirmation with its controller receiver', async () => {
+    const getForegroundProcess = vi.fn(async () => 'powershell.exe')
+    const confirmForegroundProcess = vi.fn(
+      async function (this: { getForegroundProcess: typeof getForegroundProcess }) {
+        return this.getForegroundProcess === getForegroundProcess ? 'codex' : null
+      }
+    )
+    const { runtime, handle } = await createExplicitAgentStatusHarness({
+      getForegroundProcess,
+      confirmForegroundProcess
+    })
+
+    await expect(runtime.getTerminalAgentStatus(handle)).resolves.toMatchObject({
+      isRunningAgent: true,
+      status: 'working'
+    })
+    expect(confirmForegroundProcess).toHaveBeenCalledOnce()
+  })
+
   it.each([
     ['shell', async () => 'pwsh.exe'],
     ['non-agent', async () => 'vim'],
@@ -8674,8 +8693,20 @@ describe('OrcaRuntimeService', () => {
     syncPty('pty-2')
     foreground.resolve('zsh')
 
-    await expect(status).rejects.toThrow('terminal_not_writable')
+    await expect(status).rejects.toThrow('terminal_handle_stale')
     expect(confirmForegroundProcess).not.toHaveBeenCalled()
+  })
+
+  it('rejects a handle rebind while a controller-less status check yields', async () => {
+    const { runtime, handle, syncPty } = await createExplicitAgentStatusHarness({
+      getForegroundProcess: async () => 'zsh'
+    })
+    runtime.setPtyController(null)
+
+    const status = runtime.getTerminalAgentStatus(handle)
+    syncPty('pty-2')
+
+    await expect(status).rejects.toThrow('terminal_handle_stale')
   })
 
   it('rejects confirmation evidence when the handle rebinds during the fresh read', async () => {
@@ -8691,7 +8722,7 @@ describe('OrcaRuntimeService', () => {
     syncPty('pty-2')
     confirmation.resolve('codex')
 
-    await expect(status).rejects.toThrow('terminal_not_writable')
+    await expect(status).rejects.toThrow('terminal_handle_stale')
   })
 
   it('rejects confirmation evidence when the owning PTY exits', async () => {
@@ -8707,7 +8738,7 @@ describe('OrcaRuntimeService', () => {
     runtime.onPtyExit('pty-1', 0)
     confirmation.resolve('codex')
 
-    await expect(status).rejects.toThrow('terminal_not_writable')
+    await expect(status).rejects.toThrow('terminal_exited')
   })
 
   it('reports permission from a title-derived action-required agent state', async () => {

@@ -2175,7 +2175,8 @@
             "a recognized fresh provider confirmation authorizes explicit hook state over an ordinary shell result",
             "shell, non-agent, null, thrown, and missing confirmation remain fail-closed",
             "title blockers and ordinary recognized agent evidence add no confirmation call",
-            "PTY exit or handle rebind during either foreground read rejects evidence bound to the original PTY"
+            "PTY exit or handle rebind during either foreground read rejects evidence bound to the original PTY",
+            "controller-less yields preserve stale-handle errors and confirmation methods retain their controller receiver"
           ]
         },
         {
@@ -2206,6 +2207,19 @@
           ]
         },
         {
+          "file": "src/main/providers/windows-conpty-process-membership.test.ts",
+          "assertions": [
+            "exact ConPTY console membership comes from the fixed node-pty helper",
+            "malformed, incomplete, timed-out, and spawn-error membership reads fail closed"
+          ]
+        },
+        {
+          "file": "src/main/daemon/daemon-foreground-confirmation-protocol.test.ts",
+          "assertions": [
+            "daemons from before the fresh-confirmation RPC are rejected by protocol version"
+          ]
+        },
+        {
           "file": "src/main/daemon/pty-subprocess.test.ts",
           "assertions": [
             "fresh confirmation bypasses cached PowerShell and waits for a post-request process scan"
@@ -2216,6 +2230,13 @@
           "assertions": [
             "selected active-agent note sends retain guarded paste and submit routing"
           ]
+        },
+        {
+          "file": "src/renderer/src/components/browser-pane/BrowserAnnotationSendMenuContent.test.tsx",
+          "assertions": [
+            "browser annotation send content routes through review-notes send so existing agent sessions remain selectable",
+            "both browser annotation send surfaces wire the shared menu content"
+          ]
         }
       ],
       "evidenceRuns": [
@@ -2225,8 +2246,8 @@
           "platform": "macos",
           "command": "pnpm exec vitest run --config config/vitest.config.ts src/main/runtime/orca-runtime.test.ts src/main/runtime/rpc/terminal-send.test.ts src/main/ipc/pty.test.ts src/main/providers/agent-foreground-process.test.ts src/main/providers/local-pty-provider.test.ts src/main/providers/windows-conpty-process-membership.test.ts src/main/daemon/daemon-foreground-confirmation-protocol.test.ts src/main/daemon/pty-subprocess.test.ts src/renderer/src/lib/active-agent-note-send.test.ts src/renderer/src/components/browser-pane/BrowserAnnotationSendMenuContent.test.tsx",
           "result": "passed",
-          "durationSeconds": 9.54,
-          "summary": "Ten focused test files passed (1181 tests), covering runtime confirmation and PTY revalidation, guarded RPC zero-write behavior, PTY controller routing, local/daemon fresh scans, exact ConPTY membership, and unchanged renderer note routing."
+          "durationSeconds": 9.58,
+          "summary": "Ten focused test files passed (1183 tests), covering runtime confirmation and PTY revalidation, guarded RPC zero-write behavior, PTY controller routing, local/daemon fresh scans, exact ConPTY membership, and unchanged renderer note routing."
         }
       ],
       "runtimeBudget": {
