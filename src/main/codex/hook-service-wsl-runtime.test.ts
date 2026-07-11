@@ -150,9 +150,9 @@ describe('Codex WSL runtime hook install', () => {
     expect(trustEntries.has(newKey)).toBe(true)
   })
 
-  it('sweeps all managed WSL trust when the desired set is empty (disable path)', () => {
-    // Why: refresh/disable intentionally passes []. Transient canonicalize
-    // failures must NOT use this path — they leave last known-good trust alone.
+  it('sweeps all managed WSL trust for disable or confirmed absence', () => {
+    // Why: disable and confirmed absence intentionally pass []. Transient
+    // unavailability must NOT use this path — last known-good trust remains.
     const plan = createTestPlan()
     writeFileSync(plan.configPath, '{"hooks":{}}\n', 'utf-8')
     writeFileSync(plan.tomlPath, '', 'utf-8')
@@ -163,42 +163,51 @@ describe('Codex WSL runtime hook install', () => {
     expect(readHookTrustEntries(plan.tomlPath).size).toBe(0)
   })
 
-  it('does not reinstall after a failed or unchanged WSL path settle', () => {
+  it('reconciles only current, conclusive WSL path settlements', () => {
     expect(
-      _internals.shouldReinstallWslHooksAfterCanonicalSettle({
-        canonicalPath: null,
+      _internals.getWslHookReconciliationAction({
+        settlement: { status: 'unavailable' },
         isCurrentGeneration: true,
         installedTrustConfigPath: '/mnt/d/home/hooks.json',
         resolvedTrustConfigPath: null
       })
-    ).toBe(false)
+    ).toBe('none')
 
     expect(
-      _internals.shouldReinstallWslHooksAfterCanonicalSettle({
-        canonicalPath: '/windows/d/home',
+      _internals.getWslHookReconciliationAction({
+        settlement: { status: 'missing' },
         isCurrentGeneration: false,
         installedTrustConfigPath: '/mnt/d/home/hooks.json',
-        resolvedTrustConfigPath: '/windows/d/home/hooks.json'
+        resolvedTrustConfigPath: null
       })
-    ).toBe(false)
+    ).toBe('none')
 
     expect(
-      _internals.shouldReinstallWslHooksAfterCanonicalSettle({
-        canonicalPath: '/windows/d/home',
+      _internals.getWslHookReconciliationAction({
+        settlement: { status: 'missing' },
+        isCurrentGeneration: true,
+        installedTrustConfigPath: '/mnt/d/home/hooks.json',
+        resolvedTrustConfigPath: null
+      })
+    ).toBe('remove')
+
+    expect(
+      _internals.getWslHookReconciliationAction({
+        settlement: { status: 'resolved', canonicalPath: '/windows/d/home' },
         isCurrentGeneration: true,
         installedTrustConfigPath: '/windows/d/home/hooks.json',
         resolvedTrustConfigPath: '/windows/d/home/hooks.json'
       })
-    ).toBe(false)
+    ).toBe('none')
 
     expect(
-      _internals.shouldReinstallWslHooksAfterCanonicalSettle({
-        canonicalPath: '/windows/d/home',
+      _internals.getWslHookReconciliationAction({
+        settlement: { status: 'resolved', canonicalPath: '/windows/d/home' },
         isCurrentGeneration: true,
         installedTrustConfigPath: '/mnt/d/home/hooks.json',
         resolvedTrustConfigPath: '/windows/d/home/hooks.json'
       })
-    ).toBe(true)
+    ).toBe('reinstall')
   })
 
   it('generates a POSIX hook that bridges WSL loopback failures through Windows curl', () => {

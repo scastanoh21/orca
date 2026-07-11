@@ -1,6 +1,6 @@
 /* eslint-disable max-lines -- Why: getStatus + install + remove all share the managed-command and trust-key derivation. Splitting would hide that the three operations must agree on group index, event label, and command bytes. */
 import { existsSync, readFileSync, unlinkSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, win32 as pathWin32 } from 'node:path'
 import type { SFTPWrapper } from 'ssh2'
 import type { AgentHookInstallState, AgentHookInstallStatus } from '../../shared/agent-hook-types'
 import {
@@ -46,7 +46,8 @@ import { syncSystemConfigIntoManagedCodexHome } from './codex-config-mirror'
 import {
   createCodexWslRuntimeHookInstallPlan,
   type CodexWslRuntimeHookInstallPlan,
-  type CodexWslRuntimeHookTarget
+  type CodexWslRuntimeHookTarget,
+  type WslCanonicalPathSettlement
 } from './codex-wsl-hook-install-plan'
 import {
   CODEX_HOOK_EVENT_LABEL,
@@ -985,18 +986,28 @@ function refreshWslRuntimeUserHooks(plan: CodexWslRuntimeHookInstallPlan): Agent
   }
 }
 
-// Why: settle callbacks must not treat a failed recheck as proof the previous
-// identity is wrong. Only a successful, different path may rewrite trust.
-function shouldReinstallWslHooksAfterCanonicalSettle(args: {
-  canonicalPath: string | null
+// Why: transport failures preserve the last known-good identity, while a
+// successful absence probe is strong enough to revoke trust immediately.
+function getWslHookReconciliationAction(args: {
+  settlement: WslCanonicalPathSettlement
   isCurrentGeneration: boolean
   installedTrustConfigPath: string | null
   resolvedTrustConfigPath: string | null
-}): boolean {
-  if (!args.canonicalPath || !args.isCurrentGeneration || !args.resolvedTrustConfigPath) {
-    return false
+}): 'none' | 'remove' | 'reinstall' {
+  if (!args.isCurrentGeneration) {
+    return 'none'
   }
-  return args.resolvedTrustConfigPath !== args.installedTrustConfigPath
+  if (args.settlement.status === 'missing') {
+    return 'remove'
+  }
+  if (
+    args.settlement.status !== 'resolved' ||
+    !args.resolvedTrustConfigPath ||
+    args.resolvedTrustConfigPath === args.installedTrustConfigPath
+  ) {
+    return 'none'
+  }
+  return 'reinstall'
 }
 
 export class CodexHookService {
@@ -1018,23 +1029,40 @@ export class CodexHookService {
   ): AgentHookInstallStatus | null {
     const generation = this.supersedeWslReconciliation(runtimeHomePath)
     let installedTrustConfigPath: string | null = null
-    const onCanonicalPathSettled = (canonicalPath: string | null): void => {
+    const onCanonicalPathSettled = (settlement: WslCanonicalPathSettlement): void => {
       if (!runtimeHomePath) {
         return
       }
       const key = process.platform === 'win32' ? runtimeHomePath.toLowerCase() : runtimeHomePath
-      const resolvedPlan = canonicalPath
-        ? createCodexWslRuntimeHookInstallPlan(runtimeHomePath, target, () => canonicalPath)
-        : null
-      if (
-        !shouldReinstallWslHooksAfterCanonicalSettle({
-          canonicalPath,
-          isCurrentGeneration: this.wslReconciliationGeneration.get(key) === generation,
-          installedTrustConfigPath,
-          resolvedTrustConfigPath: resolvedPlan?.trustConfigPath ?? null
-        }) ||
-        !resolvedPlan
-      ) {
+      const resolvedPlan =
+        settlement.status === 'resolved'
+          ? createCodexWslRuntimeHookInstallPlan(
+              runtimeHomePath,
+              target,
+              () => settlement.canonicalPath
+            )
+          : null
+      const action = getWslHookReconciliationAction({
+        settlement,
+        isCurrentGeneration: this.wslReconciliationGeneration.get(key) === generation,
+        installedTrustConfigPath,
+        resolvedTrustConfigPath: resolvedPlan?.trustConfigPath ?? null
+      })
+      if (action === 'none') {
+        return
+      }
+      if (action === 'remove') {
+        try {
+          removeStaleWslRuntimeManagedHookTrustEntries(
+            pathWin32.join(runtimeHomePath, 'config.toml'),
+            []
+          )
+        } catch (error) {
+          console.warn('[codex-hook-service] failed to revoke stale WSL hook trust', error)
+        }
+        return
+      }
+      if (!resolvedPlan) {
         return
       }
       const status = installManagedHooksIntoWslRuntime(resolvedPlan)
@@ -1530,5 +1558,5 @@ export const _internals = {
   installManagedHooksIntoWslRuntime,
   refreshWslRuntimeUserHooks,
   removeStaleWslRuntimeManagedHookTrustEntries,
-  shouldReinstallWslHooksAfterCanonicalSettle
+  getWslHookReconciliationAction
 }

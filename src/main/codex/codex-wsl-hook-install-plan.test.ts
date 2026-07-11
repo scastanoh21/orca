@@ -44,7 +44,7 @@ describe('canonicalizeWslLinuxPath', () => {
       '--',
       'sh',
       '-c',
-      '[ -d "$1" ] && readlink -f -- "$1"',
+      `if [ ! -d "$1" ]; then printf '%s\\n' '__ORCA_WSL_PATH_MISSING__'; exit 0; fi; readlink -f -- "$1"`,
       'sh',
       '/home/alias'
     ])
@@ -83,14 +83,17 @@ describe('canonicalizeWslLinuxPath', () => {
       '--',
       'sh',
       '-c',
-      'resolved=$(wslpath -a -u "$1") && [ -d "$resolved" ] && readlink -f -- "$resolved"',
+      `resolved=$(wslpath -a -u "$1") || exit; if [ ! -d "$resolved" ]; then printf '%s\\n' '__ORCA_WSL_PATH_MISSING__'; exit 0; fi; readlink -f -- "$resolved"`,
       'sh',
       windowsPath
     ])
     expect(options).toMatchObject({ timeout: 5000, windowsHide: true })
 
     callback(null, '/windows/d/orca/codex-runtime-home/home\n')
-    expect(settled).toHaveBeenCalledWith('/windows/d/orca/codex-runtime-home/home')
+    expect(settled).toHaveBeenCalledWith({
+      status: 'resolved',
+      canonicalPath: '/windows/d/orca/codex-runtime-home/home'
+    })
   })
 
   it('does not spawn a second subprocess while one is in flight', () => {
@@ -133,8 +136,31 @@ describe('canonicalizeWslLinuxPath', () => {
     // Why: a cold or wedged distro times out without proving the path changed.
     // Dropping the cache would force the next launch onto /mnt/... and rewrite
     // trust under a path Codex will not use when automount is customized.
-    expect(settled).toHaveBeenCalledWith(null)
+    expect(settled).toHaveBeenCalledWith({ status: 'unavailable' })
     expect(_internals.canonicalizeWslLinuxPath('Ubuntu', '/home/alias')).toBe('/home/alice')
+  })
+
+  it('drops the cached identity when WSL confirms the path is missing', () => {
+    setPlatform('win32')
+    _internals.canonicalizeWslLinuxPath('Ubuntu', '/home/alias')
+    const firstCallback = execFileMock.mock.calls[0][3] as (
+      error: Error | null,
+      stdout: string
+    ) => void
+    firstCallback(null, '/home/alice\n')
+
+    const settled = vi.fn()
+    expect(
+      _internals.canonicalizeWslLinuxPath('Ubuntu', '/home/alias', '/home/alias', settled)
+    ).toBe('/home/alice')
+    const secondCallback = execFileMock.mock.calls[1][3] as (
+      error: Error | null,
+      stdout: string
+    ) => void
+    secondCallback(null, '__ORCA_WSL_PATH_MISSING__\n')
+
+    expect(settled).toHaveBeenCalledWith({ status: 'missing' })
+    expect(_internals.canonicalizeWslLinuxPath('Ubuntu', '/home/alias')).toBeNull()
   })
 
   it('replaces a cached path when its canonical identity changes', () => {
@@ -156,7 +182,10 @@ describe('canonicalizeWslLinuxPath', () => {
     ) => void
     secondCallback(null, '/home/alice-new\n')
 
-    expect(settled).toHaveBeenCalledWith('/home/alice-new')
+    expect(settled).toHaveBeenCalledWith({
+      status: 'resolved',
+      canonicalPath: '/home/alice-new'
+    })
     expect(_internals.canonicalizeWslLinuxPath('Ubuntu', '/home/alias')).toBe('/home/alice-new')
   })
 

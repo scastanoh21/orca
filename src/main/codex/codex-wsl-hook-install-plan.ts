@@ -15,7 +15,12 @@ export type CodexWslRuntimeHookInstallPlan = {
   trustConfigPath: string
 }
 
-export type WslCanonicalPathSettled = (canonicalPath: string | null) => void
+export type WslCanonicalPathSettlement =
+  | { status: 'resolved'; canonicalPath: string }
+  | { status: 'missing' }
+  | { status: 'unavailable' }
+
+export type WslCanonicalPathSettled = (settlement: WslCanonicalPathSettlement) => void
 
 export type CanonicalizeWslLinuxPath = (
   distro: string,
@@ -37,6 +42,7 @@ function toDefaultWslLinuxPath(windowsPath: string): string {
 }
 
 const WSL_CANONICALIZE_TIMEOUT_MS = 5000
+const WSL_PATH_MISSING_OUTPUT = '__ORCA_WSL_PATH_MISSING__'
 
 // Why: `readlink -f` over wsl.exe stalls up to the timeout on a cold or wedged
 // distro. Running it synchronously on the Electron main process froze the UI on
@@ -77,11 +83,20 @@ function scheduleWslLinuxPathCanonicalization(
         '--',
         'sh',
         '-c',
-        'resolved=$(wslpath -a -u "$1") && [ -d "$resolved" ] && readlink -f -- "$resolved"',
+        `resolved=$(wslpath -a -u "$1") || exit; if [ ! -d "$resolved" ]; then printf '%s\\n' '${WSL_PATH_MISSING_OUTPUT}'; exit 0; fi; readlink -f -- "$resolved"`,
         'sh',
         windowsPath
       ]
-    : ['-d', distro, '--', 'sh', '-c', '[ -d "$1" ] && readlink -f -- "$1"', 'sh', linuxPath]
+    : [
+        '-d',
+        distro,
+        '--',
+        'sh',
+        '-c',
+        `if [ ! -d "$1" ]; then printf '%s\\n' '${WSL_PATH_MISSING_OUTPUT}'; exit 0; fi; readlink -f -- "$1"`,
+        'sh',
+        linuxPath
+      ]
   execFile(
     'wsl.exe',
     args,
@@ -89,8 +104,18 @@ function scheduleWslLinuxPathCanonicalization(
     (error, stdout) => {
       const canonicalPath = stdout.trim()
       const resolvedPath = !error && canonicalPath.startsWith('/') ? canonicalPath : null
-      if (resolvedPath) {
+      const pathMissing = !error && canonicalPath === WSL_PATH_MISSING_OUTPUT
+      const settlement: WslCanonicalPathSettlement = resolvedPath
+        ? { status: 'resolved', canonicalPath: resolvedPath }
+        : pathMissing
+          ? { status: 'missing' }
+          : { status: 'unavailable' }
+      if (settlement.status === 'resolved') {
         canonicalWslPathCache.set(key, canonicalPath)
+      } else if (settlement.status === 'missing') {
+        // Why: a successful directory probe is stronger than a transport error;
+        // clear the identity so stale trust can be revoked and later rediscovered.
+        canonicalWslPathCache.delete(key)
       }
       // Why: keep the last known-good cache on timeout/transient WSL failures.
       // Dropping it forces the next launch onto the logical `/mnt/...` guess,
@@ -99,7 +124,7 @@ function scheduleWslLinuxPathCanonicalization(
       inFlightWslCanonicalizations.delete(key)
       for (const listener of settledListeners) {
         try {
-          listener(resolvedPath)
+          listener(settlement)
         } catch (listenerError) {
           console.warn('[codex-wsl-hook-path] failed to reconcile canonical path', listenerError)
         }
