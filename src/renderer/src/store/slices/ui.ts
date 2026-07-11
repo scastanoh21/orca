@@ -747,6 +747,16 @@ export type UISlice = {
   } | null
   openSettingsTarget: (target: NonNullable<UISlice['settingsNavigationTarget']>) => void
   clearSettingsTarget: () => void
+  /**
+   * One-shot Appearance accordion to expand for nested Settings deep links
+   * (e.g. Usage percentages lives under Window & Sidebar). Cleared when
+   * Appearance consumes it.
+   */
+  appearanceAccordionDeepLink: 'interface' | 'terminal' | 'window' | null
+  setAppearanceAccordionDeepLink: (
+    section: NonNullable<UISlice['appearanceAccordionDeepLink']>
+  ) => void
+  clearAppearanceAccordionDeepLink: () => void
   activeModal:
     | 'none'
     | 'create-worktree'
@@ -1499,6 +1509,9 @@ export const createUISlice: StateCreator<AppState, [], [], UISlice> = (set, get)
   settingsNavigationTarget: null,
   openSettingsTarget: (target) => set({ settingsNavigationTarget: target }),
   clearSettingsTarget: () => set({ settingsNavigationTarget: null }),
+  appearanceAccordionDeepLink: null,
+  setAppearanceAccordionDeepLink: (section) => set({ appearanceAccordionDeepLink: section }),
+  clearAppearanceAccordionDeepLink: () => set({ appearanceAccordionDeepLink: null }),
 
   activeModal: 'none',
   modalData: {},

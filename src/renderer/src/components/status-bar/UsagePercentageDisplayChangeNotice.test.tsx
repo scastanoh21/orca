@@ -1,9 +1,10 @@
 // @vitest-environment happy-dom
 
-import { act, createContext, useContext, type ReactNode } from 'react'
+import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { UsagePercentageDisplayChangeNotice } from './UsagePercentageDisplayChangeNotice'
+import { USAGE_PERCENTAGE_DISPLAY_SETTING_ID } from '../settings/appearance-usage-percentage-search'
 
 const storeState = {
   persistedUIReady: true,
@@ -11,7 +12,6 @@ const storeState = {
   dismissUsagePercentageDisplayChangeNotice: vi.fn(),
   statusBarVisible: true,
   activeModal: 'none' as string,
-  setSettingsSearchQuery: vi.fn(),
   openSettingsTarget: vi.fn(),
   openSettingsPage: vi.fn()
 }
@@ -25,29 +25,6 @@ vi.mock('@/store', () => ({
   )
 }))
 
-vi.mock('@/components/ui/popover', () => {
-  const OpenContext = createContext(false)
-  return {
-    Popover: ({ open, children }: { open?: boolean; children: ReactNode }) => (
-      <OpenContext.Provider value={open === true}>
-        <div data-testid="popover" data-open={open ? 'true' : 'false'}>
-          {children}
-        </div>
-      </OpenContext.Provider>
-    ),
-    PopoverAnchor: ({ children }: { children: ReactNode }) => (
-      <div data-testid="popover-anchor">{children}</div>
-    ),
-    PopoverContent: ({ children }: { children: ReactNode }) => {
-      const open = useContext(OpenContext)
-      if (!open) {
-        return null
-      }
-      return <div data-testid="popover-content">{children}</div>
-    }
-  }
-})
-
 describe('UsagePercentageDisplayChangeNotice', () => {
   let container: HTMLDivElement
   let root: Root
@@ -59,6 +36,8 @@ describe('UsagePercentageDisplayChangeNotice', () => {
     storeState.statusBarVisible = true
     storeState.activeModal = 'none'
     storeState.dismissUsagePercentageDisplayChangeNotice = vi.fn()
+    storeState.openSettingsPage = vi.fn()
+    storeState.openSettingsTarget = vi.fn()
     container = document.createElement('div')
     document.body.appendChild(container)
     root = createRoot(container)
@@ -72,7 +51,7 @@ describe('UsagePercentageDisplayChangeNotice', () => {
     vi.useRealTimers()
   })
 
-  it('opens the callout next to usage meters after a short delay when eligible', () => {
+  it('shows the callout above usage meters after a short delay when eligible', () => {
     act(() => {
       root.render(
         <UsagePercentageDisplayChangeNotice hasVisibleUsageMeters>
@@ -81,11 +60,11 @@ describe('UsagePercentageDisplayChangeNotice', () => {
       )
     })
 
-    expect(container.querySelector('[data-open="true"]')).toBeNull()
+    expect(container.querySelector('.status-bar-change-notice-card')).toBeNull()
     act(() => {
       vi.advanceTimersByTime(1_800)
     })
-    expect(container.querySelector('[data-open="true"]')).not.toBeNull()
+    expect(container.querySelector('.status-bar-change-notice-card')).not.toBeNull()
     expect(container.textContent).toContain('usage-meters')
     expect(container.textContent).toContain('Usage now shows % used')
     expect(container.textContent).toContain('Prefer remaining? Change it in Settings.')
@@ -102,8 +81,7 @@ describe('UsagePercentageDisplayChangeNotice', () => {
     act(() => {
       vi.advanceTimersByTime(2_000)
     })
-    expect(container.querySelector('[data-open="true"]')).toBeNull()
-    expect(container.textContent).not.toContain('Usage now shows % used')
+    expect(container.querySelector('.status-bar-change-notice-card')).toBeNull()
   })
 
   it('does not open when the notice was already dismissed', () => {
@@ -118,8 +96,7 @@ describe('UsagePercentageDisplayChangeNotice', () => {
     act(() => {
       vi.advanceTimersByTime(2_000)
     })
-    expect(container.querySelector('[data-open="true"]')).toBeNull()
-    expect(container.textContent).not.toContain('Usage now shows % used')
+    expect(container.querySelector('.status-bar-change-notice-card')).toBeNull()
   })
 
   it('does not open while another modal is open', () => {
@@ -134,19 +111,16 @@ describe('UsagePercentageDisplayChangeNotice', () => {
     act(() => {
       vi.advanceTimersByTime(2_000)
     })
-    expect(container.querySelector('[data-open="true"]')).toBeNull()
+    expect(container.querySelector('.status-bar-change-notice-card')).toBeNull()
   })
 
-  it('opens Appearance with a Usage percentages filter after wiping prior search', () => {
+  it('deep-links to the Usage percentages setting without a search filter', () => {
     const callOrder: string[] = []
     storeState.openSettingsPage = vi.fn(() => {
       callOrder.push('openSettingsPage')
     })
     storeState.openSettingsTarget = vi.fn(() => {
       callOrder.push('openSettingsTarget')
-    })
-    storeState.setSettingsSearchQuery = vi.fn(() => {
-      callOrder.push('setSettingsSearchQuery')
     })
     storeState.dismissUsagePercentageDisplayChangeNotice = vi.fn()
 
@@ -169,13 +143,12 @@ describe('UsagePercentageDisplayChangeNotice', () => {
       openSettingsButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
 
-    // Why: openSettingsPage clears search first; the filter must be applied after.
-    expect(callOrder).toEqual(['openSettingsPage', 'openSettingsTarget', 'setSettingsSearchQuery'])
+    expect(callOrder).toEqual(['openSettingsPage', 'openSettingsTarget'])
     expect(storeState.openSettingsTarget).toHaveBeenCalledWith({
       pane: 'appearance',
-      repoId: null
+      repoId: null,
+      sectionId: USAGE_PERCENTAGE_DISPLAY_SETTING_ID
     })
-    expect(storeState.setSettingsSearchQuery).toHaveBeenCalledWith('Usage percentages')
     expect(storeState.dismissUsagePercentageDisplayChangeNotice).toHaveBeenCalled()
   })
 })
