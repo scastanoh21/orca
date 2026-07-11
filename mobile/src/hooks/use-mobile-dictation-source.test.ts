@@ -145,10 +145,19 @@ describe('useMobileDictation source invariants', () => {
     expect(desktopStartSource).toContain('options.getCurrentGeneration()')
     expect(desktopStartSource).toContain('options.getEnabled()')
     expect(desktopStartSource).toContain('options.getActiveId()')
-    expect(afterAcquire).toContain(
-      'await keepAwakeOwner.release(dictationId).catch(() => undefined)'
+    expect(afterAcquire).toContain('await cancelStaleStart(options, { releaseKeepAwake: true })')
+
+    // The stale-start cleanup must release the wake tag and cancel the desktop
+    // session (concurrently, so a hung acquisition can't delay the cancel).
+    const cancelStaleStartBody = sliceDesktopStartBetween(
+      'async function cancelStaleStart',
+      'export async function startMobileDictationDesktopSession'
     )
-    expect(afterAcquire).toContain("client.sendRequest('speech.dictation.cancel', { dictationId })")
+    expect(cancelStaleStartBody).toContain(
+      "client.sendRequest('speech.dictation.cancel', { dictationId })"
+    )
+    expect(cancelStaleStartBody).toContain('cleanups.push(keepAwakeOwner.release(dictationId))')
+    expect(cancelStaleStartBody).toContain('await Promise.allSettled(cleanups)')
   })
 
   it('treats keep-awake acquisition as best-effort for the desktop session', () => {
