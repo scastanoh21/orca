@@ -48,9 +48,13 @@ class MockResizeObserver implements ResizeObserver {
   }
 }
 
-function fireResizeObservers(): void {
+function fireResizeObservers(target?: Element): void {
   for (const observer of activeResizeObservers) {
-    const targets = Array.from(observer.elements)
+    const targets = target
+      ? observer.elements.has(target)
+        ? [target]
+        : []
+      : Array.from(observer.elements)
     if (targets.length === 0) {
       continue
     }
@@ -188,6 +192,50 @@ function SharedScrollerHarness({
   )
 }
 
+function MultiSectionHarness({
+  firstRows,
+  secondRows
+}: {
+  firstRows: readonly string[]
+  secondRows: readonly string[]
+}): ReactElement {
+  const [scroller, setScroller] = useState<HTMLDivElement | null>(null)
+
+  return (
+    <div
+      className="overflow-auto"
+      ref={(node) => {
+        if (node) {
+          setTop(node, 0)
+          Object.defineProperty(node, 'scrollTop', {
+            configurable: true,
+            writable: true,
+            value: node.scrollTop
+          })
+        }
+        setScroller(node)
+      }}
+    >
+      <div data-testid="first-section">
+        <SourceControlVirtualFileList
+          rows={firstRows}
+          scrollElement={scroller}
+          getRowKey={(row) => row}
+          renderRow={(row) => <div data-testid="first-row">{row}</div>}
+        />
+      </div>
+      <div data-testid="second-section">
+        <SourceControlVirtualFileList
+          rows={secondRows}
+          scrollElement={scroller}
+          getRowKey={(row) => row}
+          renderRow={(row) => <div data-testid="second-row">{row}</div>}
+        />
+      </div>
+    </div>
+  )
+}
+
 function syncListTop(aboveHeight: number): HTMLDivElement | null {
   const list = host.querySelector<HTMLDivElement>('[data-testid="source-control-virtual-list"]')
   if (list) {
@@ -198,6 +246,16 @@ function syncListTop(aboveHeight: number): HTMLDivElement | null {
     setTop(scroller, 0)
   }
   return list
+}
+
+function syncMultiSectionListTops(firstRowCount: number): void {
+  const lists = host.querySelectorAll<HTMLElement>('[data-testid="source-control-virtual-list"]')
+  if (lists[0]) {
+    setTop(lists[0], 0)
+  }
+  if (lists[1]) {
+    setTop(lists[1], firstRowCount * SOURCE_CONTROL_FILE_ROW_HEIGHT_PX)
+  }
 }
 
 describe('measureSourceControlScrollMargin', () => {
@@ -239,20 +297,26 @@ describe('observeSourceControlScrollMargin', () => {
     expect(onLayout).not.toHaveBeenCalled()
   })
 
-  it('re-observes when a direct scroller child is inserted', async () => {
+  it('tracks current direct scroller children without retaining removed siblings', async () => {
     const scroller = document.createElement('div')
     const list = document.createElement('div')
-    scroller.append(list)
+    const removedSibling = document.createElement('div')
+    scroller.append(removedSibling, list)
     const onLayout = vi.fn()
 
     const cleanup = observeSourceControlScrollMargin(list, scroller, onLayout)
+    const observer = Array.from(activeResizeObservers)[0]
+    expect(observer?.elements.has(removedSibling)).toBe(true)
     onLayout.mockClear()
 
     const sibling = document.createElement('div')
     scroller.insertBefore(sibling, list)
+    removedSibling.remove()
     // happy-dom delivers MutationObserver callbacks asynchronously.
     await vi.waitFor(() => {
       expect(onLayout).toHaveBeenCalled()
+      expect(observer?.elements.has(sibling)).toBe(true)
+      expect(observer?.elements.has(removedSibling)).toBe(false)
     })
 
     cleanup()
@@ -340,6 +404,50 @@ describe('SourceControlVirtualFileList scroll-margin lifecycle', () => {
     })
     expect(host.querySelector('[data-testid="section-row"]')?.textContent).toBe('row-000')
     expect(host.querySelectorAll('[data-testid="section-row"]').length).toBeLessThan(rows.length)
+  })
+
+  it('updates a later virtual section when an earlier virtual section resizes', () => {
+    let firstRows = manyRows(SOURCE_CONTROL_VIRTUALIZE_MIN_ROWS + 10).map((row) => `first-${row}`)
+    const secondRows = manyRows(SOURCE_CONTROL_VIRTUALIZE_MIN_ROWS + 20).map(
+      (row) => `second-${row}`
+    )
+
+    act(() => {
+      root.render(<MultiSectionHarness firstRows={firstRows} secondRows={secondRows} />)
+    })
+    syncMultiSectionListTops(firstRows.length)
+    act(() => fireResizeObservers())
+
+    firstRows = manyRows(SOURCE_CONTROL_VIRTUALIZE_MIN_ROWS + 80).map((row) => `first-${row}`)
+    act(() => {
+      root.render(<MultiSectionHarness firstRows={firstRows} secondRows={secondRows} />)
+    })
+    syncMultiSectionListTops(firstRows.length)
+
+    const firstSection = host.querySelector('[data-testid="first-section"]')
+    expect(firstSection).toBeTruthy()
+    act(() => {
+      if (firstSection) {
+        fireResizeObservers(firstSection)
+      }
+    })
+
+    const scroller = host.querySelector<HTMLDivElement>('.overflow-auto')
+    expect(scroller).toBeTruthy()
+    if (!scroller) {
+      return
+    }
+    Object.defineProperty(scroller, 'scrollTop', {
+      configurable: true,
+      writable: true,
+      value: firstRows.length * SOURCE_CONTROL_FILE_ROW_HEIGHT_PX
+    })
+    act(() => scroller.dispatchEvent(new Event('scroll')))
+
+    expect(host.querySelector('[data-testid="second-row"]')?.textContent).toBe('second-row-000')
+    expect(host.querySelectorAll('[data-testid="second-row"]').length).toBeLessThan(
+      secondRows.length
+    )
   })
 
   it('renders small lists without the virtualization shell or observers', () => {

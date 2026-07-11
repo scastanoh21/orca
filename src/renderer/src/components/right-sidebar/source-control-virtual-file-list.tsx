@@ -42,11 +42,21 @@ export function observeSourceControlScrollMargin(
   const resizeObserver = new ResizeObserver(onLayout)
   resizeObserver.observe(container)
   resizeObserver.observe(scrollElement)
+  let observedChildren = new Set<Element>()
 
   const observeScrollerChildren = (): void => {
-    for (const child of scrollElement.children) {
+    const currentChildren = new Set(scrollElement.children)
+    // Why: child-list churn can detach previously observed sections; pruning
+    // targets prevents the long-lived virtual list from retaining stale DOM.
+    for (const child of observedChildren) {
+      if (!currentChildren.has(child) && child !== container) {
+        resizeObserver.unobserve(child)
+      }
+    }
+    for (const child of currentChildren) {
       resizeObserver.observe(child)
     }
+    observedChildren = currentChildren
   }
   observeScrollerChildren()
 
