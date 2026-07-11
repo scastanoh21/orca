@@ -1,5 +1,6 @@
 import * as path from 'node:path'
 import type { RemoveWorktreeResult } from '../shared/types'
+import { assertWorktreeUnlockedForRemoval } from '../shared/worktree-removal'
 import { deleteAlreadyMergedRelayBranchAfterSafeDeleteFailure } from './git-handler-branch-cleanup'
 import type { GitExec } from './git-handler-ops'
 import type { GitCapabilityCache } from '../shared/git-capability-cache'
@@ -147,6 +148,8 @@ export async function removeWorktreeOp(
   )
   const branchName = normalizeLocalBranchRef(removedWorktree?.branch ?? '')
   const branchHead = removedWorktree?.head ?? ''
+
+  assertWorktreeUnlockedForRemoval(removedWorktree)
 
   const args = ['worktree', 'remove']
   if (force) {
