@@ -1,9 +1,12 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import type { editor } from 'monaco-editor'
 
-export type DiffNavigationContextValue = {
+export type DiffEditorRegistrationContextValue = {
   registerDiffEditor: (editor: editor.IStandaloneDiffEditor) => void
   unregisterDiffEditor: (editor: editor.IStandaloneDiffEditor) => void
+}
+
+export type DiffNavigationContextValue = {
   goToPreviousDiff: () => void
   goToNextDiff: () => void
   changeCount: number
@@ -11,12 +14,14 @@ export type DiffNavigationContextValue = {
 
 const noop = (): void => {}
 
-// Why: a no-op default keeps the header and DiffViewer safe to render outside a
-// provider (e.g. non-diff surfaces). Every member must exist because DiffViewer
-// calls register/unregister unconditionally.
-const DiffNavigationContext = createContext<DiffNavigationContextValue>({
+// Why: registration stays separate from changeCount so diff recomputation only
+// rerenders the header controls, not the heavy Monaco DiffViewer consumer.
+const DiffEditorRegistrationContext = createContext<DiffEditorRegistrationContextValue>({
   registerDiffEditor: noop,
-  unregisterDiffEditor: noop,
+  unregisterDiffEditor: noop
+})
+
+const DiffNavigationContext = createContext<DiffNavigationContextValue>({
   goToPreviousDiff: noop,
   goToNextDiff: noop,
   changeCount: 0
@@ -79,18 +84,30 @@ export function DiffNavigationProvider({
     }
   }, [])
 
-  const value = useMemo(
+  const registrationValue = useMemo(
+    () => ({ registerDiffEditor, unregisterDiffEditor }),
+    [registerDiffEditor, unregisterDiffEditor]
+  )
+  const navigationValue = useMemo(
     () => ({
-      registerDiffEditor,
-      unregisterDiffEditor,
       goToPreviousDiff,
       goToNextDiff,
       changeCount
     }),
-    [registerDiffEditor, unregisterDiffEditor, goToPreviousDiff, goToNextDiff, changeCount]
+    [goToPreviousDiff, goToNextDiff, changeCount]
   )
 
-  return <DiffNavigationContext.Provider value={value}>{children}</DiffNavigationContext.Provider>
+  return (
+    <DiffEditorRegistrationContext.Provider value={registrationValue}>
+      <DiffNavigationContext.Provider value={navigationValue}>
+        {children}
+      </DiffNavigationContext.Provider>
+    </DiffEditorRegistrationContext.Provider>
+  )
+}
+
+export function useDiffEditorRegistration(): DiffEditorRegistrationContextValue {
+  return useContext(DiffEditorRegistrationContext)
 }
 
 export function useDiffNavigation(): DiffNavigationContextValue {

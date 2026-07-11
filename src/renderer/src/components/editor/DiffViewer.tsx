@@ -24,7 +24,7 @@ import { useDiffViewerLargeDiffLifecycle } from './useDiffViewerLargeDiffLifecyc
 import { getDiffViewerLargeDiffSaveAction } from './diff-viewer-large-diff-save-action'
 import type { DiffViewerProps } from './diff-viewer-props'
 import { buildDiffEditorWordWrapOptions } from './diff-editor-word-wrap-options'
-import { useDiffNavigation } from './diff-navigation-context'
+import { useDiffEditorRegistration } from './diff-navigation-context'
 
 export default function DiffViewer({
   modelKey,
@@ -73,6 +73,7 @@ export default function DiffViewer({
     (settings?.theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches)
 
   const diffEditorRef = useRef<editor.IStandaloneDiffEditor | null>(null)
+  const { registerDiffEditor, unregisterDiffEditor } = useDiffEditorRegistration()
   const diffBodyRef = useRef<HTMLDivElement | null>(null)
   const lineNumberOptionsSubRef = useRef<{ dispose: () => void } | null>(null)
   const [modifiedEditor, setModifiedEditor] = useState<editor.ICodeEditor | null>(null)
@@ -250,11 +251,11 @@ export default function DiffViewer({
     const fallenBackEditor = diffEditorRef.current
     diffEditorRef.current = null
     if (fallenBackEditor) {
-      unregisterDiffEditorRef.current(fallenBackEditor)
+      unregisterDiffEditor(fallenBackEditor)
     }
     setModifiedEditor(null)
     setPopover(null)
-  }, [])
+  }, [unregisterDiffEditor])
 
   const handleSubmitComment = async (body: string): Promise<void> => {
     if (!popover) {
@@ -299,15 +300,6 @@ export default function DiffViewer({
   const onContentChangeRef = useRef(onContentChange)
   onContentChangeRef.current = onContentChange
 
-  // Why: bridge this editor to the toolbar's diff navigator. Hold the register/
-  // unregister callbacks in refs so handleMount stays out of their deps and the
-  // dispose closures always call the current versions.
-  const diffNav = useDiffNavigation()
-  const registerDiffEditorRef = useRef(diffNav.registerDiffEditor)
-  registerDiffEditorRef.current = diffNav.registerDiffEditor
-  const unregisterDiffEditorRef = useRef(diffNav.unregisterDiffEditor)
-  unregisterDiffEditorRef.current = diffNav.unregisterDiffEditor
-
   const { setupCopy, toastNode } = useContextualCopySetup()
 
   const propsRef = useRef({ relativePath, language, onSave })
@@ -323,7 +315,7 @@ export default function DiffViewer({
   const handleMount: DiffOnMount = useCallback(
     (diffEditor, monaco) => {
       diffEditorRef.current = diffEditor
-      registerDiffEditorRef.current(diffEditor)
+      registerDiffEditor(diffEditor)
       lineNumberOptionsSubRef.current?.dispose()
       lineNumberOptionsSubRef.current = applyDiffEditorLineNumberOptions(diffEditor, sideBySide)
 
@@ -380,12 +372,12 @@ export default function DiffViewer({
         lineNumberOptionsSubRef.current?.dispose()
         lineNumberOptionsSubRef.current = null
         diffEditorRef.current = null
-        unregisterDiffEditorRef.current(diffEditor)
+        unregisterDiffEditor(diffEditor)
         setModifiedEditor(null)
         setPopover(null)
       })
     },
-    [editable, setupCopy, modelKey, filePath, sideBySide]
+    [editable, setupCopy, modelKey, filePath, sideBySide, registerDiffEditor, unregisterDiffEditor]
   )
 
   // Why: VS Code snapshots diff view state on deactivation, not on scroll events.

@@ -5,7 +5,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { editor } from 'monaco-editor'
 import {
   DiffNavigationProvider,
+  useDiffEditorRegistration,
   useDiffNavigation,
+  type DiffEditorRegistrationContextValue,
   type DiffNavigationContextValue
 } from './diff-navigation-context'
 
@@ -13,34 +15,45 @@ type FakeDiffEditor = editor.IStandaloneDiffEditor & {
   setLineChanges: (count: number) => void
   fireUpdate: () => void
   goToDiff: ReturnType<typeof vi.fn>
+  disposeUpdate: ReturnType<typeof vi.fn>
 }
 
 function createFakeEditor(initialCount: number): FakeDiffEditor {
   let count = initialCount
   let updateCallback: (() => void) | null = null
+  const disposeUpdate = vi.fn(() => {
+    updateCallback = null
+  })
   const editor = {
     getLineChanges: () => (count > 0 ? Array.from({ length: count }, () => ({})) : []),
     goToDiff: vi.fn(),
     onDidUpdateDiff: (cb: () => void) => {
       updateCallback = cb
       return {
-        dispose: () => {
-          updateCallback = null
-        }
+        dispose: disposeUpdate
       }
     },
     setLineChanges: (next: number) => {
       count = next
     },
-    fireUpdate: () => updateCallback?.()
+    fireUpdate: () => updateCallback?.(),
+    disposeUpdate
   } as unknown as FakeDiffEditor
   return editor
 }
 
 let captured: DiffNavigationContextValue | null = null
+let registration: DiffEditorRegistrationContextValue | null = null
+let registrationRenderCount = 0
 
 function Probe(): null {
   captured = useDiffNavigation()
+  return null
+}
+
+function RegistrationProbe(): null {
+  registration = useDiffEditorRegistration()
+  registrationRenderCount += 1
   return null
 }
 
@@ -56,6 +69,7 @@ describe('DiffNavigationProvider', () => {
       root?.render(
         <DiffNavigationProvider>
           <Probe />
+          <RegistrationProbe />
         </DiffNavigationProvider>
       )
     })
@@ -69,12 +83,14 @@ describe('DiffNavigationProvider', () => {
     container = null
     root = null
     captured = null
+    registration = null
+    registrationRenderCount = 0
   })
 
   it('exposes the change count and routes nav actions to the registered editor', () => {
     mount()
     const editor = createFakeEditor(3)
-    act(() => captured?.registerDiffEditor(editor))
+    act(() => registration?.registerDiffEditor(editor))
 
     expect(captured?.changeCount).toBe(3)
 
@@ -88,7 +104,7 @@ describe('DiffNavigationProvider', () => {
   it('re-renders when onDidUpdateDiff flips the count 0 -> N (count is state)', () => {
     mount()
     const editor = createFakeEditor(0)
-    act(() => captured?.registerDiffEditor(editor))
+    act(() => registration?.registerDiffEditor(editor))
     expect(captured?.changeCount).toBe(0)
 
     act(() => {
@@ -96,6 +112,7 @@ describe('DiffNavigationProvider', () => {
       editor.fireUpdate()
     })
     expect(captured?.changeCount).toBe(2)
+    expect(registrationRenderCount).toBe(1)
   })
 
   it('ignores a stale unregister for an editor that is no longer current (identity guard)', () => {
@@ -104,9 +121,10 @@ describe('DiffNavigationProvider', () => {
     const newEditor = createFakeEditor(4)
 
     // Fast-swap: new editor registers before the old one's dispose fires.
-    act(() => captured?.registerDiffEditor(oldEditor))
-    act(() => captured?.registerDiffEditor(newEditor))
+    act(() => registration?.registerDiffEditor(oldEditor))
+    act(() => registration?.registerDiffEditor(newEditor))
     expect(captured?.changeCount).toBe(4)
+    expect(oldEditor.disposeUpdate).toHaveBeenCalledOnce()
 
     // A stale update from the old editor must not flip the count back: registering
     // the new editor disposed the old subscription, so its callback no longer fires.
@@ -116,12 +134,23 @@ describe('DiffNavigationProvider', () => {
     })
     expect(captured?.changeCount).toBe(4)
 
-    act(() => captured?.unregisterDiffEditor(oldEditor))
+    act(() => registration?.unregisterDiffEditor(oldEditor))
 
     // New editor's count is intact and nav still routes to it.
     expect(captured?.changeCount).toBe(4)
     act(() => captured?.goToNextDiff())
     expect(newEditor.goToDiff).toHaveBeenCalledWith('next')
     expect(oldEditor.goToDiff).not.toHaveBeenCalled()
+  })
+
+  it('disposes the active diff update subscription when the provider unmounts', () => {
+    mount()
+    const editor = createFakeEditor(1)
+    act(() => registration?.registerDiffEditor(editor))
+
+    act(() => root?.unmount())
+
+    expect(editor.disposeUpdate).toHaveBeenCalledOnce()
+    root = null
   })
 })
