@@ -79,6 +79,36 @@ describe('startMobileDictationDesktopSession', () => {
     expect(harness.commitRecordingStart).not.toHaveBeenCalled()
   })
 
+  it('sends desktop cancellation without waiting for a hung keep-awake release', async () => {
+    vi.useFakeTimers()
+    try {
+      let goStale = () => undefined
+      const harness = createStartHarness({
+        acquire: () => {
+          goStale()
+          return new Promise<void>(() => undefined)
+        }
+      })
+      goStale = harness.setNewerStart
+      // Release queues behind the still-running acquisition, so it never settles.
+      harness.release.mockReturnValue(new Promise<void>(() => undefined))
+
+      const startPromise = startMobileDictationDesktopSession(harness.options)
+      await vi.advanceTimersByTimeAsync(MOBILE_DICTATION_KEEP_AWAKE_STARTUP_BUDGET_MS)
+
+      // Cancellation is dispatched even though release is still pending, so the
+      // native session tears down without waiting out its own timeout.
+      expect(harness.release).toHaveBeenCalledWith('dictation-a')
+      expect(harness.sendRequest).toHaveBeenCalledWith('speech.dictation.cancel', {
+        dictationId: 'dictation-a'
+      })
+
+      void startPromise
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('returns to idle when disable makes keep-awake acquisition stale', async () => {
     let setDisabled = () => undefined
     const harness = createStartHarness({

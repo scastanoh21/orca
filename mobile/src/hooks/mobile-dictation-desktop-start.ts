@@ -39,6 +39,26 @@ function setIdleIfGenerationCurrent(options: StartMobileDictationDesktopSessionO
   }
 }
 
+// Cancel a start that went stale mid-startup. The wake-lock release and remote
+// cancel are independent, so run them concurrently: awaiting release first can
+// queue behind a still-running acquisition and delay cancel for the remainder
+// of the native timeout.
+async function cancelStaleStart(
+  options: StartMobileDictationDesktopSessionOptions,
+  { releaseKeepAwake }: { releaseKeepAwake: boolean }
+): Promise<void> {
+  const { client, dictationId, keepAwakeOwner } = options
+  options.clearActiveId(dictationId)
+  setIdleIfGenerationCurrent(options)
+  const cleanups: Promise<unknown>[] = [
+    client.sendRequest('speech.dictation.cancel', { dictationId })
+  ]
+  if (releaseKeepAwake) {
+    cleanups.push(keepAwakeOwner.release(dictationId))
+  }
+  await Promise.allSettled(cleanups)
+}
+
 export async function startMobileDictationDesktopSession(
   options: StartMobileDictationDesktopSessionOptions
 ): Promise<boolean> {
@@ -64,9 +84,7 @@ export async function startMobileDictationDesktopSession(
   }
 
   if (!isCurrentStart(options)) {
-    await client.sendRequest('speech.dictation.cancel', { dictationId }).catch(() => undefined)
-    options.clearActiveId(dictationId)
-    setIdleIfGenerationCurrent(options)
+    await cancelStaleStart(options, { releaseKeepAwake: false })
     return false
   }
 
@@ -89,10 +107,7 @@ export async function startMobileDictationDesktopSession(
   })
 
   if (!isCurrentStart(options)) {
-    await keepAwakeOwner.release(dictationId).catch(() => undefined)
-    await client.sendRequest('speech.dictation.cancel', { dictationId }).catch(() => undefined)
-    options.clearActiveId(dictationId)
-    setIdleIfGenerationCurrent(options)
+    await cancelStaleStart(options, { releaseKeepAwake: true })
     return false
   }
 

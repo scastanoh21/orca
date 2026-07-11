@@ -38,25 +38,33 @@ export function useMobileDictationForegroundKeepAwake(
     if (Platform.OS !== 'android') {
       return
     }
-    const reacquireWithRetry = (dictationId: string, attempt: number): void => {
+    // A retry from an earlier foreground event can outlive a newer reacquire and
+    // deactivate the recovered tag; a run token invalidated on each AppState
+    // change and on unmount drops superseded retry chains.
+    let reacquireRun = 0
+    const reacquireWithRetry = (dictationId: string, attempt: number, run: number): void => {
       void keepAwakeOwner.reacquire(dictationId).catch(() => {
         const delay = REACQUIRE_RETRY_DELAYS_MS[attempt]
         if (delay === undefined) {
           return
         }
         setTimeout(() => {
-          if (activeIdRef.current === dictationId) {
-            reacquireWithRetry(dictationId, attempt + 1)
+          if (reacquireRun === run && activeIdRef.current === dictationId) {
+            reacquireWithRetry(dictationId, attempt + 1, run)
           }
         }, delay)
       })
     }
     const sub = AppState.addEventListener('change', (state) => {
+      const run = ++reacquireRun
       const dictationId = activeIdRef.current
       if (state === 'active' && dictationId) {
-        reacquireWithRetry(dictationId, 0)
+        reacquireWithRetry(dictationId, 0, run)
       }
     })
-    return () => sub.remove()
+    return () => {
+      reacquireRun += 1
+      sub.remove()
+    }
   }, [keepAwakeOwner, activeIdRef])
 }
