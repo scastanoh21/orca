@@ -124,14 +124,35 @@ describe('readNativeChatTranscript (claude)', () => {
           role: 'user',
           content: [{ type: 'tool_result', content: 'ok', is_error: false }]
         }
+      },
+      {
+        type: 'user',
+        uuid: 'u-meta-mixed',
+        isMeta: true,
+        timestamp: '2026-06-01T10:00:04.000Z',
+        message: {
+          role: 'user',
+          content: [
+            { type: 'text', text: '<system-reminder>hidden machinery' },
+            { type: 'tool_result', content: 'mixed result', is_error: false }
+          ]
+        }
       }
     ])
     const result = await readNativeChatTranscript('claude', 'sess', { filePath })
     if (!('messages' in result)) {
       throw new Error('expected messages')
     }
-    expect(result.messages.map((m) => m.id)).toEqual(['u-real', 'u-meta-toolresult'])
+    expect(result.messages.map((m) => m.id)).toEqual([
+      'u-real',
+      'u-meta-toolresult',
+      'u-meta-mixed'
+    ])
     expect(result.messages[1].role).toBe('tool')
+    expect(result.messages[2]).toMatchObject({
+      role: 'tool',
+      blocks: [{ type: 'tool-result', output: 'mixed result' }]
+    })
   })
 
   it('marks thinking-only assistant content as a reasoning surface', async () => {

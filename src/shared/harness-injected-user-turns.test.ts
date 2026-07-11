@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest'
 
-import { isHarnessInjectedUserTurnText } from './harness-injected-user-turns'
+import {
+  isHarnessInjectedUserTurnText,
+  isKnownHarnessInjectedUserTurnText
+} from './harness-injected-user-turns'
 
 describe('isHarnessInjectedUserTurnText', () => {
   it('matches every known harness tag, including attribute-carrying forms', () => {
@@ -30,6 +33,7 @@ describe('isHarnessInjectedUserTurnText', () => {
     ]
     for (const text of injected) {
       expect(isHarnessInjectedUserTurnText(text), text).toBe(true)
+      expect(isKnownHarnessInjectedUserTurnText(text), text).toBe(true)
     }
   })
 
@@ -81,5 +85,12 @@ describe('isHarnessInjectedUserTurnText', () => {
     )
     expect(isHarnessInjectedUserTurnText('<https://example.com/a-b> what is this?')).toBe(false)
     expect(isHarnessInjectedUserTurnText('<foo-bar@example.com> sent me this')).toBe(false)
+  })
+
+  it('limits destructive filtering to observed harness tags', () => {
+    expect(isKnownHarnessInjectedUserTurnText('<task-notification>done')).toBe(true)
+    expect(isKnownHarnessInjectedUserTurnText('<agent-message from="worker">done')).toBe(true)
+    expect(isKnownHarnessInjectedUserTurnText('<my-custom-element>pasted code')).toBe(false)
+    expect(isKnownHarnessInjectedUserTurnText('<brand-new-harness-tag>unknown')).toBe(false)
   })
 })

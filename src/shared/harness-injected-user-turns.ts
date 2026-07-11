@@ -10,9 +10,35 @@
 // so we match that shape instead of chasing individual tag names — the tag
 // set grows faster than a literal list stays current. Underscore tags
 // (<user_query>) are deliberately NOT matched: Grok wraps real typed prompts
-// in them. A prompt that begins with pasted kebab-tag markup (e.g. a
-// web-component snippet) is misclassified, costing only a stale status label.
+// in them. This broad shape is limited to classification that does not remove
+// transcript content; transcript filtering uses the observed-tag list below.
 const HARNESS_KEBAB_TAG_PREFIX = /^<[a-z][a-z0-9]*(?:-[a-z0-9]+)+(?:[\s>]|$)/
+const LEADING_TAG_NAME = /^<([a-z][a-z0-9-]*)(?:[\s>]|$)/
+
+// Destructive consumers such as transcript filtering must only hide tags we
+// have observed from harnesses; arbitrary kebab tags can be genuine user code.
+const KNOWN_HARNESS_TAG_NAMES = new Set([
+  'agent-message',
+  'bash-input',
+  'bash-stderr',
+  'bash-stdout',
+  'channel',
+  'command-args',
+  'command-message',
+  'command-name',
+  'cross-session-message',
+  'fork-boilerplate',
+  'local-command-caveat',
+  'local-command-stderr',
+  'local-command-stdout',
+  'mcp-polling-update',
+  'mcp-resource-update',
+  'system-reminder',
+  'task-notification',
+  'teammate-message',
+  'user-memory-input',
+  'user-prompt-submit-hook'
+])
 
 // Injected shapes the kebab-tag rule cannot see: single-word attribute tags
 // and the prose sentences the harness wraps deliveries and notices in.
@@ -34,6 +60,20 @@ export function isHarnessInjectedUserTurnText(text: string): boolean {
     return false
   }
   if (HARNESS_KEBAB_TAG_PREFIX.test(normalized)) {
+    return true
+  }
+  return HARNESS_INJECTED_TURN_PREFIXES.some((prefix) => normalized.startsWith(prefix))
+}
+
+/** True only for observed harness shapes. Use this when a match removes user
+ *  content rather than merely suppressing ephemeral prompt-derived UI. */
+export function isKnownHarnessInjectedUserTurnText(text: string): boolean {
+  const normalized = text.trim().toLowerCase()
+  if (normalized.length === 0) {
+    return false
+  }
+  const tagName = LEADING_TAG_NAME.exec(normalized)?.[1]
+  if (tagName && KNOWN_HARNESS_TAG_NAMES.has(tagName)) {
     return true
   }
   return HARNESS_INJECTED_TURN_PREFIXES.some((prefix) => normalized.startsWith(prefix))

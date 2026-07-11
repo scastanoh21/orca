@@ -22,17 +22,19 @@ export function decodeClaudeTranscriptLine(
     return null
   }
   const message = asRecord(record.message)
-  const blocks = claudeContentBlocks(message?.content)
-  if (blocks.length === 0) {
+  const decodedBlocks = claudeContentBlocks(message?.content)
+  if (decodedBlocks.length === 0) {
     return null
   }
   // Why: Claude structurally marks injected turns, but tool-result records are
   // genuine output and must remain visible even when the containing turn is meta.
-  if (
+  const isInjectedUserTurn =
     role === 'user' &&
-    (record.isMeta === true || record.isSynthetic === true || record.isCompactSummary === true) &&
-    !blocks.some((block) => block.type === 'tool-result')
-  ) {
+    (record.isMeta === true || record.isSynthetic === true || record.isCompactSummary === true)
+  const blocks = isInjectedUserTurn
+    ? decodedBlocks.filter((block) => block.type === 'tool-result')
+    : decodedBlocks
+  if (blocks.length === 0) {
     return null
   }
   const messageId = extractString(record.uuid) ?? extractString(message?.id)
