@@ -499,6 +499,80 @@ describe('runtime RPC client routing', () => {
     expect(statusCalls).toBe(2)
   })
 
+  it('re-probes a missing capability on retry so a runtime upgrade can recover', async () => {
+    let statusCalls = 0
+    runtimeEnvironmentCall.mockImplementation(() => {
+      statusCalls += 1
+      return Promise.resolve({
+        id: 'status',
+        ok: true,
+        result: {
+          runtimeId: 'remote-runtime',
+          graphStatus: 'ready',
+          runtimeProtocolVersion: RUNTIME_PROTOCOL_VERSION,
+          minCompatibleRuntimeClientVersion: MIN_COMPATIBLE_RUNTIME_CLIENT_VERSION,
+          capabilities: statusCalls === 1 ? [] : ['linear.issue-attribute-filter.v1']
+        },
+        _meta: { runtimeId: 'remote-runtime' }
+      })
+    })
+
+    await expect(
+      runtimeEnvironmentSupportsCapability('env-cap-upgrade', 'linear.issue-attribute-filter.v1')
+    ).resolves.toBe(false)
+    await expect(
+      runtimeEnvironmentSupportsCapability('env-cap-upgrade', 'linear.issue-attribute-filter.v1')
+    ).resolves.toBe(true)
+    expect(statusCalls).toBe(2)
+  })
+
+  it('expires a supported capability verdict so a runtime downgrade is detected', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date(0))
+    try {
+      let statusCalls = 0
+      runtimeEnvironmentCall.mockImplementation(() => {
+        statusCalls += 1
+        return Promise.resolve({
+          id: 'status',
+          ok: true,
+          result: {
+            runtimeId: 'remote-runtime',
+            graphStatus: 'ready',
+            runtimeProtocolVersion: RUNTIME_PROTOCOL_VERSION,
+            minCompatibleRuntimeClientVersion: MIN_COMPATIBLE_RUNTIME_CLIENT_VERSION,
+            capabilities: statusCalls === 1 ? ['linear.issue-attribute-filter.v1'] : []
+          },
+          _meta: { runtimeId: 'remote-runtime' }
+        })
+      })
+
+      await expect(
+        runtimeEnvironmentSupportsCapability(
+          'env-cap-downgrade',
+          'linear.issue-attribute-filter.v1'
+        )
+      ).resolves.toBe(true)
+      vi.setSystemTime(new Date(59_999))
+      await expect(
+        runtimeEnvironmentSupportsCapability(
+          'env-cap-downgrade',
+          'linear.issue-attribute-filter.v1'
+        )
+      ).resolves.toBe(true)
+      vi.setSystemTime(new Date(60_000))
+      await expect(
+        runtimeEnvironmentSupportsCapability(
+          'env-cap-downgrade',
+          'linear.issue-attribute-filter.v1'
+        )
+      ).resolves.toBe(false)
+      expect(statusCalls).toBe(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('rejects missing advertised runtime capabilities with the caller message', async () => {
     runtimeEnvironmentCall.mockResolvedValue({
       id: 'status',

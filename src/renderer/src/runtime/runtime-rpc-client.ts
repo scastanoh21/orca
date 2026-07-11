@@ -9,6 +9,9 @@ export type RuntimeClientTarget = { kind: 'local' } | { kind: 'environment'; env
 
 const RUNTIME_COMPATIBILITY_CACHE_MAX = 32
 const RECENT_RUNTIME_COMPATIBILITY_FAILURE_TTL_MS = 60_000
+// Why: a saved environment can restart into a different Orca version without
+// changing ids; capability verdicts must eventually follow that version change.
+const RUNTIME_CAPABILITY_STATUS_TTL_MS = 60_000
 
 type RuntimeCompatibilityCacheEntry = {
   check: Promise<void>
@@ -17,6 +20,7 @@ type RuntimeCompatibilityCacheEntry = {
   // the probe is in flight, so a recovery clear can drop a doomed pending probe.
   provenCompatible: boolean
   status: RuntimeStatus | null
+  statusCheckedAt: number | null
 }
 
 const runtimeCompatibilityChecks = new Map<string, RuntimeCompatibilityCacheEntry>()
@@ -110,7 +114,8 @@ async function ensureRuntimeEnvironmentCompatible(
     check: Promise.resolve(),
     failedAt: null,
     provenCompatible: false,
-    status: null
+    status: null,
+    statusCheckedAt: null
   }
   const check = (async () => {
     const response = await window.api.runtimeEnvironments.call({
@@ -123,6 +128,7 @@ async function ensureRuntimeEnvironmentCompatible(
     )
     assertRuntimeStatusCompatible(status)
     entry.status = status
+    entry.statusCheckedAt = Date.now()
   })()
   entry.check = check
   rememberRuntimeEnvironmentCompatibility(environmentId, entry)
@@ -215,7 +221,8 @@ export function markRuntimeEnvironmentCompatible(environmentId: string): void {
     check: Promise.resolve(),
     failedAt: null,
     provenCompatible: true,
-    status: null
+    status: null,
+    statusCheckedAt: null
   })
 }
 
@@ -236,7 +243,8 @@ export async function getRuntimeEnvironmentStatus(
     check: Promise.resolve(),
     failedAt: null,
     provenCompatible: true,
-    status
+    status,
+    statusCheckedAt: Date.now()
   })
   return status
 }
@@ -254,15 +262,30 @@ export async function runtimeEnvironmentSupportsCapability(
   if (cached && cached.failedAt === null) {
     try {
       await cached.check
-      if (cached.status) {
-        return cached.status.capabilities?.includes(capability) === true
+      if (
+        runtimeCompatibilityChecks.get(trimmed) === cached &&
+        cached.status &&
+        cached.statusCheckedAt !== null &&
+        Date.now() - cached.statusCheckedAt < RUNTIME_CAPABILITY_STATUS_TTL_MS
+      ) {
+        const supported = cached.status.capabilities?.includes(capability) === true
+        if (!supported) {
+          // Why: an unsupported verdict must not survive a remote upgrade. The
+          // next explicit retry re-probes instead of pinning the old capability set.
+          runtimeCompatibilityChecks.delete(trimmed)
+        }
+        return supported
       }
     } catch {
       // Fall through to a fresh status.get that refreshes the cache.
     }
   }
   const status = await getRuntimeEnvironmentStatus(trimmed, timeoutMs)
-  return status.capabilities?.includes(capability) === true
+  const supported = status.capabilities?.includes(capability) === true
+  if (!supported && runtimeCompatibilityChecks.get(trimmed)?.status === status) {
+    runtimeCompatibilityChecks.delete(trimmed)
+  }
+  return supported
 }
 
 export async function assertRuntimeEnvironmentCapability(
