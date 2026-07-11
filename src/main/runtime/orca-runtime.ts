@@ -6486,9 +6486,15 @@ export class OrcaRuntimeService {
     if (!subscribers) {
       return false
     }
-    // Why: Map insertion order elects one stable responder without a per-query
-    // scan; deleting the winner promotes the earliest surviving subscriber.
-    return subscribers.keys().next().value === clientId
+    // Why: soft-leave resubscribe preserves the original subscription time but
+    // reinserts the record. Elect from that stable age, not mutable Map order.
+    let earliest: { clientId: string; subscribedAt: number } | null = null
+    for (const subscriber of subscribers.values()) {
+      if (earliest === null || subscriber.subscribedAt < earliest.subscribedAt) {
+        earliest = subscriber
+      }
+    }
+    return earliest?.clientId === clientId
   }
 
   subscribeToFitOverrideChanges(

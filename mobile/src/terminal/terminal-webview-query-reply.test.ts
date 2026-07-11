@@ -6,6 +6,7 @@ type QueryReplyGate = {
   forward: (data: string) => void
   queueBoundary: (generation: number) => void
   reset: () => void
+  resume: () => void
   setGeneration: (generation: number) => void
 }
 
@@ -23,6 +24,7 @@ function createQueryReplyGate(notify: (message: unknown) => void): {
         forward: forwardTerminalDataReply,
         queueBoundary: enqueueTerminalDataReplyBoundary,
         reset: resetTerminalDataReplyAuthority,
+        resume: resumeTerminalDataReplyAuthority,
         setGeneration: function(next) { terminalGeneration = next; }
       };`
   ) as (
@@ -97,5 +99,28 @@ describe('mobile terminal query replies', () => {
     queuedBoundaries[0]?.()
     gate.forward('\x1b[1;1R')
     expect(messages).toEqual([])
+  })
+
+  it('restores reply authority when clear discards the replay boundary', () => {
+    const messages: unknown[] = []
+    const { gate, queuedBoundaries } = createQueryReplyGate((message) => messages.push(message))
+    gate.setGeneration(1)
+    gate.reset()
+    gate.queueBoundary(1)
+
+    // A clear drops all queued writes, including the replay boundary.
+    queuedBoundaries.length = 0
+    gate.resume()
+    gate.forward('\x1b[3;4R')
+
+    expect(messages).toEqual([{ type: 'terminal-data', bytes: '\x1b[3;4R' }])
+    const clearStart = XTERM_WEBVIEW_SOURCE.html.indexOf("} else if (msg.type === 'clear') {")
+    const clearEnd = XTERM_WEBVIEW_SOURCE.html.indexOf(
+      "} else if (msg.type === 'measure')",
+      clearStart
+    )
+    expect(XTERM_WEBVIEW_SOURCE.html.slice(clearStart, clearEnd)).toContain(
+      'resumeTerminalDataReplyAuthority()'
+    )
   })
 })

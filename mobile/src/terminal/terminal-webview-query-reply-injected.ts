@@ -7,6 +7,10 @@ export const TERMINAL_QUERY_REPLY_JS = `
     terminalDataRepliesEnabled = false;
   }
 
+  function resumeTerminalDataReplyAuthority() {
+    terminalDataRepliesEnabled = true;
+  }
+
   function forwardTerminalDataReply(data) {
     if (terminalDataRepliesEnabled) notify({ type: 'terminal-data', bytes: data });
   }

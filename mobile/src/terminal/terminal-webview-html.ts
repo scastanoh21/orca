@@ -955,7 +955,7 @@ ${TERMINAL_WEBGL_RECOVERY_JS}
       write(msg.data);
     } else if (msg.type === 'clear') {
       terminalGeneration++;
-      resetWriteQueue();
+      resetWriteQueue(); resumeTerminalDataReplyAuthority(); // Why: clear drops the replay boundary.
       statusDotPendingSelector = false;
       afterDrainCallbacks = [];
       writesDraining = false;
