@@ -441,6 +441,24 @@ describe('dispatcher → transport → onTitleChange for Pi spinner', () => {
     expect(registeredExit).toHaveBeenCalledWith('pty-registered', 9)
   })
 
+  it('attaches the dispatcher before first-use eager-buffer spawn can emit an exit', async () => {
+    const { captureEagerPtyBufferRegistration } = await import('./pty-dispatcher')
+    const eagerExit = vi.fn()
+
+    expect(exitDispatcherCallback).toBeNull()
+    const registerEagerPtyBuffer = captureEagerPtyBufferRegistration()
+    expect(exitDispatcherCallback).not.toBeNull()
+    expect(window.api.pty.rendererDispatcherReady).toHaveBeenCalledOnce()
+
+    dispatcherCallback?.({ id: 'pty-first-background', data: 'fast-output' })
+    exitDispatcherCallback?.({ id: 'pty-first-background', code: 7 })
+    const handle = registerEagerPtyBuffer('pty-first-background', eagerExit)
+
+    expect(handle.flush()).toBe('fast-output')
+    await Promise.resolve()
+    expect(eagerExit).toHaveBeenCalledWith('pty-first-background', 7)
+  })
+
   it('filters old lifecycle events for delayed background eager-buffer registration', async () => {
     const { captureEagerPtyBufferRegistration, ensurePtyDispatcher } =
       await import('./pty-dispatcher')

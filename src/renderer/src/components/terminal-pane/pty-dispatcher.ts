@@ -311,6 +311,9 @@ export function getEagerPtyBufferHandle(ptyId: string): EagerPtyHandle | undefin
 const EAGER_BUFFER_MAX_BYTES = TERMINAL_SCROLLBACK_SESSION_BUFFER_BYTE_LIMIT
 
 export function captureEagerPtyBufferRegistration(): typeof registerEagerPtyBuffer {
+  // Why: pty:exit is not boot-gated like pty:data. Attach the singleton before
+  // spawn so a first-use background PTY cannot exit into a listener-less page.
+  ensurePtyDispatcher()
   const afterCursor = capturePreHandlerPtyEventCursor()
   return (ptyId, onExit) => registerEagerPtyBuffer(ptyId, onExit, afterCursor)
 }

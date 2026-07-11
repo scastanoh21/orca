@@ -191,14 +191,18 @@ describe('pre-handler PTY buffer', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     const warningChunk = 'x'.repeat(64 * 1_024 + 1)
 
-    for (const ptyId of WARN_PTY_IDS) {
-      bufferPreHandlerPtyData(ptyId, warningChunk)
-    }
-    expect(warn).toHaveBeenCalledTimes(PRE_HANDLER_PTY_MAX_PTYS + 1)
+    try {
+      for (const ptyId of WARN_PTY_IDS) {
+        bufferPreHandlerPtyData(ptyId, warningChunk)
+      }
+      expect(warn).toHaveBeenCalledTimes(PRE_HANDLER_PTY_MAX_PTYS + 1)
 
-    // The first PTY was evicted when the 65th identity arrived. Reusing it
-    // must be warnable again instead of remaining forever in the warning set.
-    bufferPreHandlerPtyData(WARN_PTY_IDS[0], warningChunk)
-    expect(warn).toHaveBeenCalledTimes(PRE_HANDLER_PTY_MAX_PTYS + 2)
+      // The first PTY was evicted when the 65th identity arrived. Reusing it
+      // must be warnable again instead of remaining forever in the warning set.
+      bufferPreHandlerPtyData(WARN_PTY_IDS[0], warningChunk)
+      expect(warn).toHaveBeenCalledTimes(PRE_HANDLER_PTY_MAX_PTYS + 2)
+    } finally {
+      warn.mockRestore()
+    }
   })
 })

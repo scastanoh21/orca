@@ -3247,8 +3247,8 @@
       "motivatingLinks": [
         "https://github.com/stablyai/orca/pull/7695"
       ],
-      "invariant": "Before a PTY handler mounts, retained data, exit, and warning identities remain capped; data drains before exit; a fresh provider-reused PTY id cannot consume an older lifecycle's events; explicit reattach keeps its current backlog; and failed shutdown restore drains detached data before later live output.",
-      "oracle": "Drive more than 64 exit-before-handler identities, warning-producing data churn, duplicate/reused ids, fresh-spawn and explicit-reattach ordering, handler registration at cap, and failed-shutdown restoration; assert bounded eviction, exact latest-code delivery once, fresh-generation filtering, data-before-exit order, and detached-before-live output.",
+      "invariant": "Before a PTY handler mounts, the singleton dispatcher is already listening and retained data, exit, and warning identities remain capped; data drains before exit; a fresh provider-reused PTY id cannot consume an older lifecycle's events; explicit reattach keeps its current backlog; and failed shutdown restore drains detached data before later live output.",
+      "oracle": "Drive first-use background exit-before-spawn-resolution, more than 64 exit-before-handler identities, warning-producing data churn, duplicate/reused ids, fresh-spawn and explicit-reattach ordering, handler registration at cap, and failed-shutdown restoration; assert listener-first capture, bounded eviction, exact latest-code delivery once, fresh-generation filtering, data-before-exit order, and detached-before-live output.",
       "commands": [
         "pnpm exec vitest run --config config/vitest.config.ts src/renderer/src/components/terminal-pane/pty-pre-handler-buffer.test.ts src/renderer/src/components/terminal-pane/pty-transport.test.ts src/renderer/src/components/terminal-pane/pty-dispatcher-pi-routing.test.ts src/renderer/src/lib/launch-agent-background-session.test.ts src/renderer/src/lib/launch-worktree-background-terminals.test.ts"
       ],
@@ -3273,6 +3273,7 @@
           "assertions": [
             "pre-handler data drains before its exit",
             "fresh PTY-id reuse and failed-reattach fresh fallback filter old lifecycle events while explicit daemon reattach preserves pre-connect backlog",
+            "first-use eager registration attaches the singleton dispatcher before a fast background PTY can emit data or exit",
             "a registered exit handler remains authoritative while 65 orphan exits churn through the bounded buffer"
           ]
         },
@@ -3291,7 +3292,7 @@
           "command": "pnpm exec vitest run --config config/vitest.config.ts src/renderer/src/components/terminal-pane/pty-pre-handler-buffer.test.ts src/renderer/src/components/terminal-pane/pty-transport.test.ts src/renderer/src/components/terminal-pane/pty-dispatcher-pi-routing.test.ts src/renderer/src/lib/launch-agent-background-session.test.ts src/renderer/src/lib/launch-worktree-background-terminals.test.ts",
           "result": "passed",
           "durationSeconds": 1,
-          "summary": "5 test files passed, 114 tests passed on main@20ebe858af plus the #7695 candidate. Main@20ebe858af retained the 65th oldest exit (received code 0 instead of eviction); the bounded candidate evicts it and preserves all ordering/reuse cases."
+          "summary": "5 test files passed, 115 tests passed on main@20ebe858af plus the #7695 candidate. Main@20ebe858af retained the 65th oldest exit (received code 0 instead of eviction); the bounded candidate evicts it and preserves listener-first and ordering/reuse cases."
         }
       ],
       "runtimeBudget": {

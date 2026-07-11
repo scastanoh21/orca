@@ -62,7 +62,6 @@ export async function launchAgentBackgroundSession(
       // Best-effort: continue with launch. The user can still accept the trust menu.
     }
   }
-  const cmdOverrides = store.settings?.agentCmdOverrides ?? {}
   const agentArgs = resolveTuiAgentLaunchArgs(agent, store.settings?.agentDefaultArgs)
   const agentEnv = resolveTuiAgentLaunchEnv(agent, store.settings?.agentDefaultEnv)
   const launchPlatform = repo
@@ -87,7 +86,7 @@ export async function launchAgentBackgroundSession(
   const startupPlan = buildAgentStartupPlan({
     agent,
     prompt: hasPrompt && !isFollowupPath ? trimmedPrompt : '',
-    cmdOverrides,
+    cmdOverrides: store.settings?.agentCmdOverrides ?? {},
     agentArgs,
     agentEnv,
     platform: launchPlatform,

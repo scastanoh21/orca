@@ -1,4 +1,5 @@
 import {
+  ensurePtyDispatcher,
   registerEagerPtyBuffer,
   type EagerPtyHandle
 } from '@/components/terminal-pane/pty-dispatcher'
@@ -177,6 +178,8 @@ async function createBackgroundTab(args: {
   const leafId = createBrowserUuid()
   store.setTabLayout(tab.id, singlePaneLayoutSnapshot(leafId))
   let ptyId: string
+  // Why: pty:exit is not held by main's renderer-ready data gate.
+  ensurePtyDispatcher()
   const preHandlerCursor = capturePreHandlerPtyEventCursor()
   try {
     ptyId = await spawnPane({
@@ -206,6 +209,8 @@ async function addSetupSplit(args: {
 }): Promise<void> {
   const store = useAppStore.getState()
   const setupLeafId = createBrowserUuid()
+  // Why: a setup shell may exit before spawn resolves on a first-use renderer.
+  ensurePtyDispatcher()
   const preHandlerCursor = capturePreHandlerPtyEventCursor()
   const setupPtyId = await spawnPane({
     worktree: args.worktree,
