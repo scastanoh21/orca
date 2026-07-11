@@ -35,7 +35,10 @@ import {
   type AgentProviderSessionMetadata
 } from './agent-session-resume'
 import { parsePaneKey } from './stable-pane-id'
-import { isHarnessInjectedUserTurnText } from './harness-injected-user-turns'
+import {
+  isHarnessInjectedUserTurnText,
+  isKnownHarnessInjectedUserTurnText
+} from './harness-injected-user-turns'
 import {
   buildGrokChatHistoryPathCandidates,
   findGrokChatHistoryBySessionId,
@@ -404,8 +407,11 @@ function resolvePrompt(
 ): string {
   // Why: harness-injected turns (task notifications, system reminders) fire
   // UserPromptSubmit but are not the user's ask — keep the cached real prompt
-  // instead of surfacing raw machinery tags in status labels.
-  if (isHarnessInjectedUserTurnText(promptText)) {
+  // instead of surfacing raw machinery tags in status labels. Match only
+  // observed harness tags: replacing the label discards the real prompt, so an
+  // arbitrary kebab-shaped user prompt (e.g. '<order-item>fix this') must not
+  // be treated as machinery.
+  if (isKnownHarnessInjectedUserTurnText(promptText)) {
     return state.lastPromptByPaneKey.get(paneKey) ?? ''
   }
   if (options?.resetOnNewTurn) {
