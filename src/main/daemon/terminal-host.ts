@@ -2,6 +2,7 @@ import { Session, type SubprocessHandle } from './session'
 import { normalizePtySize } from './daemon-pty-size'
 import { resolveProcessCwd } from '../providers/process-cwd'
 import type { StartupCommandDelivery } from '../../shared/codex-startup-delivery'
+import { buildStartupCommandSubmission } from '../../shared/startup-command-submission'
 import type {
   SessionInfo,
   TakePendingOutputResult,
@@ -30,6 +31,7 @@ export type CreateOrAttachOptions = {
   terminalWindowsPowerShellImplementation?: 'auto' | 'powershell.exe' | 'pwsh.exe'
   shellReadySupported?: boolean
   shellReadyTimeoutMs?: number
+  historySeed?: string
   streamClient: { onData: (data: string) => void; onExit: (code: number) => void }
 }
 
@@ -38,6 +40,7 @@ export type CreateOrAttachResult = {
   snapshot: TerminalSnapshot | null
   pid: number | null
   shellState: ShellReadyState
+  historySeeded?: boolean
   attachToken: symbol
 }
 
@@ -104,6 +107,7 @@ export class TerminalHost {
         snapshot,
         pid: existing.pid,
         shellState: existing.shellState,
+        ...(existing.historySeeded !== undefined ? { historySeeded: existing.historySeeded } : {}),
         attachToken: token
       }
     }
@@ -136,8 +140,10 @@ export class TerminalHost {
       sessionId: opts.sessionId,
       cols: size.cols,
       rows: size.rows,
+      terminalHandle: opts.env?.ORCA_TERMINAL_HANDLE,
       subprocess,
       shellReadySupported: opts.shellReadySupported ?? false,
+      historySeed: opts.historySeed,
       // Why: reap the dead session (dispose emulator + drop from the map) the
       // moment its subprocess exits, instead of retaining it for the daemon's
       // lifetime. Nothing reads a dead session's emulator (getSnapshot/
@@ -162,8 +168,15 @@ export class TerminalHost {
       // the user would need to press Enter after Orca launches the agent or
       // setup script. POSIX shells accept CR as Enter under ICRNL.
       const submit = process.platform === 'win32' ? '\r' : '\n'
-      const endsWithSubmit = opts.command.endsWith('\r') || opts.command.endsWith('\n')
-      session.write(endsWithSubmit ? opts.command : `${opts.command}${submit}`)
+      // Why: multiline startup prompts are pasted literally via bracketed paste
+      // only for Orca-wrapped bash/zsh, which is exactly when the shell-ready
+      // barrier is supported; other shells keep the raw submit path.
+      session.write(
+        buildStartupCommandSubmission(opts.command, {
+          submit,
+          bracketedPasteSafe: opts.shellReadySupported ?? false
+        })
+      )
     }
 
     return {
@@ -171,6 +184,7 @@ export class TerminalHost {
       snapshot: null,
       pid: subprocess.pid,
       shellState: session.shellState,
+      ...(session.historySeeded !== undefined ? { historySeeded: session.historySeeded } : {}),
       attachToken: token
     }
   }
@@ -181,6 +195,21 @@ export class TerminalHost {
 
   resize(sessionId: string, cols: number, rows: number): void {
     this.getAliveSession(sessionId).resize(cols, rows)
+  }
+
+  // Why null-not-throw (unlike write/resize): pause/resume are best-effort
+  // flow-control hints; a session that exited while the notify was in flight
+  // must not surface an error or a synthetic exit.
+  pauseProducer(sessionId: string): void {
+    const session = this.sessions.get(sessionId)
+    if (!session || !session.isAlive) {
+      return
+    }
+    session.pauseProducer()
+  }
+
+  resumeProducer(sessionId: string): void {
+    this.sessions.get(sessionId)?.resumeProducer()
   }
 
   kill(sessionId: string, opts: { immediate?: boolean } = {}): void {
@@ -252,12 +281,33 @@ export class TerminalHost {
   // Why: unlike getAliveSession (which throws), this returns null for dead/missing
   // sessions. Checkpoint is best-effort — a session that exited between the timer
   // firing and the RPC arriving should not throw.
-  getSnapshot(sessionId: string): TerminalSnapshot | null {
+  getSnapshot(sessionId: string, opts: { scrollbackRows?: number } = {}): TerminalSnapshot | null {
     const session = this.sessions.get(sessionId)
     if (!session || !session.isAlive) {
       return null
     }
-    return session.getSnapshot()
+    return session.getSnapshot(opts)
+  }
+
+  // Why: scan-authority handoff seed (null-not-throw like getSnapshot) — the
+  // emulator's dangling incomplete escape at the current stream position.
+  getPartialEscapeTailAnsi(sessionId: string): string {
+    const session = this.sessions.get(sessionId)
+    if (!session || !session.isAlive) {
+      return ''
+    }
+    return session.getPartialEscapeTailAnsi()
+  }
+
+  // Why: read-only readback of the size the PTY actually applied (null-not-throw
+  // like getSnapshot). The renderer compares this against xterm to detect a
+  // resize that was dropped/coerced daemon-side and re-assert it.
+  getAppliedSize(sessionId: string): { cols: number; rows: number } | null {
+    const session = this.sessions.get(sessionId)
+    if (!session || !session.isAlive) {
+      return null
+    }
+    return session.getAppliedSize()
   }
 
   // Why: same null-not-throw semantics as getSnapshot — incremental
@@ -284,16 +334,17 @@ export class TerminalHost {
       if (!session.isAlive) {
         continue
       }
-      const snapshot = session.getSnapshot()
+      const size = session.getAppliedSize()
       result.push({
         sessionId: session.sessionId,
         state: session.state,
         shellState: session.shellState,
         isAlive: true,
+        ...(session.terminalHandle ? { terminalHandle: session.terminalHandle } : {}),
         pid: session.pid,
         cwd: session.getCwd(),
-        cols: snapshot?.cols ?? 0,
-        rows: snapshot?.rows ?? 0,
+        cols: size?.cols ?? 0,
+        rows: size?.rows ?? 0,
         createdAt: 0
       })
     }

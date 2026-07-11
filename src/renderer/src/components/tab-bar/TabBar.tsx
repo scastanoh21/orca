@@ -4,6 +4,7 @@
  * branches share little beyond drag data, so consolidating them would cost
  * more clarity than the ~5 lines of bloat is worth. */
 import React, { useEffect, useMemo, useRef, useState } from 'react'
+import { useShallow } from 'zustand/react/shallow'
 import { SortableContext } from '@dnd-kit/sortable'
 import {
   ChevronLeft,
@@ -77,6 +78,11 @@ import { getTabStripScrollMaskClassName } from './tab-strip-scroll-metrics'
 import { useTabStripOverflowNavigation } from './tab-strip-overflow-navigation'
 import { useTabStripDragScrollHandlers } from './tab-strip-drag-scroll'
 import { shouldShowWindowsShellMenu } from './windows-shell-menu-visibility'
+import { canToggleNativeChat } from '../native-chat/native-chat-availability'
+import { isNativeChatTranscriptLocalReadable } from '@/lib/native-chat-transcript-readability'
+import { selectTabAgentTypesByTabId } from './tab-agent-types-by-tab-id'
+import { resolveCommittedTitleAgentType } from '@/lib/pane-agent-evidence'
+import { getConnectionIdFromState } from '@/lib/connection-context'
 
 const isWindows = navigator.userAgent.includes('Windows')
 const isMacOs = navigator.userAgent.includes('Mac')
@@ -447,6 +453,22 @@ function TabBarInner({
     [unifiedTabs]
   )
 
+  // Why: gate the tab long-press view-mode toggle to agent terminals. A tab is
+  // eligible when it launched an agent or has a live agent-status entry on any of
+  // its panes (paneKey = `${unifiedTabId}:…`), mirroring the toggle button's gate.
+  const toggleTabViewMode = useAppStore((s) => s.toggleTabViewMode)
+  // Why: the strip only needs each tab's stable agent identity, but the whole
+  // agentStatusByPaneKey map churns on every working↔idle transition app-wide.
+  // Select a shallow-stable { tabId: agentType } projection so the strip
+  // re-renders only when a tab gains/loses/changes its agent, not on status flips.
+  const tabAgentTypesByTabId = useAppStore(
+    useShallow((s) => selectTabAgentTypesByTabId(s.agentStatusByPaneKey ?? {}))
+  )
+  const nativeChatEnabled = useAppStore((s) => s.settings?.experimentalNativeChat === true)
+  const nativeChatTranscriptIsLocalReadable = useAppStore((s) =>
+    isNativeChatTranscriptLocalReadable(getConnectionIdFromState(s, worktreeId))
+  )
+
   // Why: Electron <webview> elements run in a separate process, so clicking
   // inside one never dispatches a pointerdown on the renderer document.
   // Radix DropdownMenu relies on document pointerdown to detect outside
@@ -567,8 +589,7 @@ function TabBarInner({
         hasNewBrowser: !terminalOnly,
         hasNewMarkdown: !terminalOnly && Boolean(onNewFileTab),
         hasOpenMarkdown: !terminalOnly && Boolean(onOpenFileTab),
-        hasSimulator:
-          !terminalOnly && isMacOs && mobileEmulatorEnabled && Boolean(onNewSimulatorTab),
+        hasSimulator: !terminalOnly && mobileEmulatorEnabled && Boolean(onNewSimulatorTab),
         simulatorIsGoTo: workspaceHasSimulatorTab
       }),
     [
@@ -726,7 +747,7 @@ function TabBarInner({
     </DropdownMenuItem>
   ) : null
   const newSimulatorMenuItem =
-    !terminalOnly && isMacOs && mobileEmulatorEnabled && onNewSimulatorTab ? (
+    !terminalOnly && mobileEmulatorEnabled && onNewSimulatorTab ? (
       workspaceHasSimulatorTab ? (
         <Tooltip>
           <TooltipTrigger asChild>
@@ -1090,6 +1111,27 @@ function TabBarInner({
                     item.data.title
                   )
                 }
+                const unifiedTabForItem = unifiedTabByVisibleId.get(item.id)
+                // Carry the agent *identity* (not just "an agent exists") so the
+                // native-chat gate can reject unsupported agents like Grok.
+                const resolvedAgent =
+                  resolveCommittedTitleAgentType(unifiedTabForItem?.label ?? '') ??
+                  resolveCommittedTitleAgentType(terminalTab.title)
+                // Key the live-agent lookup by the backing terminal tab id —
+                // agent-status pane keys are `${terminalTab.id}:${leafId}`, and
+                // the unified tab id can differ from it.
+                const detectedAgent = tabAgentTypesByTabId[terminalTab.id] ?? null
+                const canToggleViewMode =
+                  unifiedTabForItem !== undefined &&
+                  canToggleNativeChat({
+                    experimentalNativeChatEnabled: nativeChatEnabled,
+                    contentType: 'terminal',
+                    launchAgent: terminalTab.launchAgent,
+                    detectedAgent,
+                    resolvedAgent,
+                    nativeChatTranscriptIsLocalReadable,
+                    isChatViewMode: unifiedTabForItem.viewMode === 'chat'
+                  })
                 return (
                   <SortableTab
                     key={item.id}
@@ -1097,6 +1139,11 @@ function TabBarInner({
                     unifiedTabId={item.unifiedTabId}
                     groupId={resolvedGroupId}
                     tabCount={orderedItems.length}
+                    canToggleViewMode={canToggleViewMode}
+                    isChatView={nativeChatEnabled && unifiedTabForItem?.viewMode === 'chat'}
+                    onToggleViewMode={
+                      unifiedTabForItem ? () => toggleTabViewMode(unifiedTabForItem.id) : undefined
+                    }
                     hasTabsToRight={index < orderedItems.length - 1}
                     isActive={
                       (activeTabType === 'terminal' || activeTabType === 'simulator') &&

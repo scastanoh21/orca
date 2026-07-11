@@ -2,9 +2,9 @@
 import { EventEmitter } from 'node:events'
 import type { IncomingHttpHeaders, IncomingMessage } from 'node:http'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs'
-import { tmpdir } from 'os'
-import { join } from 'path'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import {
   createHookListenerState,
   getEndpointFileName,
@@ -13,11 +13,16 @@ import {
   isShellSafeEndpointValue,
   normalizeHookPayload,
   parseFormEncodedBody,
+  preparePendingGrokResultDiscovery,
   readRequestBody,
   resolveHookSource,
   writeEndpointFile,
   type HookListenerState
 } from './agent-hook-listener'
+import {
+  clearGrokSessionPathLookupCacheForTests,
+  findGrokChatHistoryBySessionId
+} from './grok-session-paths'
 import { makePaneKey } from './stable-pane-id'
 
 const LEAF_ID = '11111111-1111-4111-8111-111111111111'
@@ -51,6 +56,7 @@ describe('shared agent-hook-listener', () => {
   })
 
   afterEach(() => {
+    clearGrokSessionPathLookupCacheForTests()
     vi.unstubAllEnvs()
   })
 
@@ -146,6 +152,219 @@ describe('shared agent-hook-listener', () => {
     expect(event?.payload.agentType).toBe('gemini')
     expect(event?.payload.toolName).toBe('read_file')
     expect(event?.payload.toolInput).toBe('src/index.ts')
+  })
+
+  it('captures the full AskUserQuestion tool input as interactivePrompt (untruncated)', () => {
+    const questions = {
+      questions: Array.from({ length: 4 }, (_, i) => ({
+        question: `Question ${i} ${'detail '.repeat(40)}`,
+        options: ['option one', 'option two', 'option three']
+      }))
+    }
+    const event = normalizeHookPayload(
+      state,
+      'claude',
+      {
+        paneKey: PANE_KEY,
+        payload: {
+          hook_event_name: 'PreToolUse',
+          tool_name: 'AskUserQuestion',
+          tool_input: questions
+        }
+      },
+      'production'
+    )
+
+    expect(event?.payload.toolName).toBe('AskUserQuestion')
+    // Why: the auto-allowed AskUserQuestion PreToolUse is a human-input boundary,
+    // so it must read as waiting (amber attention) rather than a working spinner.
+    expect(event?.payload.state).toBe('waiting')
+    const expected = JSON.stringify(questions)
+    expect(event?.payload.interactivePrompt).toBe(expected)
+    // Why: must NOT be truncated to the 160-char toolInput preview cap.
+    expect(expected.length).toBeGreaterThan(200)
+    expect(event?.payload.interactivePrompt!.length).toBe(expected.length)
+  })
+
+  it('maps Claude AskUserQuestion PreToolUse to waiting, then back to working on answer', () => {
+    const question = normalizeHookPayload(
+      state,
+      'claude',
+      {
+        paneKey: PANE_KEY,
+        payload: {
+          hook_event_name: 'PreToolUse',
+          tool_name: 'AskUserQuestion',
+          tool_input: { questions: [{ question: 'Pick', options: ['a', 'b'] }] }
+        }
+      },
+      'production'
+    )
+    const answered = normalizeHookPayload(
+      state,
+      'claude',
+      {
+        paneKey: PANE_KEY,
+        payload: {
+          hook_event_name: 'PostToolUse',
+          tool_name: 'AskUserQuestion',
+          tool_response: { selected: ['a'] }
+        }
+      },
+      'production'
+    )
+
+    expect(question?.payload).toMatchObject({
+      agentType: 'claude',
+      state: 'waiting',
+      toolName: 'AskUserQuestion'
+    })
+    expect(answered?.payload).toMatchObject({
+      agentType: 'claude',
+      state: 'working',
+      toolName: 'AskUserQuestion'
+    })
+  })
+
+  it('keeps a normal Claude PreToolUse tool call as working', () => {
+    const event = normalizeHookPayload(
+      state,
+      'claude',
+      {
+        paneKey: PANE_KEY,
+        payload: {
+          hook_event_name: 'PreToolUse',
+          tool_name: 'Bash',
+          tool_input: { command: 'ls' }
+        }
+      },
+      'production'
+    )
+    expect(event?.payload.state).toBe('working')
+    expect(event?.payload.toolName).toBe('Bash')
+  })
+
+  it('leaves interactivePrompt undefined for a normal tool call', () => {
+    const event = normalizeHookPayload(
+      state,
+      'claude',
+      {
+        paneKey: PANE_KEY,
+        payload: {
+          hook_event_name: 'PreToolUse',
+          tool_name: 'Edit',
+          tool_input: { file_path: '/tmp/x.ts' }
+        }
+      },
+      'production'
+    )
+    expect(event?.payload.toolName).toBe('Edit')
+    expect(event?.payload.interactivePrompt).toBeUndefined()
+  })
+
+  it('captures an approval envelope as interactivePrompt on a PermissionRequest', () => {
+    const event = normalizeHookPayload(
+      state,
+      'claude',
+      {
+        paneKey: PANE_KEY,
+        payload: {
+          hook_event_name: 'PermissionRequest',
+          tool_name: 'Bash',
+          tool_input: { command: 'rm -rf build' }
+        }
+      },
+      'production'
+    )
+    expect(event?.payload.interactivePrompt).toBe(
+      JSON.stringify({ approval: { tool: 'Bash', summary: 'rm -rf build' } })
+    )
+  })
+
+  it('captures an approval envelope for a Codex PermissionRequest', () => {
+    const event = normalizeHookPayload(
+      state,
+      'codex',
+      {
+        paneKey: PANE_KEY,
+        payload: {
+          hook_event_name: 'PermissionRequest',
+          tool_name: 'shell',
+          input: { command: 'git push --force' }
+        }
+      },
+      'production'
+    )
+    expect(event?.payload.interactivePrompt).toBe(
+      JSON.stringify({ approval: { tool: 'shell', summary: 'git push --force' } })
+    )
+  })
+
+  it('clears interactivePrompt on the next tool event after AskUserQuestion', () => {
+    normalizeHookPayload(
+      state,
+      'claude',
+      {
+        paneKey: PANE_KEY,
+        payload: {
+          hook_event_name: 'PreToolUse',
+          tool_name: 'AskUserQuestion',
+          tool_input: { questions: [{ question: 'Pick', options: ['a'] }] }
+        }
+      },
+      'production'
+    )
+    const next = normalizeHookPayload(
+      state,
+      'claude',
+      {
+        paneKey: PANE_KEY,
+        payload: {
+          hook_event_name: 'PreToolUse',
+          tool_name: 'Bash',
+          tool_input: { command: 'ls' }
+        }
+      },
+      'production'
+    )
+    expect(next?.payload.toolName).toBe('Bash')
+    expect(next?.payload.toolInput).toBe('ls')
+    expect(next?.payload.interactivePrompt).toBeUndefined()
+  })
+
+  it('does not re-assert the AskUserQuestion prompt on PostToolUse', () => {
+    // The question was answered, so PostToolUse must clear the live card instead
+    // of re-deriving the `{questions}` prompt from the carried tool input.
+    const event = normalizeHookPayload(
+      state,
+      'claude',
+      {
+        paneKey: PANE_KEY,
+        payload: {
+          hook_event_name: 'PostToolUse',
+          tool_name: 'AskUserQuestion',
+          tool_input: { questions: [{ question: 'Pick', options: ['a'] }] }
+        }
+      },
+      'production'
+    )
+    expect(event?.payload.toolName).toBe('AskUserQuestion')
+    expect(event?.payload.interactivePrompt).toBeUndefined()
+  })
+
+  it('captures interactivePrompt for the OpenCode AskUserQuestion route', () => {
+    const properties = { questions: [{ question: 'Choose', options: ['x', 'y'] }] }
+    const event = normalizeHookPayload(
+      state,
+      'opencode',
+      {
+        paneKey: PANE_KEY,
+        payload: { hook_event_name: 'AskUserQuestion', ...properties }
+      },
+      'production'
+    )
+    expect(event?.payload.state).toBe('waiting')
+    expect(event?.payload.interactivePrompt).toBe(JSON.stringify(properties))
   })
 
   it('normalizes OMP Pi-compatible hooks with OMP attribution', () => {
@@ -656,6 +875,51 @@ describe('shared agent-hook-listener', () => {
     expect(event).toBeNull()
   })
 
+  it('keeps the cached prompt when a harness-injected turn fires UserPromptSubmit', () => {
+    normalizeHookPayload(
+      state,
+      'claude',
+      { paneKey: PANE_KEY, payload: { hook_event_name: 'UserPromptSubmit', prompt: 'fix login' } },
+      'production'
+    )
+    // Why: the harness injects background task notifications as user turns;
+    // they must not replace the user's real prompt in status labels.
+    const event = normalizeHookPayload(
+      state,
+      'claude',
+      {
+        paneKey: PANE_KEY,
+        payload: {
+          hook_event_name: 'UserPromptSubmit',
+          prompt: '<task-notification> <task-id>bzthj2b8r</task-id> <tool-use-id>t1</tool-use-id>'
+        }
+      },
+      'production'
+    )
+    expect(event).not.toBeNull()
+    expect(event!.payload.state).toBe('working')
+    expect(event!.payload.prompt).toBe('fix login')
+    expect(event!.hasExplicitPrompt).toBe(false)
+  })
+
+  it('resolves an empty prompt for a harness-injected turn with nothing cached', () => {
+    const event = normalizeHookPayload(
+      state,
+      'claude',
+      {
+        paneKey: PANE_KEY,
+        payload: {
+          hook_event_name: 'UserPromptSubmit',
+          prompt: '<system-reminder>background context</system-reminder>'
+        }
+      },
+      'production'
+    )
+    expect(event).not.toBeNull()
+    expect(event!.payload.prompt).toBe('')
+    expect(event!.hasExplicitPrompt).toBe(false)
+  })
+
   it('isolates caches between listener instances', () => {
     const a = createHookListenerState()
     const b = createHookListenerState()
@@ -1162,6 +1426,18 @@ describe('shared agent-hook-listener', () => {
     ).toBe(false)
   })
 
+  it('lets Copilot Stop consume a generic message without scheduling transcript retry', () => {
+    expect(
+      hasPendingAgentResultText('copilot', {
+        payload: {
+          hookEventName: 'Stop',
+          message: 'Copilot final response',
+          transcript_path: '/tmp/copilot-transcript.jsonl'
+        }
+      })
+    ).toBe(false)
+  })
+
   it('normalizes Grok hookEventName payloads and keeps prompt across tool events', () => {
     const prompt = normalizeHookPayload(
       state,
@@ -1202,6 +1478,141 @@ describe('shared agent-hook-listener', () => {
       agentType: 'grok',
       toolName: 'run_terminal_cmd',
       toolInput: 'pnpm test'
+    })
+  })
+
+  it('previews Grok-native tool names (run_terminal_command / search_replace)', () => {
+    const shell = normalizeHookPayload(
+      state,
+      'grok',
+      {
+        paneKey: PANE_KEY,
+        payload: {
+          hookEventName: 'PreToolUse',
+          tool_name: 'run_terminal_command',
+          tool_input: { command: 'git status' }
+        }
+      },
+      'production'
+    )
+    const edit = normalizeHookPayload(
+      state,
+      'grok',
+      {
+        paneKey: PANE_KEY,
+        payload: {
+          hookEventName: 'PreToolUse',
+          toolName: 'search_replace',
+          toolInput: { path: 'src/app.ts', old_string: 'a', new_string: 'b' }
+        }
+      },
+      'production'
+    )
+    expect(shell?.payload).toMatchObject({
+      agentType: 'grok',
+      state: 'working',
+      toolName: 'run_terminal_command',
+      toolInput: 'git status'
+    })
+    expect(edit?.payload).toMatchObject({
+      agentType: 'grok',
+      state: 'working',
+      toolName: 'search_replace',
+      toolInput: 'src/app.ts'
+    })
+  })
+
+  it('maps Grok ask_user_question PreToolUse to waiting with interactivePrompt', () => {
+    const questions = [
+      {
+        question: 'Ship to which region?',
+        options: [{ label: 'us-east', description: 'US East' }]
+      }
+    ]
+    const waiting = normalizeHookPayload(
+      state,
+      'grok',
+      {
+        paneKey: PANE_KEY,
+        payload: {
+          hookEventName: 'PreToolUse',
+          tool_name: 'ask_user_question',
+          tool_input: { questions }
+        }
+      },
+      'production'
+    )
+    const answered = normalizeHookPayload(
+      state,
+      'grok',
+      {
+        paneKey: PANE_KEY,
+        payload: {
+          hookEventName: 'post_tool_use',
+          toolName: 'ask_user_question',
+          toolInput: { questions },
+          toolResponse: { selected: ['us-east'] }
+        }
+      },
+      'production'
+    )
+    expect(waiting?.payload).toMatchObject({
+      agentType: 'grok',
+      state: 'waiting',
+      toolName: 'ask_user_question'
+    })
+    expect(waiting?.payload.interactivePrompt).toContain('Ship to which region?')
+    expect(answered?.payload).toMatchObject({
+      agentType: 'grok',
+      state: 'working',
+      toolName: 'ask_user_question'
+    })
+    expect(answered?.payload.interactivePrompt).toBeUndefined()
+  })
+
+  it('does not recreate a Grok question card on post_tool_use_failure', () => {
+    const event = normalizeHookPayload(
+      state,
+      'grok',
+      {
+        paneKey: PANE_KEY,
+        payload: {
+          hookEventName: 'post_tool_use_failure',
+          toolName: 'ask_user_question',
+          toolInput: { questions: [{ question: 'Retry?', options: ['yes', 'no'] }] },
+          error: 'cancelled'
+        }
+      },
+      'production'
+    )
+
+    expect(event?.payload.state).toBe('working')
+    expect(event?.payload.interactivePrompt).toBeUndefined()
+  })
+
+  it('maps Grok StopFailure to done', () => {
+    normalizeHookPayload(
+      state,
+      'grok',
+      {
+        paneKey: PANE_KEY,
+        payload: { hookEventName: 'UserPromptSubmit', prompt: 'do work' }
+      },
+      'production'
+    )
+    const done = normalizeHookPayload(
+      state,
+      'grok',
+      {
+        paneKey: PANE_KEY,
+        payload: { hookEventName: 'StopFailure', error: 'api timeout' }
+      },
+      'production'
+    )
+    expect(done?.payload).toMatchObject({
+      agentType: 'grok',
+      state: 'done',
+      prompt: 'do work'
     })
   })
 
@@ -1342,7 +1753,7 @@ describe('shared agent-hook-listener', () => {
     expect(event).toBeNull()
   })
 
-  it('reads Grok final assistant text from chat history on Stop', () => {
+  it('enriches Grok Stop from chat history despite a generic status message', () => {
     const tmpDir = mkdtempSync(join(tmpdir(), 'orca-grok-session-'))
     const sessionId = '019e37f4-5135-7b63-a4ab-6d13aa6bf528'
     const cwd = join(tmpDir, 'workspace')
@@ -1366,18 +1777,82 @@ describe('shared agent-hook-listener', () => {
         'production'
       )
 
+      const body = {
+        paneKey: PANE_KEY,
+        payload: { hookEventName: 'Stop', sessionId, cwd, message: 'Session completed' }
+      }
+      expect(hasPendingAgentResultText('grok', body)).toBe(true)
+      const done = normalizeHookPayload(state, 'grok', body, 'production')
+
+      expect(done?.payload.state).toBe('done')
+      expect(done?.payload.lastAssistantMessage).toBe('Hi! How can I help you today?')
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true })
+    }
+  })
+
+  it('uses the hook envelope Grok home instead of the listener service environment', () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), 'orca-grok-envelope-home-'))
+    const serviceGrokHome = join(tmpDir, 'service-grok')
+    const hookGrokHome = join(tmpDir, 'hook-grok')
+    const sessionId = '019e37f4-5135-7b63-a4ab-6d13aa6bf529'
+    const cwd = join(tmpDir, 'workspace')
+    const sessionDir = join(hookGrokHome, 'sessions', encodeURIComponent(cwd), sessionId)
+    try {
+      vi.stubEnv('GROK_HOME', serviceGrokHome)
+      mkdirSync(sessionDir, { recursive: true })
+      writeFileSync(
+        join(sessionDir, 'chat_history.jsonl'),
+        `${JSON.stringify({ type: 'assistant', content: 'from effective Grok home' })}\n`
+      )
+
       const done = normalizeHookPayload(
         state,
         'grok',
         {
           paneKey: PANE_KEY,
+          grokHome: hookGrokHome,
           payload: { hookEventName: 'Stop', sessionId, cwd }
         },
         'production'
       )
 
-      expect(done?.payload.state).toBe('done')
-      expect(done?.payload.lastAssistantMessage).toBe('Hi! How can I help you today?')
+      expect(done?.payload.lastAssistantMessage).toBe('from effective Grok home')
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true })
+    }
+  })
+
+  it.each([
+    'relative/grok-home',
+    join(tmpdir(), 'x'.repeat(4096)),
+    `${join(tmpdir(), 'grok-home')}\ninvalid`
+  ])('ignores invalid hook-envelope Grok home %s', (grokHome) => {
+    const tmpDir = mkdtempSync(join(tmpdir(), 'orca-grok-invalid-home-'))
+    const serviceGrokHome = join(tmpDir, 'service-grok')
+    const sessionId = '019e37f4-5135-7b63-a4ab-6d13aa6bf530'
+    const cwd = join(tmpDir, 'workspace')
+    const sessionDir = join(serviceGrokHome, 'sessions', encodeURIComponent(cwd), sessionId)
+    try {
+      vi.stubEnv('GROK_HOME', serviceGrokHome)
+      mkdirSync(sessionDir, { recursive: true })
+      writeFileSync(
+        join(sessionDir, 'chat_history.jsonl'),
+        `${JSON.stringify({ type: 'assistant', content: 'fallback result' })}\n`
+      )
+
+      const done = normalizeHookPayload(
+        state,
+        'grok',
+        {
+          paneKey: PANE_KEY,
+          grokHome,
+          payload: { hookEventName: 'Stop', sessionId, cwd }
+        },
+        'production'
+      )
+
+      expect(done?.payload.lastAssistantMessage).toBe('fallback result')
     } finally {
       rmSync(tmpDir, { recursive: true, force: true })
     }
@@ -1423,6 +1898,50 @@ describe('shared agent-hook-listener', () => {
         }
       })
     ).toBe(true)
+  })
+
+  it('enriches a long-cwd Grok result after async discovery completes', async () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), 'orca-grok-pending-home-'))
+    const hookGrokHome = join(tmpDir, 'hook-grok')
+    const sessionId = '019e37f4-5135-7b63-a4ab-6d13aa6bf531'
+    const cwd = `/${'long-workspace/'.repeat(30)}`
+    const sessionDir = join(hookGrokHome, 'sessions', 'workspace-slug', sessionId)
+    try {
+      mkdirSync(sessionDir, { recursive: true })
+      writeFileSync(
+        join(sessionDir, 'chat_history.jsonl'),
+        `${JSON.stringify({ type: 'assistant', content: 'from slug session' })}\n`
+      )
+
+      const body = {
+        paneKey: PANE_KEY,
+        grokHome: hookGrokHome,
+        payload: { hookEventName: 'SessionEnd', sessionId, cwd }
+      }
+      const discovery = preparePendingGrokResultDiscovery('grok', body)
+      expect(discovery).not.toBeNull()
+      await discovery
+      await expect(
+        findGrokChatHistoryBySessionId(join(hookGrokHome, 'sessions'), sessionId)
+      ).resolves.toBe(join(sessionDir, 'chat_history.jsonl'))
+
+      const done = normalizeHookPayload(state, 'grok', body, 'production')
+      expect(done?.payload.lastAssistantMessage).toBe('from slug session')
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true })
+    }
+  })
+
+  it('does not schedule Grok discovery for an invalid session id', () => {
+    expect(
+      hasPendingAgentResultText('grok', {
+        payload: {
+          hookEventName: 'SessionEnd',
+          sessionId: '../escape',
+          cwd: '/tmp/workspace'
+        }
+      })
+    ).toBe(false)
   })
 
   it('normalizes Hermes pre_llm_call to a working turn with prompt text', () => {

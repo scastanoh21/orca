@@ -1,8 +1,8 @@
 /* eslint-disable max-lines -- Why: this relay handler centralizes the git RPC
 protocol surface so local and SSH git behavior stay in one dispatch table. */
-import { execFile, spawn, type ExecFileOptions } from 'child_process'
-import { promisify } from 'util'
-import * as path from 'path'
+import { execFile, spawn, type ExecFileOptions } from 'node:child_process'
+import { promisify } from 'node:util'
+import * as path from 'node:path'
 import type { RelayDispatcher, RequestContext } from './dispatcher'
 import type { RelayContext } from './context'
 import { expandTilde } from './context'
@@ -18,6 +18,17 @@ import {
   branchDiffEntries,
   validateGitExecArgs
 } from './git-handler-ops'
+import {
+  buildSubmoduleInnerCommitRangeDiff,
+  computeSubmodulePointerDiff,
+  computeSubmoduleRangeEntries,
+  createSubmodulePathsCache,
+  findContainingSubmodule,
+  listSubmodulePathsCached,
+  resolveSubmoduleWorktreePath,
+  resolveSubmoduleCommitRange,
+  type SubmodulePathsCache
+} from './git-handler-submodule-ops'
 import { commitCompare as commitCompareOp, commitDiffEntry } from './git-handler-commit-diff-ops'
 import {
   areRelayWorktreePathsEqual,
@@ -26,6 +37,7 @@ import {
   removeWorktreeOp,
   worktreeIsCleanOp
 } from './git-handler-worktree-ops'
+import { forceDeletePreservedRelayBranch } from './git-handler-branch-cleanup'
 import { refreshLocalBaseRefForWorktreeCreateOp } from './git-handler-local-base-ref-refresh'
 import { checkIgnoredPathsOp, detectConflictOperation, getStatusOp } from './git-handler-status-ops'
 import { resolveRelayPushTarget } from './git-handler-push-target'
@@ -40,7 +52,7 @@ import {
   resolveEffectiveGitUpstream
 } from '../shared/git-effective-upstream'
 import { loadGitHistoryFromExecutor } from '../shared/git-history'
-import { buildRelayCommandEnv } from './relay-command-env'
+import { buildRelayGitEnv } from './relay-command-env'
 import {
   removeSafeUntrackedDiscardTarget,
   removeSafeUntrackedDiscardTargets
@@ -48,10 +60,22 @@ import {
 import { getGitCloneFailureMessage } from '../shared/git-clone-failure-message'
 import { syncForkDefaultBranch, validateGitForkSyncExpectedUpstream } from '../shared/git-fork-sync'
 import { InFlightPromiseDedupe, stableInFlightKey } from '../shared/in-flight-promise-dedupe'
+import { GIT_FETCH_SKIP_AUTO_MAINTENANCE_CONFIG_ARGS } from '../shared/git-fetch-auto-maintenance'
+import { GitResponseStreamRegistry } from './git-response-stream'
+import { GIT_RESPONSE_STREAM_THRESHOLD } from './protocol'
 
 const execFileAsync = promisify(execFile)
 const MAX_GIT_BUFFER = 10 * 1024 * 1024
 const BULK_CHUNK_SIZE = 100
+
+function resolveSubmoduleStatusArea(
+  params: Record<string, unknown>
+): 'staged' | 'unstaged' | 'untracked' {
+  if (params.area === 'staged' || params.area === 'unstaged' || params.area === 'untracked') {
+    return params.area
+  }
+  return 'unstaged'
+}
 
 function getErrorText(error: unknown): string {
   if (typeof error === 'object' && error !== null) {
@@ -149,20 +173,36 @@ function execFileWithStdin(
 export class GitHandler {
   private dispatcher: RelayDispatcher
   private readonly gitDiffReadDedupe = new InFlightPromiseDedupe<unknown>()
+  // Why: large diff/exec responses are chunked onto the bulk lane so they do
+  // not head-of-line-block interactive pty.data echo on the shared SSH channel.
+  private readonly responseStreams = new GitResponseStreamRegistry()
+
+  // Why: configured submodule paths change rarely; an instance-level TTL cache
+  // avoids re-reading `.gitmodules` on every diff click over SSH, and being
+  // per-instance it stays bound to the connection lifecycle (no cross-test leak).
+  private submodulePathsCache: SubmodulePathsCache = createSubmodulePathsCache()
 
   // Why: RelayContext is accepted for protocol back-compat (see
   // docs/relay-fs-allowlist-removal.md) but no longer consulted on git ops.
   constructor(dispatcher: RelayDispatcher, _context: RelayContext) {
     this.dispatcher = dispatcher
     this.registerHandlers()
+    // Why: a detached client's git.responseAck frames will never arrive; wake
+    // any pump parked on the ack window so it re-checks staleness and exits.
+    this.dispatcher.onClientDetached?.(() => this.responseStreams.wakeAll())
+  }
+
+  dispose(): void {
+    this.responseStreams.disposeAll()
   }
 
   private registerHandlers(): void {
     this.dispatcher.onRequest('git.status', (p) => this.getStatus(p))
+    this.dispatcher.onRequest('git.submoduleStatus', (p) => this.getSubmoduleStatus(p))
     this.dispatcher.onRequest('git.checkIgnored', (p) => this.checkIgnored(p))
     this.dispatcher.onRequest('git.history', (p) => this.history(p))
     this.dispatcher.onRequest('git.commit', (p) => this.commit(p))
-    this.dispatcher.onRequest('git.diff', (p) => this.getDiff(p))
+    this.dispatcher.onRequest('git.diff', (p, context) => this.getDiff(p, context))
     this.dispatcher.onRequest('git.stage', (p) => this.stage(p))
     this.dispatcher.onRequest('git.unstage', (p) => this.unstage(p))
     this.dispatcher.onRequest('git.bulkStage', (p) => this.bulkStage(p))
@@ -187,9 +227,9 @@ export class GitHandler {
     this.dispatcher.onRequest('git.pull', (p) => this.pull(p))
     this.dispatcher.onRequest('git.fastForward', (p) => this.fastForward(p))
     this.dispatcher.onRequest('git.rebaseFromBase', (p) => this.rebaseFromBase(p))
-    this.dispatcher.onRequest('git.branchDiff', (p) => this.branchDiff(p))
-    this.dispatcher.onRequest('git.commitDiff', (p) => this.commitDiff(p))
-    this.dispatcher.onRequest('git.listWorktrees', (p) => this.listWorktrees(p))
+    this.dispatcher.onRequest('git.branchDiff', (p, context) => this.branchDiff(p, context))
+    this.dispatcher.onRequest('git.commitDiff', (p, context) => this.commitDiff(p, context))
+    this.dispatcher.onRequest('git.listWorktrees', (p, context) => this.listWorktrees(p, context))
     this.dispatcher.onRequest('git.addWorktree', (p) => this.addWorktree(p))
     this.dispatcher.onRequest('git.removeWorktree', (p) => this.removeWorktree(p))
     this.dispatcher.onRequest('git.worktreeIsClean', (p) => this.worktreeIsClean(p))
@@ -197,9 +237,51 @@ export class GitHandler {
       this.refreshLocalBaseRefForWorktreeCreate(p)
     )
     this.dispatcher.onRequest('git.renameCurrentBranch', (p) => this.renameCurrentBranch(p))
+    this.dispatcher.onRequest('git.forceDeletePreservedBranch', (p) =>
+      this.forceDeletePreservedBranch(p)
+    )
     this.dispatcher.onRequest('git.exec', (p, context) => this.exec(p, context))
     this.dispatcher.onRequest('git.clone', (p, context) => this.clone(p, context))
     this.dispatcher.onRequest('git.isGitRepo', (p) => this.isGitRepo(p))
+    this.dispatcher.onNotification('git.responseAck', (p, context) => this.responseAck(p, context))
+    this.dispatcher.onNotification('git.cancelResponseStream', (p, context) =>
+      this.cancelResponseStream(p, context)
+    )
+  }
+
+  private responseAck(params: Record<string, unknown>, context: RequestContext): void {
+    const streamId = params.streamId
+    const seq = params.seq
+    if (typeof streamId === 'number' && typeof seq === 'number') {
+      this.responseStreams.recordAck(streamId, seq, context.clientId)
+    }
+  }
+
+  private cancelResponseStream(params: Record<string, unknown>, context: RequestContext): void {
+    const streamId = params.streamId
+    if (typeof streamId === 'number') {
+      this.responseStreams.abort(streamId, context.clientId)
+    }
+  }
+
+  // Why: when the client opted into response streaming and the serialized result
+  // exceeds the threshold, chunk it onto the bulk lane and return a small
+  // sentinel as the RPC result. Old clients omit the flag (single-frame, as
+  // today); old relays never call this, so a new client falls back to the plain
+  // result they return.
+  private maybeStreamResponse(
+    result: unknown,
+    params: Record<string, unknown>,
+    context: RequestContext | undefined
+  ): unknown {
+    if (params.__streamResponse !== true || !context) {
+      return result
+    }
+    const payload = Buffer.from(JSON.stringify(result ?? null), 'utf-8')
+    if (payload.length <= GIT_RESPONSE_STREAM_THRESHOLD) {
+      return result
+    }
+    return this.responseStreams.startStream(payload, this.dispatcher, context)
   }
 
   private async runWithDiffDedupeClear<T>(run: () => Promise<T>): Promise<T> {
@@ -224,7 +306,7 @@ export class GitHandler {
       stdin?: string
     }
   ): Promise<{ stdout: string; stderr: string }> {
-    const env = buildRelayCommandEnv()
+    const env = buildRelayGitEnv()
     if (opts?.disableOptionalLocks) {
       env.GIT_OPTIONAL_LOCKS = '0'
     }
@@ -251,7 +333,7 @@ export class GitHandler {
   private async gitBuffer(args: string[], cwd: string): Promise<Buffer> {
     const { stdout } = (await execFileAsync('git', args, {
       cwd,
-      env: buildRelayCommandEnv(),
+      env: buildRelayGitEnv(),
       encoding: 'buffer',
       maxBuffer: MAX_GIT_BUFFER
     })) as { stdout: Buffer }
@@ -261,6 +343,52 @@ export class GitHandler {
   private async getStatus(params: Record<string, unknown>) {
     this.gitDiffReadDedupe.clear()
     return getStatusOp(this.git.bind(this), params)
+  }
+
+  // Why: the parent status only lists a single gitlink row per submodule. The
+  // renderer fetches inner per-file changes on demand by running a plain status
+  // inside the submodule's own worktree. Reject paths escaping the worktree to
+  // match the diff handler's traversal guard.
+  private async getSubmoduleStatus(params: Record<string, unknown>) {
+    const worktreePath = params.worktreePath as string
+    const submodulePath = params.submodulePath as string
+    const area = resolveSubmoduleStatusArea(params)
+    const staged = area === 'staged'
+    const resolved = resolveSubmoduleWorktreePath(worktreePath, submodulePath)
+    const workingResult = await getStatusOp(this.git.bind(this), {
+      ...params,
+      worktreePath: resolved
+    })
+    // Why: a moved gitlink (clean worktree) has no uncommitted rows; surface the
+    // files changed between the recorded and checked-out commits so the expanded
+    // submodule isn't empty. Mirrors getSubmoduleStatus in the local handler.
+    const { fromOid, toOid } = await resolveSubmoduleCommitRange(
+      this.git.bind(this),
+      worktreePath,
+      submodulePath,
+      staged
+    )
+    if (fromOid && toOid && fromOid !== toOid) {
+      const rangeEntries = await computeSubmoduleRangeEntries(
+        this.git.bind(this),
+        resolved,
+        fromOid,
+        toOid
+      )
+      if (staged) {
+        return { ...workingResult, entries: rangeEntries }
+      }
+      const rangePaths = new Set(rangeEntries.map((entry) => entry.path))
+      const entries = [
+        ...rangeEntries,
+        ...workingResult.entries.filter((entry) => !rangePaths.has(entry.path))
+      ]
+      return { ...workingResult, entries }
+    }
+    if (staged) {
+      return { ...workingResult, entries: [] }
+    }
+    return workingResult
   }
 
   private async checkIgnored(params: Record<string, unknown>) {
@@ -275,7 +403,7 @@ export class GitHandler {
     })
   }
 
-  private async getDiff(params: Record<string, unknown>) {
+  private async getDiff(params: Record<string, unknown>, context?: RequestContext) {
     const worktreePath = params.worktreePath as string
     const filePath = params.filePath as string
     // Why: filePath is relative to worktreePath and used in readWorkingFile via
@@ -285,23 +413,76 @@ export class GitHandler {
     if (rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) {
       throw new Error(`Path "${filePath}" resolves outside the worktree`)
     }
-    return this.gitDiffReadDedupe.run(
-      stableInFlightKey([
-        'diff',
-        worktreePath,
-        filePath,
-        params.staged as boolean,
-        params.compareAgainstHead as boolean | undefined
-      ]),
-      () =>
-        computeDiff(
+    const staged = params.staged as boolean
+    const compareAgainstHead = params.compareAgainstHead as boolean | undefined
+    // Why: register the in-flight dedupe synchronously (before any await) so
+    // concurrent identical reads coalesce; submodule routing happens inside.
+    const result = await this.gitDiffReadDedupe.run(
+      stableInFlightKey(['diff', worktreePath, filePath, staged, compareAgainstHead]),
+      async () => {
+        // Why: gitlink paths can't be read as blobs and submodule working dirs
+        // read as empty, so route the gitlink root → pointer diff and inner
+        // files → recurse into the submodule's own worktree (mirrors local).
+        const submodulePaths = await listSubmodulePathsCached(
+          this.git.bind(this),
+          worktreePath,
+          this.submodulePathsCache
+        )
+        if (submodulePaths.length > 0) {
+          const matchedSubmodule = findContainingSubmodule(submodulePaths, filePath)
+          if (matchedSubmodule) {
+            const normalizedFilePath = filePath.replace(/\\/g, '/').replace(/\/+$/, '')
+            if (normalizedFilePath === matchedSubmodule) {
+              return computeSubmodulePointerDiff(
+                this.git.bind(this),
+                worktreePath,
+                matchedSubmodule,
+                staged,
+                compareAgainstHead
+              )
+            }
+            const submoduleWorktreePath = resolveSubmoduleWorktreePath(
+              worktreePath,
+              matchedSubmodule
+            )
+            const innerPath = normalizedFilePath.slice(matchedSubmodule.length + 1)
+            const { fromOid, toOid } = await resolveSubmoduleCommitRange(
+              this.git.bind(this),
+              worktreePath,
+              matchedSubmodule,
+              staged
+            )
+            // Why: a moved gitlink (clean worktree) keeps inner changes in
+            // committed history, so diff the two commits; otherwise read the
+            // working-tree blob.
+            if (fromOid && toOid && fromOid !== toOid) {
+              return buildSubmoduleInnerCommitRangeDiff(
+                this.gitBuffer.bind(this),
+                submoduleWorktreePath,
+                innerPath,
+                fromOid,
+                toOid
+              )
+            }
+            return computeDiff(
+              this.gitBuffer.bind(this),
+              submoduleWorktreePath,
+              innerPath,
+              staged,
+              compareAgainstHead
+            )
+          }
+        }
+        return computeDiff(
           this.gitBuffer.bind(this),
           worktreePath,
           filePath,
-          params.staged as boolean,
-          params.compareAgainstHead as boolean | undefined
+          staged,
+          compareAgainstHead
         )
+      }
     )
+    return this.maybeStreamResponse(result, params, context)
   }
 
   private async stage(params: Record<string, unknown>) {
@@ -716,9 +897,13 @@ export class GitHandler {
     const remote = params.remote
     const branch = params.branch
     const ref = params.ref
+    const skipAutoMaintenance = params.skipAutoMaintenance
     try {
       if (typeof remote !== 'string' || typeof branch !== 'string' || typeof ref !== 'string') {
         throw new Error('Invalid remote-tracking fetch request.')
+      }
+      if (skipAutoMaintenance !== undefined && typeof skipAutoMaintenance !== 'boolean') {
+        throw new Error('Invalid remote-tracking fetch maintenance option.')
       }
       if (remote.startsWith('-') || branch.startsWith('-')) {
         throw new Error('Remote-tracking fetch inputs must not start with "-".')
@@ -738,7 +923,16 @@ export class GitHandler {
         }
         await this.git(['check-ref-format', `refs/heads/${branch}`], worktreePath)
         await this.git(['check-ref-format', ref], worktreePath)
-        await this.git(['fetch', '--no-tags', remote, `+refs/heads/${branch}:${ref}`], worktreePath)
+        await this.git(
+          [
+            ...(skipAutoMaintenance ? GIT_FETCH_SKIP_AUTO_MAINTENANCE_CONFIG_ARGS : []),
+            'fetch',
+            '--no-tags',
+            remote,
+            `+refs/heads/${branch}:${ref}`
+          ],
+          worktreePath
+        )
       } catch (error) {
         // Why: create-worktree needs a write-capable fetch, but generic git.exec
         // intentionally rejects fetch. This narrow RPC keeps the relay allowlist
@@ -885,7 +1079,7 @@ export class GitHandler {
     }
   }
 
-  private async branchDiff(params: Record<string, unknown>) {
+  private async branchDiff(params: Record<string, unknown>, context?: RequestContext) {
     const worktreePath = params.worktreePath as string
     const baseRef = params.baseRef as string
     if (baseRef.startsWith('-')) {
@@ -896,7 +1090,7 @@ export class GitHandler {
       filePath: params.filePath as string | undefined,
       oldPath: params.oldPath as string | undefined
     }
-    return this.gitDiffReadDedupe.run(
+    const result = await this.gitDiffReadDedupe.run(
       stableInFlightKey([
         'branchDiff',
         worktreePath,
@@ -914,9 +1108,10 @@ export class GitHandler {
           options
         )
     )
+    return this.maybeStreamResponse(result, params, context)
   }
 
-  private async commitDiff(params: Record<string, unknown>) {
+  private async commitDiff(params: Record<string, unknown>, context?: RequestContext) {
     const worktreePath = params.worktreePath as string
     const args = {
       commitOid: params.commitOid as string,
@@ -924,7 +1119,7 @@ export class GitHandler {
       filePath: params.filePath as string,
       oldPath: params.oldPath as string | undefined
     }
-    return this.gitDiffReadDedupe.run(
+    const result = await this.gitDiffReadDedupe.run(
       stableInFlightKey([
         'commitDiff',
         worktreePath,
@@ -935,6 +1130,7 @@ export class GitHandler {
       ]),
       () => commitDiffEntry(this.gitBuffer.bind(this), worktreePath, args)
     )
+    return this.maybeStreamResponse(result, params, context)
   }
 
   private async exec(params: Record<string, unknown>, context?: RequestContext) {
@@ -943,7 +1139,7 @@ export class GitHandler {
 
     validateGitExecArgs(args)
     const { stdout, stderr } = await this.git(args, cwd, { signal: context?.signal })
-    return { stdout, stderr }
+    return this.maybeStreamResponse({ stdout, stderr }, params, context)
   }
 
   private async clone(params: Record<string, unknown>, context?: RequestContext) {
@@ -969,7 +1165,7 @@ export class GitHandler {
     return await new Promise((resolve, reject) => {
       const child = spawn('git', args, {
         cwd: expandTilde(cwd),
-        env: buildRelayCommandEnv(),
+        env: buildRelayGitEnv(),
         stdio: ['ignore', 'pipe', 'pipe']
       })
       let stdout = ''
@@ -994,7 +1190,7 @@ export class GitHandler {
             this.dispatcher.notify('git.cloneProgress', {
               progressId,
               phase: match[1].trim(),
-              percent: parseInt(match[2], 10)
+              percent: Number.parseInt(match[2], 10)
             })
           }
         }
@@ -1045,6 +1241,28 @@ export class GitHandler {
         throw new Error(normalizeGitErrorMessage(error))
       }
     })
+  }
+
+  private async forceDeletePreservedBranch(params: Record<string, unknown>) {
+    const repoPath = params.repoPath
+    const branchName = params.branchName
+    const expectedHead = params.expectedHead
+    if (
+      typeof repoPath !== 'string' ||
+      typeof branchName !== 'string' ||
+      typeof expectedHead !== 'string'
+    ) {
+      throw new Error('Invalid preserved branch force-delete request.')
+    }
+    // Why: an empty repoPath would resolve `cwd` to the relay's own process
+    // directory, running the destructive update-ref against the wrong repo. NUL
+    // bytes cannot reach git safely either; reject both at the boundary.
+    if (!repoPath || repoPath.includes('\0') || expectedHead.includes('\0')) {
+      throw new Error('Invalid preserved branch force-delete request.')
+    }
+    return this.runWithDiffDedupeClear(() =>
+      forceDeletePreservedRelayBranch(this.git.bind(this), repoPath, branchName, expectedHead)
+    )
   }
 
   private async isGitRepo(params: Record<string, unknown>) {
@@ -1113,10 +1331,12 @@ export class GitHandler {
     return normalized
   }
 
-  private async listWorktrees(params: Record<string, unknown>) {
+  private async listWorktrees(params: Record<string, unknown>, context?: RequestContext) {
     const repoPath = params.repoPath as string
     try {
-      const { stdout } = await this.git(['worktree', 'list', '--porcelain', '-z'], repoPath)
+      const { stdout } = await this.git(['worktree', 'list', '--porcelain', '-z'], repoPath, {
+        signal: context?.signal
+      })
       return this.normalizeMainWorktreePath(
         repoPath,
         parseWorktreeList(stdout, { nulDelimited: true })
@@ -1130,7 +1350,9 @@ export class GitHandler {
     // Why: `-z` keeps newline-containing SSH worktree paths intact, but older
     // Git rejects it. Fall back to the original line-block parser there.
     try {
-      const { stdout } = await this.git(['worktree', 'list', '--porcelain'], repoPath)
+      const { stdout } = await this.git(['worktree', 'list', '--porcelain'], repoPath, {
+        signal: context?.signal
+      })
       return this.normalizeMainWorktreePath(repoPath, parseWorktreeList(stdout))
     } catch {
       return []

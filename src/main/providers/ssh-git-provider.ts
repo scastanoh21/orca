@@ -13,6 +13,7 @@ import type {
   GitForkSyncExpectedUpstream,
   GitForkSyncResult,
   GitPushTarget,
+  GitStagingArea,
   GitUpstreamStatus,
   GitWorktreeInfo,
   RemoveWorktreeResult
@@ -20,6 +21,7 @@ import type {
 import type { GitHistoryOptions, GitHistoryResult } from '../../shared/git-history'
 import { buildHostedRemoteCommitUrl, buildHostedRemoteFileUrl } from '../git/hosted-remote-url'
 import { JsonRpcErrorCode } from '../ssh/relay-protocol'
+import { requestGitStreamable } from '../ssh/ssh-git-response-stream-reader'
 import type { CommitMessageDraftContext } from '../../shared/commit-message-generation'
 import type { CommitMessagePlan } from '../../shared/commit-message-plan'
 import type { RemoteCommitMessageExecResult } from '../text-generation/commit-message-text-generation'
@@ -111,6 +113,33 @@ export class SshGitProvider implements IGitProvider {
     return (await (options?.signal
       ? this.mux.request('git.status', request, { signal: options.signal })
       : this.mux.request('git.status', request))) as GitStatusResult
+  }
+
+  async getSubmoduleStatus(
+    worktreePath: string,
+    submodulePath: string,
+    area: GitStagingArea = 'unstaged'
+  ): Promise<GitStatusResult> {
+    // Why: mirror getStatus() — refreshing submodule state must invalidate
+    // in-flight diff reads so a later diff can't reuse a stale pending RPC.
+    this.gitDiffReadDedupe.clear()
+    try {
+      return (await this.mux.request('git.submoduleStatus', {
+        worktreePath,
+        submodulePath,
+        area
+      })) as GitStatusResult
+    } catch (error) {
+      // Why: a newer desktop client may talk to an older relay that predates
+      // git.submoduleStatus; surface an actionable reconnect hint instead of a
+      // raw JSON-RPC method-not-found error in Source Control.
+      if (isJsonRpcMethodNotFoundError(error)) {
+        throw new Error(
+          'SSH submodule diff support is unavailable on this relay. Reconnect the SSH target to update Orca on the host, then try again.'
+        )
+      }
+      throw error
+    }
   }
 
   async checkIgnoredPaths(worktreePath: string, relativePaths: string[]): Promise<string[]> {
@@ -345,7 +374,7 @@ export class SshGitProvider implements IGitProvider {
     return this.gitDiffReadDedupe.run(
       stableInFlightKey(['diff', worktreePath, filePath, staged, compareAgainstHead]),
       async () =>
-        (await this.mux.request('git.diff', {
+        (await requestGitStreamable(this.mux, 'git.diff', {
           worktreePath,
           filePath,
           staged,
@@ -525,14 +554,16 @@ export class SshGitProvider implements IGitProvider {
     worktreePath: string,
     remote: string,
     branch: string,
-    ref: string
+    ref: string,
+    options?: { skipAutoMaintenance?: boolean }
   ): Promise<void> {
     await this.runWithDiffDedupeClear(async () => {
       await this.mux.request('git.fetchRemoteTrackingRef', {
         worktreePath,
         remote,
         branch,
-        ref
+        ref,
+        ...(options?.skipAutoMaintenance ? { skipAutoMaintenance: true } : {})
       })
     })
   }
@@ -567,7 +598,7 @@ export class SshGitProvider implements IGitProvider {
         keyOptions.oldPath ?? null
       ]),
       async () =>
-        (await this.mux.request('git.branchDiff', {
+        (await requestGitStreamable(this.mux, 'git.branchDiff', {
           worktreePath,
           baseRef,
           ...options
@@ -589,7 +620,7 @@ export class SshGitProvider implements IGitProvider {
         args.oldPath ?? null
       ]),
       async () =>
-        (await this.mux.request('git.commitDiff', {
+        (await requestGitStreamable(this.mux, 'git.commitDiff', {
           worktreePath,
           ...args
         })) as GitDiffResult
@@ -700,14 +731,39 @@ export class SshGitProvider implements IGitProvider {
     })
   }
 
+  async forceDeletePreservedBranch(
+    repoPath: string,
+    branchName: string,
+    expectedHead: string
+  ): Promise<void> {
+    try {
+      await this.runWithDiffDedupeClear(async () => {
+        await this.mux.request('git.forceDeletePreservedBranch', {
+          repoPath,
+          branchName,
+          expectedHead
+        })
+      })
+    } catch (error) {
+      if (isJsonRpcMethodNotFoundError(error)) {
+        // Why: older SSH relays predate git.forceDeletePreservedBranch; surface
+        // a reconnect prompt instead of a raw JSON-RPC method-not-found error.
+        throw new Error(
+          'This SSH host is running an older Orca relay that cannot delete preserved branches. Reconnect to deploy the latest relay, then try again.'
+        )
+      }
+      throw error
+    }
+  }
+
   async exec(
     args: string[],
     cwd: string,
     options?: { signal?: AbortSignal; timeoutMs?: number }
   ): Promise<{ stdout: string; stderr: string }> {
     const result = options
-      ? await this.mux.request('git.exec', { args, cwd }, options)
-      : await this.mux.request('git.exec', { args, cwd })
+      ? await requestGitStreamable(this.mux, 'git.exec', { args, cwd }, options)
+      : await requestGitStreamable(this.mux, 'git.exec', { args, cwd })
     return result as {
       stdout: string
       stderr: string

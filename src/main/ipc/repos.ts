@@ -3,8 +3,8 @@ routing, clone lifecycle, and store persistence stay behind a single audited
 boundary. Splitting by line count would scatter tightly coupled repo behavior. */
 import type { BrowserWindow, IpcMainInvokeEvent } from 'electron'
 import { dialog, ipcMain } from 'electron'
-import { randomUUID } from 'crypto'
-import { homedir } from 'os'
+import { randomUUID } from 'node:crypto'
+import { homedir } from 'node:os'
 import { z } from 'zod'
 import type { Store } from '../persistence'
 import type {
@@ -40,10 +40,10 @@ import {
 } from '../../shared/cross-platform-path'
 import { isTuiAgent } from '../../shared/tui-agent-config'
 import { invalidateAuthorizedRootsCache } from './filesystem-auth'
-import type { ChildProcess } from 'child_process'
-import { access, mkdir, readdir, rm } from 'fs/promises'
+import type { ChildProcess } from 'node:child_process'
+import { access, mkdir, readdir, rm } from 'node:fs/promises'
 import { gitExecFileAsync, gitSpawn } from '../git/runner'
-import { isAbsolute, join, posix } from 'path'
+import { isAbsolute, join, posix } from 'node:path'
 import {
   cleanupClaimedCloneTarget,
   claimCloneTarget,
@@ -60,7 +60,7 @@ import {
 import { createNestedRepoImportTargetResolver } from '../project-groups/nested-repo-import-target'
 import {
   isGitRepo,
-  getGitUsername,
+  getGitRepoRoot,
   getRepoName,
   getBaseRefDefault,
   getRemoteCount,
@@ -75,7 +75,8 @@ import {
 } from '../git/repo'
 import { getSshGitProvider } from '../providers/ssh-git-dispatch'
 import { getSshFilesystemProvider } from '../providers/ssh-filesystem-dispatch'
-import { getSshGitUsername } from '../git/git-username'
+import { getSshGitUsername, resolveLocalGitUsername } from '../git/git-username'
+import { enrichRepoGitUsernames } from '../repo-git-username-enrichment'
 import { getActiveMultiplexer } from './ssh'
 import { normalizeSparseDirectories } from './sparse-checkout-directories'
 import { track } from '../telemetry/client'
@@ -184,6 +185,7 @@ async function addLocalRepoFromPath(
     return { error: `Not a valid git repository: ${path}` }
   }
 
+  const resolvedPath = repoKind === 'git' ? getGitRepoRoot(path) : path
   const pathKey = normalizeRuntimePathForComparison(path)
   const existing = store
     .getRepos()
@@ -192,11 +194,24 @@ async function addLocalRepoFromPath(
     return { repo: existing, alreadyExisted: true }
   }
 
-  const detected = await detectRepoIconAndUpstream({ repoPath: path, kind: repoKind })
+  const resolvedPathKey = normalizeRuntimePathForComparison(resolvedPath)
+  if (resolvedPathKey !== pathKey) {
+    const existingAfterRootResolve = store
+      .getRepos()
+      .find(
+        (repo) =>
+          !repo.connectionId && normalizeRuntimePathForComparison(repo.path) === resolvedPathKey
+      )
+    if (existingAfterRootResolve) {
+      return { repo: existingAfterRootResolve, alreadyExisted: true }
+    }
+  }
+
+  const detected = await detectRepoIconAndUpstream({ repoPath: resolvedPath, kind: repoKind })
   const repo: Repo = {
     id: randomUUID(),
-    path,
-    displayName: getRepoName(path),
+    path: resolvedPath,
+    displayName: getRepoName(resolvedPath),
     badgeColor: DEFAULT_REPO_BADGE_COLOR,
     ...detected,
     addedAt: Date.now(),
@@ -642,7 +657,7 @@ function emitCloneProgressFromText(mainWindow: BrowserWindow, text: string): voi
     if (match && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('repos:clone-progress', {
         phase: match[1].trim(),
-        percent: parseInt(match[2], 10)
+        percent: Number.parseInt(match[2], 10)
       })
     }
   }
@@ -1103,6 +1118,7 @@ export function registerRepoHandlers(mainWindow: BrowserWindow, store: Store): v
   ipcMain.removeHandler('repos:list')
   ipcMain.removeHandler('repos:add')
   ipcMain.removeHandler('repos:remove')
+  ipcMain.removeHandler('repos:removeForHost')
   ipcMain.removeHandler('repos:reorder')
   ipcMain.removeHandler('repos:update')
   ipcMain.removeHandler('projects:list')
@@ -1146,6 +1162,12 @@ export function registerRepoHandlers(mainWindow: BrowserWindow, store: Store): v
 
   ipcMain.handle('repos:list', () => {
     enrichMissingRepoGitRemoteIdentities(store, {
+      onChanged: () => notifyReposChanged(mainWindow)
+    })
+    // Why: username resolution spawns git/gh and must stay off this handler's
+    // synchronous path (issue #7225); the background pass notifies the
+    // renderer to re-list once values land.
+    enrichRepoGitUsernames(store, {
       onChanged: () => notifyReposChanged(mainWindow)
     })
     return store.getRepos()
@@ -1600,7 +1622,7 @@ export function registerRepoHandlers(mainWindow: BrowserWindow, store: Store): v
       const alreadyKnownCount = results.filter((entry) => entry.status === 'already-known').length
       const failedCount = results.filter((entry) => entry.status === 'failed').length
       if (importedCount + alreadyKnownCount === 0) {
-        for (const group of groupResolver.getCreatedGroups().reverse()) {
+        for (const group of groupResolver.getCreatedGroups().toReversed()) {
           store.deleteProjectGroup(group.id)
         }
       }
@@ -1904,6 +1926,22 @@ export function registerRepoHandlers(mainWindow: BrowserWindow, store: Store): v
     invalidateAuthorizedRootsCache()
     notifyReposChanged(mainWindow)
   })
+
+  // Why: forget a project on a single execution host without disturbing the
+  // same repo id on other hosts (local or a re-added SSH target). Used by the
+  // SSH-workspace forget flow when a host is removed/disconnected.
+  ipcMain.handle(
+    'repos:removeForHost',
+    async (_event, args: { repoId: string; hostId: string }) => {
+      const hostId = normalizeExecutionHostId(args.hostId)
+      if (!hostId) {
+        throw new Error(`Invalid host ID: ${args.hostId}`)
+      }
+      store.removeProjectForHost(args.repoId, hostId)
+      invalidateAuthorizedRootsCache()
+      notifyReposChanged(mainWindow)
+    }
+  )
 
   ipcMain.handle(
     'repos:update',
@@ -2385,7 +2423,7 @@ export function registerRepoHandlers(mainWindow: BrowserWindow, store: Store): v
       }
       return getSshGitUsername(provider, repo.path)
     }
-    return getGitUsername(repo.path)
+    return resolveLocalGitUsername(repo.path)
   })
 
   ipcMain.handle(

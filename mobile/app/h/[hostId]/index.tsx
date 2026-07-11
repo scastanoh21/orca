@@ -14,7 +14,6 @@ import {
   Search,
   X,
   Pin,
-  GitBranch,
   List,
   SlidersHorizontal,
   Layers,
@@ -44,6 +43,7 @@ import {
 import type { RpcSuccess } from '../../../src/transport/types'
 import { StatusDot } from '../../../src/components/StatusDot'
 import { NewWorktreeModalController } from '../../../src/components/NewWorktreeModalController'
+import { NewWorkspaceFab, FAB_SIZE } from '../../../src/components/NewWorkspaceFab'
 import { MobileRepoIcon } from '../../../src/components/MobileRepoIcon'
 import { WorktreeListRow } from '../../../src/components/WorktreeListRow'
 import { useNow } from '../../../src/hooks/use-now'
@@ -51,6 +51,7 @@ import { useActiveWorktreeScroll } from '../../../src/hooks/use-active-worktree-
 import type { RepoIcon } from '../../../../src/shared/repo-icon'
 import { PickerModal } from '../../../src/components/PickerModal'
 import { ActionSheetContent } from '../../../src/components/ActionSheetModal'
+import { buildWorktreeNavigationActions } from '../../../src/agent-history/worktree-navigation-actions'
 import { ConfirmModal } from '../../../src/components/ConfirmModal'
 import { BottomDrawer } from '../../../src/components/BottomDrawer'
 import { ProtocolBlockScreen } from '../../../src/components/ProtocolBlockScreen'
@@ -157,7 +158,6 @@ export function HostScreen({
   const now = useNow(30_000)
   const [repoColorsByName, setRepoColorsByName] = useState<Map<string, string>>(new Map())
   const [repoIconsByName, setRepoIconsByName] = useState<Map<string, RepoIcon>>(new Map())
-  const [repoSummaries, setRepoSummaries] = useState<RepoSummary[]>([])
   const [hostName, setHostName] = useState('')
   const [error, setError] = useState('')
   const [compatVerdict, setCompatVerdict] = useState<CompatVerdict>({ kind: 'ok' })
@@ -182,6 +182,7 @@ export function HostScreen({
   const [showGroupPicker, setShowGroupPicker] = useState(false)
   const [showFilterModal, setShowFilterModal] = useState(false)
   const [actionTarget, setActionTarget] = useState<Worktree | null>(null)
+  const [hostCapabilities, setHostCapabilities] = useState<string[]>([])
   const [confirmDelete, setConfirmDelete] = useState<Worktree | null>(null)
   const [confirmRemoveHost, setConfirmRemoveHost] = useState(false)
   const [routeActionState, setRouteActionState] = useState(() =>
@@ -204,9 +205,7 @@ export function HostScreen({
     hideDefaultBranch: false,
     filterRepoIds: [],
     collapsedGroups: [],
-    workspaceStatuses: DEFAULT_MOBILE_WORKSPACE_STATUSES,
-    workspaceHostScope: undefined,
-    visibleWorkspaceHostIds: undefined
+    workspaceStatuses: DEFAULT_MOBILE_WORKSPACE_STATUSES
   })
 
   useEffect(() => {
@@ -217,9 +216,7 @@ export function HostScreen({
       hideDefaultBranch: filters.hideDefaultBranch,
       filterRepoIds: [...filters.filterRepoIds],
       collapsedGroups: [...collapsedGroups],
-      workspaceStatuses,
-      workspaceHostScope: viewStateRef.current.workspaceHostScope,
-      visibleWorkspaceHostIds: viewStateRef.current.visibleWorkspaceHostIds
+      workspaceStatuses
     }
   }, [groupMode, sortMode, filters, collapsedGroups, workspaceStatuses])
 
@@ -338,7 +335,6 @@ export function HostScreen({
     setCompatVerdict({ kind: 'ok' })
     setRepoColorsByName(new Map())
     setRepoIconsByName(new Map())
-    setRepoSummaries([])
     repoMetadataFetchedAtRef.current = 0
     // Why: re-seed from the current host's cache on every hostId change.
     // The useState initializer only runs on first mount, so if Expo Router
@@ -397,7 +393,6 @@ export function HostScreen({
         const repoResult = (repoResponse as RpcSuccess).result as { repos: RepoSummary[] }
         repoMetadataFetchedAtRef.current = Date.now()
         setCachedRepos(requestHostId, repoResult.repos)
-        setRepoSummaries(repoResult.repos)
         setRepoColorsByName(
           new Map(
             repoResult.repos.map((repo) => [
@@ -519,6 +514,10 @@ export function HostScreen({
   // format is in place to flip a switch in a future release.
   useEffect(() => {
     if (connState !== 'connected' || !client) {
+      // Why: drop the prior host's capabilities while disconnected/switching so
+      // a capability-gated action (e.g. Agent Session History) can't linger for
+      // a host that doesn't support it.
+      setHostCapabilities([])
       return
     }
     let cancelled = false
@@ -530,9 +529,13 @@ export function HostScreen({
           return
         }
         if (!response.ok) {
+          setHostCapabilities([])
           return
         }
-        const status = (response as RpcSuccess).result as DesktopStatus
+        const status = (response as RpcSuccess).result as DesktopStatus & {
+          capabilities?: string[]
+        }
+        setHostCapabilities(status.capabilities ?? [])
         const verdict = evaluateCompat({
           desktopProtocolVersion: status.protocolVersion,
           desktopMinCompatibleMobileVersion: status.minCompatibleMobileVersion
@@ -557,6 +560,17 @@ export function HostScreen({
       cancelled = true
     }
   }, [connState, client])
+
+  useFocusEffect(
+    useCallback(() => {
+      // Why: opening the host is a strong user signal — reset a backed-off or
+      // trickling reconnect loop (and probe a possibly half-open socket)
+      // immediately instead of waiting out its timer. Deps stay empty so this
+      // fires per focus transition, not per connection-state change; nudging
+      // on every reconnecting↔connecting flip would defeat the backoff.
+      clientRef.current?.notifyForeground()
+    }, [])
+  )
 
   useFocusEffect(
     useCallback(() => {
@@ -820,11 +834,8 @@ export function HostScreen({
     groupMode,
     pinnedIds,
     repoIdsByName,
-    repoSummaries,
     repoColorsByName,
     collapsedGroups,
-    workspaceHostScope: viewStateRef.current.workspaceHostScope,
-    visibleWorkspaceHostIds: viewStateRef.current.visibleWorkspaceHostIds,
     workspaceStatuses
   })
   const existingWorktreePaths = useMemo(() => worktrees.map((w) => w.path), [worktrees])
@@ -1099,17 +1110,6 @@ export function HostScreen({
               />
             </Pressable>
 
-            <Pressable
-              style={styles.newButton}
-              onPress={openNewWorktreeModal}
-              disabled={connState !== 'connected'}
-            >
-              <Plus
-                size={16}
-                color={connState === 'connected' ? colors.textPrimary : colors.textMuted}
-              />
-            </Pressable>
-
             <Pressable style={styles.searchToggle} onPress={() => setShowSearch((s) => !s)}>
               {showSearch ? (
                 <X size={16} color={colors.textSecondary} />
@@ -1187,7 +1187,9 @@ export function HostScreen({
           // above the Samsung 3-button nav / iOS home indicator.
           contentContainerStyle={[
             styles.list,
-            { paddingBottom: spacing.lg + insets.bottom },
+            // Phone shows a floating "+" button bottom-right; reserve room so the
+            // last row stays tappable above it. Embedded sidebars keep the toolbar +.
+            { paddingBottom: (embedded ? spacing.lg : FAB_SIZE + spacing.xl) + insets.bottom },
             isWideLayout &&
               !embedded && { maxWidth: contentMaxWidth, width: '100%', alignSelf: 'center' }
           ]}
@@ -1243,6 +1245,11 @@ export function HostScreen({
             />
           )}
         />
+      )}
+
+      {/* Floating "new workspace" button — phone only; embedded sidebars keep the toolbar +. */}
+      {!embedded && (
+        <NewWorkspaceFab onPress={openNewWorktreeModal} disabled={connState !== 'connected'} />
       )}
 
       <PickerModal
@@ -1361,20 +1368,14 @@ export function HostScreen({
             actions={
               actionTarget
                 ? [
-                    {
-                      label: 'Source Control',
-                      icon: GitBranch,
-                      onPress: () => {
-                        const params = new URLSearchParams({
-                          name: actionTarget.displayName || actionTarget.repo,
-                          origin: 'host'
-                        })
-                        navigateFromHostList(
-                          `/h/${hostId}/source-control/${encodeURIComponent(actionTarget.worktreeId)}?${params.toString()}`
-                        )
-                        setActionTarget(null)
-                      }
-                    },
+                    ...buildWorktreeNavigationActions({
+                      hostId,
+                      worktreeId: actionTarget.worktreeId,
+                      worktreeName: actionTarget.displayName || actionTarget.repo,
+                      hostCapabilities,
+                      navigate: navigateFromHostList,
+                      onDone: () => setActionTarget(null)
+                    }),
                     {
                       label: 'Sleep',
                       icon: Moon,
@@ -1609,9 +1610,6 @@ const styles = StyleSheet.create({
   },
   toolbarIconDisabled: {
     opacity: 0.6
-  },
-  newButton: {
-    padding: spacing.xs
   },
   searchToggle: {
     padding: spacing.xs

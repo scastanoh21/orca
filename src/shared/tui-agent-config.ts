@@ -8,17 +8,28 @@ export type AgentPromptInjectionMode =
   | 'flag-interactive'
   | 'stdin-after-start'
 
-export type DraftPasteReadySignal = 'render-quiet-after-bracketed-paste' | 'codex-composer-prompt'
+export type DraftPasteReadySignal =
+  | 'render-quiet-after-bracketed-paste'
+  | 'codex-composer-prompt'
+  | 'render-cursor-after-bracketed-paste'
+
+export type TuiAgentDetectionRuntime = NodeJS.Platform | 'wsl'
 
 export type TuiAgentConfig = {
   detectCmd: string
   /** Additional executable names that identify the same agent on PATH. */
   detectCmdAliases?: readonly string[]
+  /** Other commands that must also be present before this agent counts as installed. */
+  detectRequiredCommands?: readonly string[]
+  /** Detection runtimes where this launch mode is not available as a detected agent. */
+  detectUnsupportedRuntimes?: readonly TuiAgentDetectionRuntime[]
   launchCmd: string
   /** Platform-specific launch command when the public binary name differs. */
   launchCmdByPlatform?: Partial<Record<NodeJS.Platform, string>>
   expectedProcess: string
   promptInjectionMode: AgentPromptInjectionMode
+  /** Option terminator required before positional prompts that may look like CLI syntax. */
+  argvPromptSeparator?: '--'
   /** Why: flag that launches the TUI with the given text already in the
    * input box but NOT submitted, so the user still gets a reviewable draft.
    * Only set when the CLI documents native support — e.g. Claude's
@@ -68,10 +79,15 @@ export const TUI_AGENT_CONFIG: Record<TuiAgent, TuiAgentConfig> = {
   },
   'claude-agent-teams': {
     // Why: this is an Orca-provided launch mode, not a separate upstream
-    // binary. Detection follows the Orca CLI, while the wrapper validates the
-    // real Claude binary when it starts.
+    // binary. Detection follows the Orca CLI and requires Claude below.
     detectCmd: 'orca',
     detectCmdAliases: ['orca-dev', 'orca-ide'],
+    // Why: the Orca shim alone exists on fresh installs. Require Claude too so
+    // onboarding does not report Agent Teams when no agent CLI is installed.
+    detectRequiredCommands: ['claude'],
+    // Why: native Windows and WSL use Claude's in-process Agent Teams fallback,
+    // not the Orca native-pane/tmux-shim wrapper exposed by this agent entry.
+    detectUnsupportedRuntimes: ['win32', 'wsl'],
     launchCmd: 'orca claude-teams',
     launchCmdByPlatform: {
       linux: `${getOrcaCliCommandNameForPlatform('linux')} claude-teams`,
@@ -114,13 +130,20 @@ export const TUI_AGENT_CONFIG: Record<TuiAgent, TuiAgentConfig> = {
     detectCmd: 'opencode',
     launchCmd: 'opencode',
     expectedProcess: 'opencode',
-    promptInjectionMode: 'flag-prompt'
+    promptInjectionMode: 'flag-prompt',
+    // Why: opencode enables bracketed paste before its composer mounts; wait
+    // for post-\x1b[?2004h show-cursor (\x1b[?25h) so paste hits mounted input.
+    draftPasteReadySignal: 'render-cursor-after-bracketed-paste'
   },
   'mimo-code': {
     detectCmd: 'mimo',
     launchCmd: 'mimo',
     expectedProcess: 'mimo',
-    promptInjectionMode: 'flag-prompt'
+    promptInjectionMode: 'flag-prompt',
+    // Why: mimo-code shares opencode's flag-prompt paste route, so it gets the
+    // same cursor-gated signal by parity (its startup stream is not separately
+    // validated); the quiet-window fallback bounds the risk if it differs.
+    draftPasteReadySignal: 'render-cursor-after-bracketed-paste'
   },
   pi: {
     detectCmd: 'pi',
@@ -324,7 +347,14 @@ export const TUI_AGENT_CONFIG: Record<TuiAgent, TuiAgentConfig> = {
     detectCmd: 'grok',
     launchCmd: 'grok',
     expectedProcess: 'grok',
-    promptInjectionMode: 'stdin-after-start'
+    // Why: Grok CLI accepts an initial prompt as a positional argv
+    // (`grok "fix the bug"`). Prefer argv over stdin-after-start so multi-line
+    // / special-character prompts are not typed as raw PTY keystrokes, and so
+    // clipboard-derived launch text is not mangled by line-edit shortcuts.
+    promptInjectionMode: 'argv',
+    // Why: prompts such as `help` or `--version` otherwise select Grok CLI
+    // syntax instead of starting an interactive turn with that literal text.
+    argvPromptSeparator: '--'
   },
   devin: {
     detectCmd: 'devin',
@@ -348,7 +378,14 @@ export function getTuiAgentDetectCommands(config: TuiAgentConfig): string[] {
 
 export function getTuiAgentLaunchCommand(
   config: TuiAgentConfig,
-  platform: NodeJS.Platform
+  platform: NodeJS.Platform,
+  opts?: { isRemote?: boolean }
 ): string {
+  // Why: the SSH relay shim is always named `orca` on Unix, so the local-only
+  // `orca-ide` rename (avoids shadowing the GNOME Orca screen reader) must not
+  // leak to Linux remotes — the remote has no such desktop binary on PATH.
+  if (opts?.isRemote && platform === 'linux') {
+    return config.launchCmd
+  }
   return config.launchCmdByPlatform?.[platform] ?? config.launchCmd
 }
