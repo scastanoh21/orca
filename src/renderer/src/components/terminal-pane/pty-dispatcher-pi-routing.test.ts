@@ -368,6 +368,38 @@ describe('dispatcher → transport → onTitleChange for Pi spinner', () => {
     expect(events).toEqual(['data:new-data', 'exit:2'])
   })
 
+  it('filters an older lifecycle when a failed reattach spawns fresh with the same id', async () => {
+    const { createIpcPtyTransport } = await import('./pty-transport')
+    const { ensurePtyDispatcher } = await import('./pty-dispatcher')
+    const events: string[] = []
+    let resolveSpawn: (value: { id: string }) => void = () => {}
+
+    ensurePtyDispatcher()
+    dispatcherCallback?.({ id: 'pty-reattach-fallback', data: 'old-data' })
+    exitDispatcherCallback?.({ id: 'pty-reattach-fallback', code: 1 })
+    ;(window.api.pty.spawn as ReturnType<typeof vi.fn>).mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveSpawn = resolve
+      })
+    )
+
+    const transport = createIpcPtyTransport()
+    const connectPromise = transport.connect({
+      url: '',
+      sessionId: 'pty-reattach-fallback',
+      callbacks: {
+        onData: (data) => events.push(`data:${data}`),
+        onExit: (code) => events.push(`exit:${code}`)
+      }
+    })
+    dispatcherCallback?.({ id: 'pty-reattach-fallback', data: 'fresh-data' })
+    exitDispatcherCallback?.({ id: 'pty-reattach-fallback', code: 2 })
+    resolveSpawn({ id: 'pty-reattach-fallback' })
+    await connectPromise
+
+    expect(events).toEqual(['data:fresh-data', 'exit:2'])
+  })
+
   it('preserves pre-connect backlog for an explicit daemon reattach', async () => {
     const { createIpcPtyTransport } = await import('./pty-transport')
     const { ensurePtyDispatcher } = await import('./pty-dispatcher')

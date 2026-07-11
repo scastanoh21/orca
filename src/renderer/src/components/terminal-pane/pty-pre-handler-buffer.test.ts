@@ -20,6 +20,10 @@ const WARN_PTY_IDS = Array.from(
   { length: PRE_HANDLER_PTY_MAX_PTYS + 1 },
   (_, index) => `pty-pre-handler-warn-${index}`
 )
+const DATA_PTY_IDS = Array.from(
+  { length: PRE_HANDLER_PTY_MAX_PTYS + 1 },
+  (_, index) => `pty-pre-handler-data-${index}`
+)
 
 describe('pre-handler PTY buffer', () => {
   afterEach(() => {
@@ -30,6 +34,9 @@ describe('pre-handler PTY buffer', () => {
       clearPreHandlerPtyState(ptyId)
     }
     for (const ptyId of WARN_PTY_IDS) {
+      clearPreHandlerPtyState(ptyId)
+    }
+    for (const ptyId of DATA_PTY_IDS) {
       clearPreHandlerPtyState(ptyId)
     }
   })
@@ -126,6 +133,26 @@ describe('pre-handler PTY buffer', () => {
     drainPreHandlerPtyExit(EXIT_PTY_IDS[0], reusedHandler)
     expect(reusedHandler).toHaveBeenCalledOnce()
     expect(reusedHandler).toHaveBeenCalledWith(99)
+  })
+
+  it('refreshes data recency when a reused PTY id receives current lifecycle output', () => {
+    bufferPreHandlerPtyData(DATA_PTY_IDS[0], 'old-data')
+    for (let index = 1; index < PRE_HANDLER_PTY_MAX_PTYS; index += 1) {
+      bufferPreHandlerPtyData(DATA_PTY_IDS[index], `data-${index}`)
+    }
+
+    bufferPreHandlerPtyData(DATA_PTY_IDS[0], 'current-data')
+    bufferPreHandlerPtyData(DATA_PTY_IDS.at(-1)!, 'newest-data')
+
+    const oldestHandler = vi.fn()
+    drainPreHandlerPtyData(DATA_PTY_IDS[1], oldestHandler)
+    expect(oldestHandler).not.toHaveBeenCalled()
+    const reusedHandler = vi.fn()
+    drainPreHandlerPtyData(DATA_PTY_IDS[0], reusedHandler)
+    expect(reusedHandler.mock.calls).toEqual([
+      ['old-data', undefined],
+      ['current-data', undefined]
+    ])
   })
 
   it('clears an old lifecycle before a PTY id is reused and drains the new exit once', () => {

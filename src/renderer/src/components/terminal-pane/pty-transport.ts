@@ -691,7 +691,9 @@ export function createIpcPtyTransport(opts: IpcPtyTransportOptions = {}): PtyTra
       }
 
       try {
-        const freshSpawnCursor = options.sessionId ? undefined : capturePreHandlerPtyEventCursor()
+        // Why: a requested reattach can fall back to a fresh PTY with the same
+        // id. Keep the cursor unless the provider confirms an actual restore.
+        const freshSpawnCursor = capturePreHandlerPtyEventCursor()
         // Why: missing-cwd recovery is only valid for fresh local spawns —
         // reattach must keep the session's exact cwd and SSH-tagged transports
         // resolve cwd on the remote host.

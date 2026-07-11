@@ -3264,7 +3264,7 @@
           "file": "src/renderer/src/components/terminal-pane/pty-pre-handler-buffer.test.ts",
           "assertions": [
             "65 exit-before-handler identities evict the oldest and retain the newest",
-            "a reused PTY id refreshes recency, delivers only its latest exit once, and filters older-lifecycle data and exits by cursor",
+            "a reused PTY id refreshes both data and exit recency, delivers only its latest exit once, and filters older-lifecycle data and exits by cursor",
             "warning identities are released with exact data-map eviction so warning state cannot grow independently"
           ]
         },
@@ -3272,7 +3272,7 @@
           "file": "src/renderer/src/components/terminal-pane/pty-dispatcher-pi-routing.test.ts",
           "assertions": [
             "pre-handler data drains before its exit",
-            "fresh PTY-id reuse filters old lifecycle events while explicit daemon reattach preserves pre-connect backlog",
+            "fresh PTY-id reuse and failed-reattach fresh fallback filter old lifecycle events while explicit daemon reattach preserves pre-connect backlog",
             "a registered exit handler remains authoritative while 65 orphan exits churn through the bounded buffer"
           ]
         },
@@ -3291,7 +3291,7 @@
           "command": "pnpm exec vitest run --config config/vitest.config.ts src/renderer/src/components/terminal-pane/pty-pre-handler-buffer.test.ts src/renderer/src/components/terminal-pane/pty-transport.test.ts src/renderer/src/components/terminal-pane/pty-dispatcher-pi-routing.test.ts src/renderer/src/lib/launch-agent-background-session.test.ts src/renderer/src/lib/launch-worktree-background-terminals.test.ts",
           "result": "passed",
           "durationSeconds": 1,
-          "summary": "5 test files passed, 112 tests passed on main@20ebe858af plus the #7695 candidate. The current-main repro retained the 65th oldest exit (received code 0 instead of eviction); the bounded candidate evicts it and preserves all ordering/reuse cases."
+          "summary": "5 test files passed, 114 tests passed on main@20ebe858af plus the #7695 candidate. Main@20ebe858af retained the 65th oldest exit (received code 0 instead of eviction); the bounded candidate evicts it and preserves all ordering/reuse cases."
         }
       ],
       "runtimeBudget": {

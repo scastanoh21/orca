@@ -58,6 +58,11 @@ export function bufferPreHandlerPtyData(ptyId: string, data: string, meta?: PtyD
   if (!state) {
     state = { chunks: [], head: 0, bytes: 0 }
     preHandlerPtyData.set(ptyId, state)
+  } else {
+    // Why: relay-style providers can reuse ids. New output makes this identity
+    // current, so later churn must evict an actually older buffered PTY.
+    preHandlerPtyData.delete(ptyId)
+    preHandlerPtyData.set(ptyId, state)
   }
   state.chunks.push({
     data: chunk.data,
