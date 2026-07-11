@@ -77,6 +77,14 @@ const MIN_POLL_MS = 30 * 1000 // 30 seconds — renderer input should never crea
 const MAX_POLL_MS = 2_147_483_647 // Max safe setInterval delay before Node clamps back to 1ms.
 const MIN_REFETCH_MS = 5 * 60 * 1000 // 5 minutes — debounce resume/manual refresh bursts
 const ACTIVE_FAILURE_REFETCH_MS = MIN_POLL_MS
+// Why: these providers have a dedicated fetch cycle, so an activation retry can
+// refresh just the failing one. Providers without one force a full fetchAll, so
+// their error retries stay on the 5-minute cadence to protect Claude's budget.
+const INDIVIDUALLY_REFRESHABLE_PROVIDERS: ReadonlySet<ActiveRateLimitProvider> = new Set([
+  'claude',
+  'codex',
+  'grok'
+])
 const STALE_THRESHOLD_MS = 30 * 60 * 1000 // 30 minutes — after this, stale data is dropped
 const INACTIVE_FETCH_DEBOUNCE_MS = 60 * 1000 // 60 seconds — debounce fetch-on-open
 const DEFERRED_STARTUP_ACTIVE_REFRESH_MS = 1000
@@ -755,7 +763,10 @@ export class RateLimitService {
       // activation recovery while throttling repeated events per provider.
       if (limits.status === 'error') {
         const lastRetryAt = this.lastActiveFailureRetryAtByProvider[provider]
-        if (now - lastRetryAt >= ACTIVE_FAILURE_REFETCH_MS) {
+        const throttleMs = INDIVIDUALLY_REFRESHABLE_PROVIDERS.has(provider)
+          ? ACTIVE_FAILURE_REFETCH_MS
+          : MIN_REFETCH_MS
+        if (now - lastRetryAt >= throttleMs) {
           retryableFailures.push(provider)
         }
       }
@@ -776,26 +787,35 @@ export class RateLimitService {
       return
     }
 
+    // Why: a fetch already in flight will refresh these providers; skip without
+    // consuming the per-provider retry throttle so the next activation retries.
+    if (this.isFetching) {
+      return
+    }
+
     const now = Date.now()
     for (const provider of plan.providers) {
       this.lastActiveFailureRetryAtByProvider[provider] = now
     }
 
-    const canRefreshIndividually = plan.providers.every(
-      (provider) => provider === 'claude' || provider === 'codex'
+    const canRefreshIndividually = plan.providers.every((provider) =>
+      INDIVIDUALLY_REFRESHABLE_PROVIDERS.has(provider)
     )
     if (!canRefreshIndividually) {
       await this.fetchAll()
       return
     }
 
-    // Why: partial Claude/Codex failures should recover without re-reading
-    // healthy providers that are still inside the normal debounce window.
+    // Why: partial failures of providers with a dedicated fetch cycle should
+    // recover without re-reading healthy providers still inside their debounce.
     if (plan.providers.includes('claude')) {
       await this.fetchClaudeOnly()
     }
     if (plan.providers.includes('codex')) {
       await this.fetchCodexOnly()
+    }
+    if (plan.providers.includes('grok')) {
+      await this.fetchGrokOnly()
     }
   }
 
