@@ -21,7 +21,7 @@ import type {
   WorkspaceKey
 } from '../../../../shared/types'
 import type { WorktreeForceDeleteReason } from '../../../../shared/worktree-removal'
-import type { TerminalGitHubPRLink } from '@/lib/terminal-github-pr-link-detector'
+import type { TerminalGitHubPRLink } from '../../../../shared/terminal-github-pr-link-detector'
 import type {
   PendingWorktreeCreation,
   WorktreeCreationPhase
