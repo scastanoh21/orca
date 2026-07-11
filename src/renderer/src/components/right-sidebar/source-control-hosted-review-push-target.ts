@@ -15,12 +15,9 @@ export function hasUsableHostedReviewPushTarget(args: {
     )
   }
   if (args.hasResolvableHostedReviewPushTargetLink) {
-    // Why: a resolver-backed link normally needs hydrated target metadata to
-    // prove which head it pushes to. But a same-repo review's head IS the
-    // checked-out branch, so a real upstream already tracking that branch is
-    // that head and is safe to use before the resolver hydrates. Fork/cross-repo
-    // reviews track a differently-named head, so a mismatched (or missing)
-    // upstream stays blocked until the resolver proves the real target.
+    // Why: a same-repo review's head is the checked-out branch, so a real
+    // upstream tracking it is safe before the resolver hydrates. Fork/cross-repo
+    // heads differ, so a mismatched or missing upstream stays blocked.
     return (
       args.upstreamStatus?.hasUpstream === true &&
       upstreamTracksBranch(args.upstreamStatus.upstreamName, args.branchName)
@@ -36,8 +33,7 @@ function upstreamTracksBranch(
   if (!upstreamName || !branchName) {
     return false
   }
-  // Why: upstreamName is `<remote>/<branch>`; remote names cannot contain `/`,
-  // so the branch is everything past the first slash (branches may contain `/`).
+  // Why: `<remote>/<branch>`; remote has no `/`, so the branch is the rest.
   const separatorIndex = upstreamName.indexOf('/')
   return separatorIndex >= 0 && upstreamName.slice(separatorIndex + 1) === branchName
 }

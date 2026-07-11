@@ -777,10 +777,8 @@ describe('resolveDropdownItems', () => {
   })
 })
 
-// Why: reproduce PR #8196 — a branch with a real git upstream and an open
-// linked PR whose head is that branch had every remote row disabled because the
-// unhydrated push target faked hasUpstream:false. Drive the same push-target
-// resolution the component uses so the whole chain stays regression-proof.
+// Why: PR #8196 — drive the real push-target resolution the component uses so
+// the whole chain stays regression-proof.
 describe('resolveDropdownItems with an unhydrated linked-review push target', () => {
   function pipeline(args: {
     branchName: string

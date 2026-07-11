@@ -231,9 +231,8 @@ describe('hasUsableHostedReviewPushTarget', () => {
   })
 
   it('treats a same-repo review upstream that already tracks the branch as usable', () => {
-    // Why: an open linked PR whose head is the checked-out branch must not stay
-    // blocked while its resolver-backed push target is unhydrated — the real
-    // upstream already targets the review head.
+    // Why: a same-repo review must not stay blocked while its push target is
+    // unhydrated — the real upstream already targets the review head.
     expect(
       hasUsableHostedReviewPushTarget({
         hasResolvableHostedReviewPushTargetLink: true,
