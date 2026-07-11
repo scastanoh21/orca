@@ -724,7 +724,7 @@ describe('terminal multiplex RPC', () => {
       }),
       waitForTerminal: vi.fn(() => new Promise<RuntimeTerminalWait>(() => {})),
       sendTerminal: vi.fn().mockResolvedValue({ accepted: true }),
-      updateMobileViewport: vi.fn().mockResolvedValue({ updated: true, applied: true })
+      updateMobileViewport: vi.fn().mockResolvedValue({ updated: false, applied: false })
     })
     const dispatcher = new RpcDispatcher({
       runtime,
@@ -765,6 +765,34 @@ describe('terminal multiplex RPC', () => {
     )
 
     await vi.waitFor(() => expect(resizeListener).toBeDefined())
+    handlers.get(5)?.(
+      decodeTerminalStreamFrame(
+        encodeTerminalStreamFrame({
+          opcode: TerminalStreamOpcode.Resize,
+          streamId: 5,
+          seq: 2,
+          payload: encodeTerminalStreamJson({ cols: 90, rows: 24 })
+        })
+      )!
+    )
+    await vi.waitFor(() => expect(runtime.updateMobileViewport).toHaveBeenCalled())
+    handlers.get(5)?.(
+      decodeTerminalStreamFrame(
+        encodeTerminalStreamFrame({
+          opcode: TerminalStreamOpcode.Input,
+          streamId: 5,
+          seq: 3,
+          payload: encodeTerminalStreamText('x')
+        })
+      )!
+    )
+    await vi.waitFor(() =>
+      expect(runtime.sendTerminal).toHaveBeenCalledWith('terminal-1', {
+        text: 'x',
+        enter: false,
+        interrupt: false
+      })
+    )
     binaryFrames.splice(0)
 
     resizeListener?.({

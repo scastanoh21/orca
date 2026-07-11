@@ -541,6 +541,7 @@ export function createRemoteRuntimePtyTransport(
           remotePtyId = null
           multiplexedStream = null
           multiplexedStreamHandle = null
+          clearPendingViewportClaim()
           storedCallbacks.onExit?.(0)
           storedCallbacks.onDisconnect?.()
           if (subscribedPtyId) {

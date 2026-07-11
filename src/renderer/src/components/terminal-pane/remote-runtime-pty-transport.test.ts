@@ -1468,6 +1468,26 @@ describe('createRemoteRuntimePtyTransport', () => {
     expect(onError).toHaveBeenCalledWith('reconnect failed')
   })
 
+  it('releases pending claimed input when the remote terminal ends', async () => {
+    const { createRemoteRuntimePtyTransport } = await import('./remote-runtime-pty-transport')
+    const transport = createRemoteRuntimePtyTransport('env-1', {
+      worktreeId: 'wt-1',
+      tabId: 'tab-1',
+      leafId: 'pane:1'
+    })
+    await transport.connect({ url: '', callbacks: {} })
+    const { streamId } = latestSubscribePayload()
+
+    expect(transport.claimViewport?.(101, 33)).toBe(true)
+    const accepted = transport.sendInputAccepted?.('x')
+    subscriptionCallbacks?.onResponse({
+      ok: true,
+      result: { type: 'end', streamId }
+    })
+
+    await expect(accepted).resolves.toBe(false)
+  })
+
   it('retries when a replacement transport closes before its stream installs', async () => {
     const transportCallbacks: NonNullable<typeof subscriptionCallbacks>[] = []
     runtimeSubscribe.mockImplementation(

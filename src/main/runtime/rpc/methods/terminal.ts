@@ -1650,7 +1650,10 @@ export const TERMINAL_METHODS: RpcAnyMethod[] = [
           if (isTerminalInputLockedForClient(runtime, stream.ptyId, stream.client)) {
             return
           }
-          void stream.desktopClaimTail
+          // Mobile already has the higher-priority floor; a rejected desktop
+          // viewport claim must never suppress later phone input.
+          const inputClaimTail = stream.isMobile ? Promise.resolve(true) : stream.desktopClaimTail
+          void inputClaimTail
             .then((claimed) =>
               !claimed || isTerminalInputLockedForClient(runtime, stream.ptyId, stream.client)
                 ? null
