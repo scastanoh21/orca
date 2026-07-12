@@ -17,22 +17,6 @@ const {
   prunePackagedZodSources,
   verifyPackagedMainRuntimeDeps
 } = require('../packaged-runtime-node-modules.cjs')
-const { ensurePackagedDaemonHostNode } = require('../daemon-host-node-runtime.cjs')
-
-// process.execPath is read-only in the types; point it at a fixture node.exe.
-function withStubbedExecPath(value, fn) {
-  const original = process.execPath
-  Object.defineProperty(process, 'execPath', { value, configurable: true, writable: true })
-  try {
-    return fn()
-  } finally {
-    Object.defineProperty(process, 'execPath', {
-      value: original,
-      configurable: true,
-      writable: true
-    })
-  }
-}
 
 describe('electron-builder config', () => {
   it('excludes repo-only source trees from app.asar', () => {
@@ -74,14 +58,42 @@ describe('electron-builder config', () => {
         expect.objectContaining({
           from: 'native/computer-use-windows/runtime.ps1',
           to: 'computer-use-windows/runtime.ps1'
+        }),
+        expect.objectContaining({
+          from: 'native/windows-cli-launcher/.build/orca.exe',
+          to: 'bin/orca.exe'
         })
       ])
+    )
+  })
+
+  // Why: on macOS 26 UNUserNotificationCenter aborts for executables launched
+  // from Contents/Resources, so the helper must ship in Contents/MacOS (#7929).
+  it('ships the mac notification-status helper in Contents/MacOS, not Resources', () => {
+    expect(electronBuilderConfig.mac.extraFiles).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          from: 'native/notification-status-macos/.build/release/orca-notification-status',
+          to: 'MacOS/orca-notification-status'
+        })
+      ])
+    )
+    expect(electronBuilderConfig.mac.extraResources).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ to: 'orca-notification-status' })])
     )
   })
 
   it('unpacks the compiled CommonJS boundary with CLI runtime files', () => {
     expect(electronBuilderConfig.asarUnpack).toEqual(
       expect.arrayContaining(['out/package.json', 'out/cli/**', 'out/shared/**'])
+    )
+  })
+
+  // Why: without the unpacked entry the watcher client silently falls back to
+  // in-process @parcel/watcher, reintroducing the #7547 main-process crash.
+  it('unpacks the forked parcel-watcher process entry', () => {
+    expect(electronBuilderConfig.asarUnpack).toEqual(
+      expect.arrayContaining(['out/main/parcel-watcher-process-entry.js'])
     )
   })
 
@@ -223,52 +235,6 @@ describe('electron-builder config', () => {
     }
   })
 
-  it('stages the build host node.exe into resources/daemon-host for Windows', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'orca-daemon-host-node-'))
-    try {
-      const fakeHostDir = join(root, 'host')
-      await mkdir(fakeHostDir, { recursive: true })
-      const fakeNodeExe = join(fakeHostDir, 'node.exe')
-      await writeFile(fakeNodeExe, 'fake-node-binary', 'utf8')
-      const resourcesDir = join(root, 'resources')
-      await mkdir(resourcesDir, { recursive: true })
-
-      withStubbedExecPath(fakeNodeExe, () => ensurePackagedDaemonHostNode(resourcesDir, 'win32'))
-
-      await expect(readFile(join(resourcesDir, 'daemon-host', 'node.exe'), 'utf8')).resolves.toBe(
-        'fake-node-binary'
-      )
-    } finally {
-      await rm(root, { recursive: true, force: true })
-    }
-  })
-
-  it('does not stage a daemon-host node.exe on non-Windows platforms', async () => {
-    const resourcesDir = await mkdtemp(join(tmpdir(), 'orca-daemon-host-node-skip-'))
-    try {
-      ensurePackagedDaemonHostNode(resourcesDir, 'linux')
-      await expect(readdir(resourcesDir)).resolves.toEqual([])
-    } finally {
-      await rm(resourcesDir, { recursive: true, force: true })
-    }
-  })
-
-  it('fails the Windows build when the host binary is not a node.exe', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'orca-daemon-host-node-bad-'))
-    try {
-      const notNode = join(root, 'electron.exe')
-      await writeFile(notNode, 'not-node', 'utf8')
-      const resourcesDir = join(root, 'resources')
-      await mkdir(resourcesDir, { recursive: true })
-
-      expect(() =>
-        withStubbedExecPath(notNode, () => ensurePackagedDaemonHostNode(resourcesDir, 'win32'))
-      ).toThrow(/not a node\.exe/)
-    } finally {
-      await rm(root, { recursive: true, force: true })
-    }
-  })
-
   it('includes @parcel/watcher in the packaged runtime closure', () => {
     // Why: the main process imports '@parcel/watcher' for filesystem change
     // events; if it is absent from the packaged closure the serve host silently
@@ -391,6 +357,15 @@ describe('electron-builder config', () => {
         const launcherPath = join(resourcesDir, 'bin', 'orca-ide')
         await mkdir(join(resourcesDir, 'bin'), { recursive: true })
         await mkdir(join(resourcesDir, 'node_modules', 'zod', 'src'), { recursive: true })
+        // Why: afterPack now fails hard when the unpacked daemon entry is
+        // missing, so the fixture must carry one like a real package layout.
+        const unpackedMainDir = join(resourcesDir, 'app.asar.unpacked', 'out', 'main')
+        await mkdir(unpackedMainDir, { recursive: true })
+        await writeFile(
+          join(unpackedMainDir, 'daemon-entry.js'),
+          'console.error("Usage: daemon-entry <socket>"); process.exit(1)\n',
+          'utf8'
+        )
         await writeFile(launcherPath, '#!/usr/bin/env bash\n', { encoding: 'utf8', mode: 0o644 })
 
         await electronBuilderConfig.afterPack({
