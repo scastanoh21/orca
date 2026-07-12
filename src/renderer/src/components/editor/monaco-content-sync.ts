@@ -7,10 +7,11 @@ import type { editor } from 'monaco-editor'
 function replaceModelContent(
   editorInstance: editor.IStandaloneCodeEditor,
   model: editor.ITextModel,
+  currentContent: string,
   content: string,
   withUndoStops: boolean
 ): void {
-  if (model.getValue() === content) {
+  if (currentContent === content) {
     return
   }
   const fullRange = model.getFullModelRange()
@@ -41,13 +42,14 @@ export function syncContentOnMount(
   if (!model) {
     return false
   }
-  if (model.getValue() === content) {
+  const currentContent = model.getValue()
+  if (currentContent === content) {
     return false
   }
   // Why: no undo stop on mount — the retained model's text was already the
   // user's last-known state, and adding an undo entry here would make Cmd+Z
   // revert to the pre-remount text, which is confusing.
-  replaceModelContent(editorInstance, model, content, false)
+  replaceModelContent(editorInstance, model, currentContent, content, false)
   return true
 }
 
@@ -67,5 +69,33 @@ export function syncContentUpdate(
   if (!model) {
     return
   }
-  replaceModelContent(editorInstance, model, content, true)
+  const currentContent = model.getValue()
+  if (currentContent.length === content.length) {
+    replaceModelContent(editorInstance, model, currentContent, content, true)
+    return
+  }
+  if (content.length > currentContent.length && content.startsWith(currentContent)) {
+    // Why: preserving the existing prefix lets Monaco retain viewport,
+    // selection, find-widget, and tokenization state above a live-file append.
+    const fullRange = model.getFullModelRange()
+    editorInstance.pushUndoStop()
+    model.pushEditOperations(
+      [],
+      [
+        {
+          range: {
+            startLineNumber: fullRange.endLineNumber,
+            startColumn: fullRange.endColumn,
+            endLineNumber: fullRange.endLineNumber,
+            endColumn: fullRange.endColumn
+          },
+          text: content.slice(currentContent.length)
+        }
+      ],
+      () => null
+    )
+    editorInstance.pushUndoStop()
+    return
+  }
+  replaceModelContent(editorInstance, model, currentContent, content, true)
 }

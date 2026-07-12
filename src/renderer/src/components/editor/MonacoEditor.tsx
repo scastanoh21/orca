@@ -57,6 +57,7 @@ import {
   getMonacoAutoHeightForContent,
   isMonacoAutoHeightCapped
 } from './monaco-auto-height'
+import { installMonacoE2EProbe } from './monaco-e2e-probe'
 
 type MonacoEditorProps = {
   fileId: string
@@ -329,6 +330,7 @@ export default function MonacoEditor({
     (editorInstance, monaco) => {
       editorRef.current = editorInstance
       setMountedEditor(editorInstance)
+      const uninstallE2EProbe = installMonacoE2EProbe(editorInstance, filePath)
       let autoHeightSub: { dispose: () => void } | null = null
       let autoHeightFrame: number | null = null
       const updateAutoHeight = (): void => {
@@ -504,6 +506,7 @@ export default function MonacoEditor({
         }
         conflictDecorationsRef.current?.clear()
         conflictDecorationsRef.current = null
+        uninstallE2EProbe()
         editorRef.current = null
         setMountedEditor(null)
         setCommentPopover(null)
@@ -822,7 +825,9 @@ export default function MonacoEditor({
       <Editor
         height={renderedEditorHeight === null ? '100%' : `${renderedEditorHeight}px`}
         language={language}
-        value={content}
+        // Why: Orca's mount/layout reconciliation is the sole post-mount content
+        // owner; the wrapper's controlled read-only path would also call setValue.
+        defaultValue={content}
         theme={isDark ? 'vs-dark' : 'vs'}
         onChange={handleChange}
         onMount={handleMount}
