@@ -11055,20 +11055,21 @@ export class OrcaRuntimeService {
       })
     }
 
+    const platformByRepoId = new Map(
+      [...repoById.values()].map((repo) => [repo.id, this.getAgentLaunchPlatformForRepo(repo)])
+    )
     const runtimeWorktreeSummaryPathIndex = buildRuntimeWorktreeSummaryPathIndex(
       summaries,
       resolvedWorktrees,
-      new Map(
-        [...repoById.values()].map((repo) => [repo.id, this.getAgentLaunchPlatformForRepo(repo)])
-      )
+      platformByRepoId
     )
-    const fallbackSummaryByRuntimeWorktreeId = new Map<string, RuntimeWorktreePsSummary | null>()
+    const missingRuntimeWorktreeIds = new Set<string>()
     const countedPtyIds = new Set<string>()
     for (const leaf of this.leaves.values()) {
       const summary = this.getSummaryForRuntimeWorktreeId(
         summaries,
         runtimeWorktreeSummaryPathIndex,
-        fallbackSummaryByRuntimeWorktreeId,
+        missingRuntimeWorktreeIds,
         leaf.worktreeId
       )
       if (!summary) {
@@ -11103,7 +11104,7 @@ export class OrcaRuntimeService {
       const summary = this.getSummaryForRuntimeWorktreeId(
         summaries,
         runtimeWorktreeSummaryPathIndex,
-        fallbackSummaryByRuntimeWorktreeId,
+        missingRuntimeWorktreeIds,
         pty.worktreeId
       )
       if (!summary) {
@@ -11130,7 +11131,7 @@ export class OrcaRuntimeService {
       const summary = this.getSummaryForRuntimeWorktreeId(
         summaries,
         runtimeWorktreeSummaryPathIndex,
-        fallbackSummaryByRuntimeWorktreeId,
+        missingRuntimeWorktreeIds,
         worktreeId
       )
       if (!summary) {
@@ -11159,7 +11160,7 @@ export class OrcaRuntimeService {
       const activeSummary = this.getSummaryForRuntimeWorktreeId(
         summaries,
         runtimeWorktreeSummaryPathIndex,
-        fallbackSummaryByRuntimeWorktreeId,
+        missingRuntimeWorktreeIds,
         session.activeWorktreeId
       )
       if (activeSummary) {
@@ -11170,7 +11171,7 @@ export class OrcaRuntimeService {
     this.attachAgentRowsToSummaries(
       summaries,
       runtimeWorktreeSummaryPathIndex,
-      fallbackSummaryByRuntimeWorktreeId
+      missingRuntimeWorktreeIds
     )
 
     const sorted = [...summaries.values()].sort(compareWorktreePs)
@@ -11188,7 +11189,7 @@ export class OrcaRuntimeService {
   private attachAgentRowsToSummaries(
     summaries: Map<string, RuntimeWorktreePsSummary>,
     runtimeWorktreeSummaryPathIndex: RuntimeWorktreeSummaryPathIndex,
-    fallbackSummaryByRuntimeWorktreeId: Map<string, RuntimeWorktreePsSummary | null>
+    missingRuntimeWorktreeIds: Set<string>
   ): void {
     // Why: most agents report via hooks (agent-hooks/server), not OSC, so the
     // hook snapshot is the primary source — same one the desktop sidebar reads.
@@ -11260,7 +11261,7 @@ export class OrcaRuntimeService {
       const summary = this.getSummaryForRuntimeWorktreeId(
         summaries,
         runtimeWorktreeSummaryPathIndex,
-        fallbackSummaryByRuntimeWorktreeId,
+        missingRuntimeWorktreeIds,
         worktreeId
       )
       if (!summary) {
@@ -20247,19 +20248,22 @@ export class OrcaRuntimeService {
   private getSummaryForRuntimeWorktreeId(
     summaries: Map<string, RuntimeWorktreePsSummary>,
     runtimeWorktreeSummaryPathIndex: RuntimeWorktreeSummaryPathIndex,
-    fallbackSummaryByRuntimeWorktreeId: Map<string, RuntimeWorktreePsSummary | null>,
+    missingRuntimeWorktreeIds: Set<string>,
     runtimeWorktreeId: string
   ): RuntimeWorktreePsSummary | null {
     const exact = summaries.get(runtimeWorktreeId)
     if (exact) {
       return exact
     }
+    if (missingRuntimeWorktreeIds.has(runtimeWorktreeId)) {
+      return null
+    }
     const parsed = parseRuntimeWorktreeId(runtimeWorktreeId)
     if (!parsed) {
       return null
     }
-    const repo = this.store?.getRepo(parsed.repoId)
-    const comparisonPlatform = repo ? this.getAgentLaunchPlatformForRepo(repo) : process.platform
+    const comparisonPlatform =
+      runtimeWorktreeSummaryPathIndex.platformByRepoId.get(parsed.repoId) ?? process.platform
     const indexed = findRuntimeWorktreeSummaryByPath(
       runtimeWorktreeSummaryPathIndex,
       parsed.repoId,
@@ -20269,10 +20273,7 @@ export class OrcaRuntimeService {
     if (indexed) {
       return indexed
     }
-    if (fallbackSummaryByRuntimeWorktreeId.has(runtimeWorktreeId)) {
-      return fallbackSummaryByRuntimeWorktreeId.get(runtimeWorktreeId) ?? null
-    }
-    fallbackSummaryByRuntimeWorktreeId.set(runtimeWorktreeId, null)
+    missingRuntimeWorktreeIds.add(runtimeWorktreeId)
     return null
   }
 
@@ -26461,6 +26462,7 @@ type RuntimeWorktreeSummaryPathCandidate = {
 }
 
 type RuntimeWorktreeSummaryPathIndex = {
+  platformByRepoId: ReadonlyMap<string, NodeJS.Platform>
   posixAbsolute: Map<string, RuntimeWorktreeSummaryPathCandidate>
   posixRelative: Map<string, RuntimeWorktreeSummaryPathCandidate>
   windows: Map<string, RuntimeWorktreeSummaryPathCandidate>
@@ -26473,6 +26475,7 @@ function buildRuntimeWorktreeSummaryPathIndex(
   platformByRepoId: ReadonlyMap<string, NodeJS.Platform>
 ): RuntimeWorktreeSummaryPathIndex {
   const index: RuntimeWorktreeSummaryPathIndex = {
+    platformByRepoId,
     posixAbsolute: new Map(),
     posixRelative: new Map(),
     windows: new Map(),
