@@ -20249,9 +20249,8 @@ export class OrcaRuntimeService {
     if (!parsed) {
       return null
     }
-    const indexed = summaryByRuntimeWorktreePath.get(
-      runtimeWorktreeSummaryPathKey(parsed.repoId, parsed.worktreePath)
-    )
+    const pathKey = runtimeWorktreeSummaryPathKey(parsed.repoId, parsed.worktreePath)
+    const indexed = pathKey ? summaryByRuntimeWorktreePath.get(pathKey) : undefined
     if (indexed) {
       return indexed
     }
@@ -26451,14 +26450,22 @@ function buildRuntimeWorktreeSummaryPathIndex(
   const index = new Map<string, RuntimeWorktreePsSummary>()
   for (const worktree of resolvedWorktrees) {
     const summary = summaries.get(worktree.id)
-    if (summary) {
-      index.set(runtimeWorktreeSummaryPathKey(worktree.repoId, worktree.path), summary)
+    const pathKey = runtimeWorktreeSummaryPathKey(worktree.repoId, worktree.path)
+    if (summary && pathKey) {
+      index.set(pathKey, summary)
     }
   }
   return index
 }
 
-function runtimeWorktreeSummaryPathKey(repoId: string, worktreePath: string): string {
+function runtimeWorktreeSummaryPathKey(repoId: string, worktreePath: string): string | null {
+  const isAbsolutePosix = worktreePath.startsWith('/') && !worktreePath.startsWith('//')
+  const hasDotSegment = /(^|[\\/])\.{1,2}([\\/]|$)/.test(worktreePath)
+  // Why: malformed relative or dotted paths need pair-aware comparison;
+  // separator normalization can otherwise conflate distinct POSIX paths.
+  if ((!isAbsolutePosix && !isWindowsAbsolutePathLike(worktreePath)) || hasDotSegment) {
+    return null
+  }
   return `${repoId}\0${normalizeRuntimePathForComparison(worktreePath)}`
 }
 
@@ -26735,6 +26742,11 @@ function compareWorktreePs(
   left: RuntimeWorktreePsSummary,
   right: RuntimeWorktreePsSummary
 ): number {
+  // Why: worktree.ps is truncated for mobile, so host-visible activity must
+  // survive ahead of inactive rows even when no PTY/output timestamp exists.
+  if (left.hasHostSidebarActivity !== right.hasHostSidebarActivity) {
+    return left.hasHostSidebarActivity ? -1 : 1
+  }
   // Pinned and unread worktrees sort above others so they survive truncation.
   if (left.isPinned !== right.isPinned) {
     return left.isPinned ? -1 : 1
