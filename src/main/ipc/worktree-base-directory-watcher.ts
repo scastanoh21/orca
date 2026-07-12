@@ -1,12 +1,13 @@
 import type { BrowserWindow } from 'electron'
-import type { FsChangeEvent } from '../../shared/types'
 import type { Store } from '../persistence'
-import { notifyWorktreesChanged } from './worktree-remote'
+import { notifyWorktreeGitStatusMetadataChanged, notifyWorktreesChanged } from './worktree-remote'
 import { getSshFilesystemProvider } from '../providers/ssh-filesystem-dispatch'
 import {
-  matchingWorktreeBaseRepoIds,
-  type WorktreeBaseWatchTarget
-} from './worktree-base-directory-event-filter'
+  collectLocalWorktreeBaseChanges,
+  collectRemoteWorktreeBaseChanges,
+  type WorktreeBaseCollectedChanges
+} from './worktree-base-directory-change-collector'
+import type { WorktreeBaseWatchTarget } from './worktree-base-directory-event-filter'
 import {
   buildWorktreeBaseDirectoryWatchTargets,
   clearWorktreeBaseDirectoryWatchTargetWarnings
@@ -17,7 +18,8 @@ type ActiveWatch = WorktreeBaseWatchTarget & {
   mainWindow: BrowserWindow
   subscription: { unsubscribe: () => Promise<void> }
   notifyTimer: ReturnType<typeof setTimeout> | null
-  pendingRepoIds: Set<string>
+  pendingStructureRepoIds: Set<string>
+  pendingGitStatusRepoIds: Set<string>
   disposed: boolean
 }
 
@@ -27,13 +29,20 @@ let syncGeneration = 0
 let scheduledSync: ReturnType<typeof setTimeout> | null = null
 let latestSyncContext: { mainWindow: BrowserWindow; store: Store } | null = null
 
-function scheduleNotification(watch: ActiveWatch, repoIds: readonly string[]): void {
+function scheduleNotification(
+  watch: ActiveWatch,
+  changes: { structureRepoIds?: readonly string[]; gitStatusRepoIds?: readonly string[] }
+): void {
   if (watch.disposed || watch.mainWindow.isDestroyed()) {
-    watch.pendingRepoIds.clear()
+    watch.pendingStructureRepoIds.clear()
+    watch.pendingGitStatusRepoIds.clear()
     return
   }
-  for (const repoId of repoIds) {
-    watch.pendingRepoIds.add(repoId)
+  for (const repoId of changes.structureRepoIds ?? []) {
+    watch.pendingStructureRepoIds.add(repoId)
+  }
+  for (const repoId of changes.gitStatusRepoIds ?? []) {
+    watch.pendingGitStatusRepoIds.add(repoId)
   }
   if (watch.notifyTimer) {
     clearTimeout(watch.notifyTimer)
@@ -41,26 +50,27 @@ function scheduleNotification(watch: ActiveWatch, repoIds: readonly string[]): v
   watch.notifyTimer = setTimeout(() => {
     watch.notifyTimer = null
     if (watch.disposed || watch.mainWindow.isDestroyed()) {
-      watch.pendingRepoIds.clear()
+      watch.pendingStructureRepoIds.clear()
+      watch.pendingGitStatusRepoIds.clear()
       return
     }
-    const pending = [...watch.pendingRepoIds]
-    watch.pendingRepoIds.clear()
-    for (const repoId of pending) {
+    const pendingStructure = [...watch.pendingStructureRepoIds]
+    const pendingGitStatus = [...watch.pendingGitStatusRepoIds].filter(
+      (repoId) => !watch.pendingStructureRepoIds.has(repoId)
+    )
+    watch.pendingStructureRepoIds.clear()
+    watch.pendingGitStatusRepoIds.clear()
+    for (const repoId of pendingStructure) {
       notifyWorktreesChanged(watch.mainWindow, repoId)
+    }
+    for (const repoId of pendingGitStatus) {
+      notifyWorktreeGitStatusMetadataChanged(watch.mainWindow, repoId)
     }
   }, WATCH_DEBOUNCE_MS)
 }
 
-function collectMatchingRepoIds(
-  watch: ActiveWatch,
-  eventType: 'create' | 'update' | 'delete',
-  eventPath: string,
-  repoIds: Set<string>
-): void {
-  for (const repoId of matchingWorktreeBaseRepoIds(watch, { type: eventType, path: eventPath })) {
-    repoIds.add(repoId)
-  }
+function hasCollectedChanges(changes: WorktreeBaseCollectedChanges): boolean {
+  return changes.structureRepoIds.length > 0 || changes.gitStatusRepoIds.length > 0
 }
 
 function handleLocalWatchEvents(
@@ -73,39 +83,29 @@ function handleLocalWatchEvents(
   }
   if (error) {
     console.warn(`[worktree-base-watcher] watcher failed for ${watch.path}:`, error)
-    scheduleNotification(watch, [...watch.repos.keys()])
+    scheduleNotification(watch, { structureRepoIds: [...watch.repos.keys()] })
     return
   }
-  const repoIds = new Set<string>()
-  for (const event of events) {
-    collectMatchingRepoIds(watch, event.type, event.path, repoIds)
-  }
-  if (repoIds.size > 0) {
-    scheduleNotification(watch, [...repoIds])
+  const changes = collectLocalWorktreeBaseChanges(watch, events)
+  if (hasCollectedChanges(changes)) {
+    scheduleNotification(watch, changes)
   }
 }
 
-function handleRemoteWatchEvents(watch: ActiveWatch, events: FsChangeEvent[]): void {
+function handleRemoteWatchEvents(
+  watch: ActiveWatch,
+  events: Parameters<typeof collectRemoteWorktreeBaseChanges>[1]
+): void {
   if (watch.disposed || watch.mainWindow.isDestroyed()) {
     return
   }
-  const repoIds = new Set<string>()
-  for (const event of events) {
-    if (event.kind === 'overflow') {
-      scheduleNotification(watch, [...watch.repos.keys()])
-      return
-    }
-    if (event.kind === 'rename') {
-      if (event.oldAbsolutePath) {
-        collectMatchingRepoIds(watch, 'delete', event.oldAbsolutePath, repoIds)
-      }
-      collectMatchingRepoIds(watch, 'create', event.absolutePath, repoIds)
-      continue
-    }
-    collectMatchingRepoIds(watch, event.kind, event.absolutePath, repoIds)
+  const changes = collectRemoteWorktreeBaseChanges(watch, events)
+  if (changes.overflow) {
+    scheduleNotification(watch, { structureRepoIds: [...watch.repos.keys()] })
+    return
   }
-  if (repoIds.size > 0) {
-    scheduleNotification(watch, [...repoIds])
+  if (hasCollectedChanges(changes)) {
+    scheduleNotification(watch, changes)
   }
 }
 
@@ -131,7 +131,8 @@ async function subscribeTarget(
       mainWindow,
       subscription: { unsubscribe: async () => unwatch() },
       notifyTimer: null,
-      pendingRepoIds: new Set(),
+      pendingStructureRepoIds: new Set(),
+      pendingGitStatusRepoIds: new Set(),
       disposed: false
     }
     return activeWatch
@@ -157,7 +158,8 @@ async function subscribeTarget(
     mainWindow,
     subscription,
     notifyTimer: null,
-    pendingRepoIds: new Set(),
+    pendingStructureRepoIds: new Set(),
+    pendingGitStatusRepoIds: new Set(),
     disposed: false
   }
   return activeWatch
@@ -199,6 +201,8 @@ async function removeWatch(key: string): Promise<void> {
   if (watch.notifyTimer) {
     clearTimeout(watch.notifyTimer)
   }
+  watch.pendingStructureRepoIds.clear()
+  watch.pendingGitStatusRepoIds.clear()
   await watch.subscription.unsubscribe().catch((error) => {
     console.warn(`[worktree-base-watcher] failed to unwatch ${watch.path}:`, error)
   })

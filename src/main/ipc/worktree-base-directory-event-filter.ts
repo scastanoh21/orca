@@ -8,6 +8,11 @@ type WorktreeBaseWatcherEvent = {
   path: string
 }
 
+export type WorktreeBaseChangeClass = {
+  structureRepoIds: string[]
+  gitStatusRepoIds: string[]
+}
+
 export type WorktreeBaseWatchKind = 'base' | 'git-common'
 
 export type WorktreeBaseRepoWatchConfig = {
@@ -85,29 +90,79 @@ function matchingBaseRepoIds(
 // Why: branch switches and commits in the primary checkout rewrite these
 // top-level common-dir files; matching them keeps root-checkout branch/status
 // as fresh as linked worktrees. Deeper churn (objects, refs, logs) is ignored.
-const GIT_COMMON_PRIMARY_METADATA_FILES = new Set(['HEAD', 'packed-refs', 'index'])
+const GIT_COMMON_PRIMARY_STRUCTURAL_FILES = new Set(['HEAD', 'packed-refs'])
+const GIT_COMMON_PRIMARY_STATUS_FILES = new Set(['index'])
+const GIT_COMMON_LINKED_STRUCTURAL_FILES = new Set(['HEAD', 'gitdir', 'locked'])
+const GIT_COMMON_LINKED_STATUS_FILES = new Set(['index'])
+
+function allRepoIds(target: WorktreeBaseWatchTarget): string[] {
+  return [...target.repos.keys()]
+}
 
 // Why: Git records linked worktrees under the common dir's `worktrees`
 // metadata, which is lower churn than watching checkout contents.
-function matchingGitCommonRepoIds(target: WorktreeBaseWatchTarget, eventPath: string): string[] {
-  const parts = pathRelativeToWorktreeWatchRoot(target.path, eventPath)
+function classifyGitCommonEvent(
+  target: WorktreeBaseWatchTarget,
+  event: WorktreeBaseWatcherEvent
+): WorktreeBaseChangeClass {
+  const parts = pathRelativeToWorktreeWatchRoot(target.path, event.path)
   if (!parts) {
-    return []
+    return { structureRepoIds: [], gitStatusRepoIds: [] }
   }
-  if (
-    parts[0] !== 'worktrees' &&
-    !(parts.length === 1 && GIT_COMMON_PRIMARY_METADATA_FILES.has(parts[0]))
-  ) {
-    return []
+  const repoIds = allRepoIds(target)
+  if (parts.length === 1) {
+    if (parts[0] === 'worktrees') {
+      return { structureRepoIds: repoIds, gitStatusRepoIds: [] }
+    }
+    if (GIT_COMMON_PRIMARY_STRUCTURAL_FILES.has(parts[0])) {
+      return { structureRepoIds: repoIds, gitStatusRepoIds: [] }
+    }
+    if (GIT_COMMON_PRIMARY_STATUS_FILES.has(parts[0])) {
+      return { structureRepoIds: [], gitStatusRepoIds: repoIds }
+    }
+    return { structureRepoIds: [], gitStatusRepoIds: [] }
   }
-  return [...target.repos.keys()]
+  if (parts[0] !== 'worktrees') {
+    return { structureRepoIds: [], gitStatusRepoIds: [] }
+  }
+  if (parts.length === 2) {
+    return event.type === 'update'
+      ? { structureRepoIds: [], gitStatusRepoIds: [] }
+      : { structureRepoIds: repoIds, gitStatusRepoIds: [] }
+  }
+  if (parts.length === 3) {
+    if (GIT_COMMON_LINKED_STRUCTURAL_FILES.has(parts[2])) {
+      return { structureRepoIds: repoIds, gitStatusRepoIds: [] }
+    }
+    if (GIT_COMMON_LINKED_STATUS_FILES.has(parts[2])) {
+      return { structureRepoIds: [], gitStatusRepoIds: repoIds }
+    }
+  }
+  return { structureRepoIds: [], gitStatusRepoIds: [] }
+}
+
+function classifyBaseEvent(
+  target: WorktreeBaseWatchTarget,
+  event: WorktreeBaseWatcherEvent
+): WorktreeBaseChangeClass {
+  return {
+    structureRepoIds: matchingBaseRepoIds(target, event.path, event.type),
+    gitStatusRepoIds: []
+  }
+}
+
+export function classifyWorktreeBaseChange(
+  target: WorktreeBaseWatchTarget,
+  event: WorktreeBaseWatcherEvent
+): WorktreeBaseChangeClass {
+  return target.kind === 'git-common'
+    ? classifyGitCommonEvent(target, event)
+    : classifyBaseEvent(target, event)
 }
 
 export function matchingWorktreeBaseRepoIds(
   target: WorktreeBaseWatchTarget,
   event: WorktreeBaseWatcherEvent
 ): string[] {
-  return target.kind === 'git-common'
-    ? matchingGitCommonRepoIds(target, event.path)
-    : matchingBaseRepoIds(target, event.path, event.type)
+  return classifyWorktreeBaseChange(target, event).structureRepoIds
 }

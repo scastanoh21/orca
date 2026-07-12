@@ -725,6 +725,13 @@ const api = {
       return () => ipcRenderer.removeListener('worktrees:changed', listener)
     },
 
+    onGitStatusMetadataChanged: (callback: (data: { repoId: string }) => void): (() => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, data: { repoId: string }) =>
+        callback(data)
+      ipcRenderer.on('worktrees:gitStatusMetadataChanged', listener)
+      return () => ipcRenderer.removeListener('worktrees:gitStatusMetadataChanged', listener)
+    },
+
     onBaseStatus: (callback: (data: WorktreeBaseStatusEvent) => void): (() => void) => {
       const listener = (_event: Electron.IpcRendererEvent, data: WorktreeBaseStatusEvent) =>
         callback(data)

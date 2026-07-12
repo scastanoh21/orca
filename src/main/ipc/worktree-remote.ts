@@ -1516,6 +1516,17 @@ export function notifyWorktreesChanged(mainWindow: BrowserWindow, repoId: string
   }
 }
 
+export function notifyWorktreeGitStatusMetadataChanged(
+  mainWindow: BrowserWindow,
+  repoId: string
+): void {
+  // Why: index churn is a Source Control freshness hint, not a worktree graph
+  // mutation; keep structural caches and runtime/mobile events untouched.
+  if (!mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('worktrees:gitStatusMetadataChanged', { repoId })
+  }
+}
+
 // Why: two-phase spinner. Main process fires `'fetching'` before waiting on
 // pre-create fetch work and `'creating'` immediately before `git worktree add`.
 // Renderer swaps its spinner label in response; fallback is the static

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { mkdtemp, mkdir, realpath, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, realpath, rm, stat, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -171,7 +171,7 @@ describe('worktree base directory poller', () => {
     expect(fullScans.length).toBeGreaterThan(0)
   })
 
-  it('reports git-common worktrees metadata adds, updates, and removals via polling', async () => {
+  it('reports git-common entry creates, allowlisted leaf updates, and removals via polling', async () => {
     const commonDir = await makeRoot()
     const received: WorktreeBasePollEvent[][] = []
     const target = makeTarget('git-common', commonDir)
@@ -190,17 +190,47 @@ describe('worktree base directory poller', () => {
       flat.some((event) => event.type === 'create' && event.path === entry)
     )
 
-    // HEAD/gitdir metadata writes land as new files in the entry dir, which
-    // bumps the entry dir mtime the poller compares.
     await new Promise((resolve) => setTimeout(resolve, 10))
     await writeFile(join(entry, 'HEAD'), 'ref: refs/heads/main')
     await waitForEvents(received, (flat) =>
-      flat.some((event) => event.type === 'update' && event.path === entry)
+      flat.some((event) => event.type === 'create' && event.path === join(entry, 'HEAD'))
+    )
+
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    await writeFile(join(entry, 'index'), 'status')
+    await waitForEvents(received, (flat) =>
+      flat.some((event) => event.type === 'create' && event.path === join(entry, 'index'))
     )
 
     await rm(entry, { recursive: true })
     await waitForEvents(received, (flat) =>
       flat.some((event) => event.type === 'delete' && event.path === entry)
+    )
+  })
+
+  it('detects linked HEAD rewrites even when the entry directory mtime is restored', async () => {
+    const commonDir = await makeRoot()
+    const entry = join(commonDir, 'worktrees', 'external-head')
+    await mkdir(entry, { recursive: true })
+    await writeFile(join(entry, 'HEAD'), 'ref: refs/heads/main')
+
+    const received: WorktreeBasePollEvent[][] = []
+    const target = makeTarget('git-common', commonDir)
+    const poller = await startWorktreeBaseDirectoryPoller(
+      target,
+      () => target.repos,
+      (events) => received.push(events),
+      { pollIntervalMs: POLL_MS, platform: 'linux' }
+    )
+    cleanups.push(() => poller.unsubscribe())
+
+    const before = await stat(entry)
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    await writeFile(join(entry, 'HEAD'), 'ref: refs/heads/next')
+    await utimes(entry, before.atime, before.mtime)
+
+    await waitForEvents(received, (flat) =>
+      flat.some((event) => event.type === 'update' && event.path === join(entry, 'HEAD'))
     )
   })
 
