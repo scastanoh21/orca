@@ -11054,11 +11054,16 @@ export class OrcaRuntimeService {
       })
     }
 
+    const summaryByRuntimeWorktreePath = buildRuntimeWorktreeSummaryPathIndex(
+      summaries,
+      resolvedWorktrees
+    )
     const countedPtyIds = new Set<string>()
     for (const leaf of this.leaves.values()) {
       const summary = this.getSummaryForRuntimeWorktreeId(
         summaries,
         resolvedWorktrees,
+        summaryByRuntimeWorktreePath,
         leaf.worktreeId
       )
       if (!summary) {
@@ -11093,6 +11098,7 @@ export class OrcaRuntimeService {
       const summary = this.getSummaryForRuntimeWorktreeId(
         summaries,
         resolvedWorktrees,
+        summaryByRuntimeWorktreePath,
         pty.worktreeId
       )
       if (!summary) {
@@ -11116,7 +11122,12 @@ export class OrcaRuntimeService {
       if (tabs.length === 0) {
         continue
       }
-      const summary = this.getSummaryForRuntimeWorktreeId(summaries, resolvedWorktrees, worktreeId)
+      const summary = this.getSummaryForRuntimeWorktreeId(
+        summaries,
+        resolvedWorktrees,
+        summaryByRuntimeWorktreePath,
+        worktreeId
+      )
       if (!summary) {
         continue
       }
@@ -11143,6 +11154,7 @@ export class OrcaRuntimeService {
       const activeSummary = this.getSummaryForRuntimeWorktreeId(
         summaries,
         resolvedWorktrees,
+        summaryByRuntimeWorktreePath,
         session.activeWorktreeId
       )
       if (activeSummary) {
@@ -11150,7 +11162,7 @@ export class OrcaRuntimeService {
       }
     }
 
-    this.attachAgentRowsToSummaries(summaries, resolvedWorktrees)
+    this.attachAgentRowsToSummaries(summaries, resolvedWorktrees, summaryByRuntimeWorktreePath)
 
     const sorted = [...summaries.values()].sort(compareWorktreePs)
     return {
@@ -11166,7 +11178,8 @@ export class OrcaRuntimeService {
   // hierarchy is pane-level state tracked separately from terminal output.
   private attachAgentRowsToSummaries(
     summaries: Map<string, RuntimeWorktreePsSummary>,
-    resolvedWorktrees: ResolvedWorktree[]
+    resolvedWorktrees: ResolvedWorktree[],
+    summaryByRuntimeWorktreePath: ReadonlyMap<string, RuntimeWorktreePsSummary>
   ): void {
     // Why: most agents report via hooks (agent-hooks/server), not OSC, so the
     // hook snapshot is the primary source — same one the desktop sidebar reads.
@@ -11235,7 +11248,12 @@ export class OrcaRuntimeService {
       if (!worktreeId) {
         continue
       }
-      const summary = this.getSummaryForRuntimeWorktreeId(summaries, resolvedWorktrees, worktreeId)
+      const summary = this.getSummaryForRuntimeWorktreeId(
+        summaries,
+        resolvedWorktrees,
+        summaryByRuntimeWorktreePath,
+        worktreeId
+      )
       if (!summary) {
         continue
       }
@@ -20220,6 +20238,7 @@ export class OrcaRuntimeService {
   private getSummaryForRuntimeWorktreeId(
     summaries: Map<string, RuntimeWorktreePsSummary>,
     resolvedWorktrees: ResolvedWorktree[],
+    summaryByRuntimeWorktreePath: ReadonlyMap<string, RuntimeWorktreePsSummary>,
     runtimeWorktreeId: string
   ): RuntimeWorktreePsSummary | null {
     const exact = summaries.get(runtimeWorktreeId)
@@ -20230,6 +20249,14 @@ export class OrcaRuntimeService {
     if (!parsed) {
       return null
     }
+    const indexed = summaryByRuntimeWorktreePath.get(
+      runtimeWorktreeSummaryPathKey(parsed.repoId, parsed.worktreePath)
+    )
+    if (indexed) {
+      return indexed
+    }
+    // Why: malformed legacy relative paths can require pair-aware comparison;
+    // keep the compatibility fallback off the normal indexed absolute path.
     const resolved = resolvedWorktrees.find(
       (worktree) =>
         worktree.repoId === parsed.repoId &&
@@ -26415,6 +26442,24 @@ function parseRuntimeWorktreeId(
     return null
   }
   return parsed
+}
+
+function buildRuntimeWorktreeSummaryPathIndex(
+  summaries: ReadonlyMap<string, RuntimeWorktreePsSummary>,
+  resolvedWorktrees: readonly ResolvedWorktree[]
+): Map<string, RuntimeWorktreePsSummary> {
+  const index = new Map<string, RuntimeWorktreePsSummary>()
+  for (const worktree of resolvedWorktrees) {
+    const summary = summaries.get(worktree.id)
+    if (summary) {
+      index.set(runtimeWorktreeSummaryPathKey(worktree.repoId, worktree.path), summary)
+    }
+  }
+  return index
+}
+
+function runtimeWorktreeSummaryPathKey(repoId: string, worktreePath: string): string {
+  return `${repoId}\0${normalizeRuntimePathForComparison(worktreePath)}`
 }
 
 function includeTargetResolvedWorktree(

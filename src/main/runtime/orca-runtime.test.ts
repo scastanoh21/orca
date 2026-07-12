@@ -75,6 +75,7 @@ import {
   unregisterSshFilesystemProvider
 } from '../providers/ssh-filesystem-dispatch'
 import { registerSshGitProvider, unregisterSshGitProvider } from '../providers/ssh-git-dispatch'
+import * as worktreePathComparison from '../ipc/worktree-path-comparison'
 import * as localWorktreeFilesystem from '../local-worktree-filesystem'
 import {
   DEFAULT_REPO_BADGE_COLOR,
@@ -22085,10 +22086,11 @@ describe('OrcaRuntimeService', () => {
     } as never)
 
     const now = Date.now()
+    const pathComparisonSpy = vi.spyOn(worktreePathComparison, 'areWorktreePathsEqual')
     const runtime = new OrcaRuntimeService(runtimeStore as never, undefined, {
-      getAgentStatusSnapshot: () => [
-        {
-          paneKey: 'remote-tab:55555555-5555-4555-8555-555555555555',
+      getAgentStatusSnapshot: () =>
+        Array.from({ length: 100 }, (_, index) => ({
+          paneKey: `remote-tab:${String(index).padStart(8, '0')}-5555-4555-8555-555555555555`,
           worktreeId: `${remoteRepo.id}::${remoteWorktree.path}/`,
           tabId: 'remote-tab',
           state: 'working',
@@ -22097,10 +22099,13 @@ describe('OrcaRuntimeService', () => {
           connectionId: 'ssh-1',
           receivedAt: now,
           stateStartedAt: now - 100
-        }
-      ]
+        }))
     })
     const summaries = await runtime.getWorktreePs()
+
+    // Why: worktree.ps is polled; projected agent rows must share the per-request
+    // index instead of repeating the compatibility path scan for every row.
+    expect(pathComparisonSpy).not.toHaveBeenCalled()
 
     expect(summaries.worktrees).toEqual([
       expect.objectContaining({
@@ -22111,14 +22116,15 @@ describe('OrcaRuntimeService', () => {
         displayName: 'Remote mobile',
         hasHostSidebarActivity: true,
         status: 'working',
-        agents: [
+        agents: expect.arrayContaining([
           expect.objectContaining({
             prompt: 'remote agent without a PTY',
             agentType: 'codex'
           })
-        ]
+        ])
       })
     ])
+    expect(summaries.worktrees[0]?.agents).toHaveLength(100)
   })
 
   it('clears stale working status after the agent exits and the shell takes over the title', async () => {
