@@ -21737,6 +21737,8 @@ describe('OrcaRuntimeService', () => {
         repoId: TEST_REPO_ID,
         terminalPlatform: 'linux'
       })
+      expect(getProjects).toHaveBeenCalledTimes(1)
+      expect(getSettings).toHaveBeenCalledTimes(2)
       getProjects.mockClear()
       getSettings.mockClear()
       repos = [
@@ -21751,10 +21753,10 @@ describe('OrcaRuntimeService', () => {
 
       await runtime.getWorktreePs()
 
-      // Why: the cache now contains 101 represented repos and excludes 2,000
-      // new repos; projection must index project settings once for both groups.
-      expect(getProjects).toHaveBeenCalledTimes(1)
-      expect(getSettings).toHaveBeenCalledTimes(2)
+      // Why: the cache already owns the batch-resolved platforms for its 101
+      // worktree repos; newly persisted repos must not trigger another scan.
+      expect(getProjects).not.toHaveBeenCalled()
+      expect(getSettings).toHaveBeenCalledTimes(1)
     })
   })
 

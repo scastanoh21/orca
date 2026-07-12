@@ -464,6 +464,7 @@ import {
 import {
   getLocalProjectGitExecOptions,
   getLocalProjectWorktreeGitOptions,
+  getLocalProjectWorktreeGitOptionsForRuntime,
   resolveLocalProjectRuntimeForRepo,
   resolveLocalProjectRuntimesForRepos
 } from '../project-runtime-git-options'
@@ -2034,6 +2035,7 @@ class WorktreeIdRequiresFullPathError extends Error {
 type ResolvedWorktreeCache = {
   expiresAt: number
   worktrees: ResolvedWorktree[]
+  platformByRepoId: ReadonlyMap<string, NodeJS.Platform>
 }
 
 type ResolvedWorktreeInFlight = {
@@ -10946,28 +10948,29 @@ export class OrcaRuntimeService {
     // host-owned imported-worktree visibility gate as worktree.list/desktop.
     await this.refreshPtyWorktreeRecordsFromController(resolvedWorktrees)
     const repoById = new Map((this.store?.getRepos() ?? []).map((repo) => [repo.id, repo]))
-    const representedRepos: Repo[] = []
-    const representedRepoIds = new Set<string>()
-    for (const worktree of resolvedWorktrees) {
-      if (representedRepoIds.has(worktree.repoId)) {
-        continue
-      }
-      const repo = repoById.get(worktree.repoId)
-      if (repo) {
-        representedRepoIds.add(repo.id)
-        representedRepos.push(repo)
-      }
+    let platformByRepoId = this.resolvedWorktreeCache?.platformByRepoId
+    if (!platformByRepoId) {
+      // Why: an invalidation can race the scan that returned these worktrees.
+      // Preserve correct WSL/SSH projection even when that result was not cached.
+      const representedRepos = [
+        ...new Map(
+          resolvedWorktrees
+            .map((worktree) => repoById.get(worktree.repoId))
+            .filter((repo): repo is Repo => repo !== undefined)
+            .map((repo) => [repo.id, repo])
+        ).values()
+      ]
+      const projectRuntimeByRepoId = resolveLocalProjectRuntimesForRepos(
+        this.requireStore(),
+        representedRepos
+      )
+      platformByRepoId = new Map(
+        representedRepos.map((repo) => [
+          repo.id,
+          getAgentLaunchPlatformForRepo(repo, projectRuntimeByRepoId.get(repo.id))
+        ])
+      )
     }
-    const projectRuntimeByRepoId = resolveLocalProjectRuntimesForRepos(
-      this.requireStore(),
-      representedRepos
-    )
-    const platformByRepoId = new Map(
-      representedRepos.map((repo) => [
-        repo.id,
-        getAgentLaunchPlatformForRepo(repo, projectRuntimeByRepoId.get(repo.id))
-      ])
-    )
     const summaries = new Map<string, RuntimeWorktreePsSummary>()
 
     // Why: the GitHub cache is keyed by `repoPath::branch` (no refs/heads/ prefix),
@@ -19805,8 +19808,16 @@ export class OrcaRuntimeService {
     }
     const now = Date.now()
     const metaById = this.store.getAllWorktreeMeta() ?? {}
+    const repos = this.store.getRepos()
+    const projectRuntimeByRepoId = resolveLocalProjectRuntimesForRepos(this.requireStore(), repos)
+    const platformByRepoId = new Map(
+      repos.map((repo) => [
+        repo.id,
+        getAgentLaunchPlatformForRepo(repo, projectRuntimeByRepoId.get(repo.id))
+      ])
+    )
     const perRepoWorktrees = await Promise.all(
-      this.store.getRepos().map(async (repo) => {
+      repos.map(async (repo) => {
         if (isFolderRepo(repo)) {
           return listRuntimeFolderWorkspaces(this.requireStore(), repo).map((worktree) => ({
             ...worktree,
@@ -19827,7 +19838,7 @@ export class OrcaRuntimeService {
         // Why: mobile startup RPCs share this path. A slow repo scan should
         // degrade one repo's metadata, not block all terminal/session loading.
         const scan = await withTimeout(
-          this.listRepoWorktreesForResolution(repo),
+          this.listRepoWorktreesForResolution(repo, projectRuntimeByRepoId),
           RESOLVED_WORKTREE_REPO_TIMEOUT_MS,
           { ok: false, worktrees: [] }
         )
@@ -19870,6 +19881,7 @@ export class OrcaRuntimeService {
     if (generation === this.resolvedWorktreeGeneration) {
       this.resolvedWorktreeCache = {
         worktrees,
+        platformByRepoId,
         expiresAt: now + RESOLVED_WORKTREE_CACHE_TTL_MS
       }
     }
@@ -19958,13 +19970,19 @@ export class OrcaRuntimeService {
     }
   }
 
-  private async listRepoWorktreesForResolution(repo: Repo): Promise<RuntimeWorktreeScanResult> {
+  private async listRepoWorktreesForResolution(
+    repo: Repo,
+    projectRuntimeByRepoId?: ReadonlyMap<string, ProjectExecutionRuntimeResolution>
+  ): Promise<RuntimeWorktreeScanResult> {
     if (!repo.connectionId) {
+      const projectRuntime = projectRuntimeByRepoId
+        ? projectRuntimeByRepoId.get(repo.id)
+        : resolveLocalProjectRuntimeForRepo(this.requireStore(), repo)
       return {
         ok: true,
         worktrees: await listRepoWorktrees(
           repo,
-          getLocalProjectWorktreeGitOptions(this.requireStore(), repo)
+          getLocalProjectWorktreeGitOptionsForRuntime(repo, projectRuntime)
         )
       }
     }
