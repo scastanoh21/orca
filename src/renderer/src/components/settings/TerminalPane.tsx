@@ -80,13 +80,12 @@ export function TerminalPane({
       />
     ) : null,
     matchesSettingsSearch(searchQuery, getTerminalPaneInteractionSearchEntries()) ||
-    (isWindows && matchesSettingsSearch(searchQuery, getTerminalRightClickToPasteSearchEntry())) ? (
+    matchesSettingsSearch(searchQuery, getTerminalRightClickToPasteSearchEntry()) ? (
       <TerminalInteractionSection
         key="pane-interaction"
         settings={settings}
         updateSettings={updateSettings}
         searchQuery={searchQuery}
-        isWindows={isWindows}
       />
     ) : null,
     matchesSettingsSearch(searchQuery, getTerminalSetupScriptSearchEntries()) ? (

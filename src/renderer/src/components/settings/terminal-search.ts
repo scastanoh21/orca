@@ -117,7 +117,7 @@ export function getTerminalPaneSearchEntries(platform: {
           ...getTerminalGitCredentialPopupSearchEntry()
         ]
       : []),
-    ...(platform.isWindows ? getTerminalRightClickToPasteSearchEntry() : []),
+    ...getTerminalRightClickToPasteSearchEntry(),
     ...getTerminalSetupScriptSearchEntries(),
     ...getManageSessionsSearchEntries(),
     ...getTerminalAdvancedSearchEntries(),

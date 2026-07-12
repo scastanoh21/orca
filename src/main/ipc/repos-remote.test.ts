@@ -21,6 +21,7 @@ const {
   mockGitProvider,
   mockFilesystemProvider,
   mockMultiplexer,
+  gitExecFileAsyncMock,
   gitSpawnMock,
   listWorktreeGraphMock,
   invalidateAuthorizedRootsCacheMock,
@@ -72,6 +73,7 @@ const {
     notify: vi.fn()
   },
   gitSpawnMock: vi.fn(),
+  gitExecFileAsyncMock: vi.fn(),
   listWorktreeGraphMock: vi.fn(),
   invalidateAuthorizedRootsCacheMock: vi.fn(),
   prepareLocalWorktreeRootForRepoMock: vi.fn()
@@ -104,10 +106,13 @@ vi.mock('../git/repo', async () => {
 })
 
 vi.mock('../git/runner', async () => ({
-  // Why: keep the real nonInteractiveGitEnv so the clone regression test
-  // (#7652) asserts the actual guard's markers, not a mock echoing itself.
+  // Why: keep the real env builders (nonInteractiveGitEnv,
+  // gitOptionalLocksDisabledEnv) so the clone regression test (#7652) asserts
+  // the actual guard's markers, not a mock echoing itself.
   ...(await vi.importActual<typeof GitRunner>('../git/runner')),
-  gitExecFileAsync: vi.fn(),
+  gitExecFileAsync: gitExecFileAsyncMock,
+  gitExecFileAsyncBuffer: vi.fn(),
+  gitStreamStdout: vi.fn(),
   gitSpawn: gitSpawnMock
 }))
 
@@ -151,6 +156,7 @@ vi.mock('./ssh', () => ({
 }))
 
 import { registerRepoHandlers } from './repos'
+import { clearSubmodulePathsCacheForTests, listSubmodulePaths } from '../git/status'
 
 beforeEach(() => {
   clearGitCapabilityStateForTests()
@@ -1015,6 +1021,8 @@ describe('repos:addRemote', () => {
     mockMultiplexer.request.mockReset()
     mockMultiplexer.notify.mockReset()
     gitSpawnMock.mockReset()
+    gitExecFileAsyncMock.mockReset().mockResolvedValue({ stdout: '', stderr: '' })
+    clearSubmodulePathsCacheForTests()
     prepareLocalWorktreeRootForRepoMock.mockReset().mockResolvedValue(undefined)
     gitSpawnMock.mockImplementation(() => {
       const proc = new EventEmitter() as EventEmitter & { stderr: EventEmitter }
@@ -1971,6 +1979,41 @@ describe('repos:add + repos:clone', () => {
     )
     expect(result).toHaveProperty('badgeColor', DEFAULT_REPO_BADGE_COLOR)
     expect(result).toHaveProperty('externalWorktreeVisibility', 'hide')
+  })
+
+  it('drops a same-path negative submodule cache before a local clone', async () => {
+    const destination = await createTempRoot()
+    const clonePath = join(destination, 'orca')
+    let cloned = false
+    gitExecFileAsyncMock.mockImplementation((args: string[]) =>
+      Promise.resolve({
+        stdout:
+          args[0] === 'config' && args.includes('.gitmodules') && cloned
+            ? 'submodule.lib.path vendor/lib\n'
+            : '',
+        stderr: ''
+      })
+    )
+    gitSpawnMock.mockImplementationOnce(() => {
+      const proc = createMockCloneProcess()
+      queueMicrotask(() => {
+        cloned = true
+        proc.emit('close', 0, null)
+      })
+      return proc
+    })
+
+    await expect(listSubmodulePaths(clonePath)).resolves.toEqual([])
+    await handlers.get('repos:clone')!(null, {
+      url: 'https://example.com/orca.git',
+      destination
+    })
+    await expect(listSubmodulePaths(clonePath)).resolves.toEqual(['vendor/lib'])
+
+    const configReads = gitExecFileAsyncMock.mock.calls.filter(
+      ([args]) => args[0] === 'config' && args.includes('.gitmodules')
+    )
+    expect(configReads).toHaveLength(2)
   })
 
   it('preserves existing badgeColor when repos:clone upgrades folder->git after dedupe', async () => {
