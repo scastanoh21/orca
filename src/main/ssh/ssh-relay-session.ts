@@ -19,7 +19,7 @@ import {
   isSshPtyIdentityMismatchError,
   isSshPtyNotFoundError
 } from '../providers/ssh-pty-provider'
-import { toAppSshPtyId, toRelaySshPtyId } from '../providers/ssh-pty-id'
+import { parseAppSshPtyId, toAppSshPtyId, toRelaySshPtyId } from '../providers/ssh-pty-id'
 import { SshFilesystemProvider } from '../providers/ssh-filesystem-provider'
 import { SshGitProvider } from '../providers/ssh-git-provider'
 import { agentHookServer } from '../agent-hooks/server'
@@ -1200,16 +1200,43 @@ export class SshRelaySession {
     }
   }
 
+  private expireReattachPty(relayPtyId: string, appPtyId: string): void {
+    clearProviderPtyState(appPtyId)
+    deletePtyOwnership(appPtyId)
+    this.forwardedReattachReplayByPty.delete(appPtyId)
+    this.store.markSshRemotePtyLease(this.targetId, relayPtyId, 'expired')
+    const win = this.getMainWindow()
+    if (win && !win.isDestroyed()) {
+      win.webContents.send('pty:exit', { id: appPtyId, code: -1 })
+    }
+  }
+
   private async reattachKnownPtys(shouldContinue: () => boolean): Promise<void> {
+    const ptyProvider = getSshPtyProvider(this.targetId) as SshPtyProvider | undefined
+    if (!ptyProvider) {
+      return
+    }
+    const relayInstanceId = ptyProvider.getRelayInstanceId?.()
     const activeLeases = this.store
       .getSshRemotePtyLeases(this.targetId)
       .filter((lease) => lease.state !== 'terminated' && lease.state !== 'expired')
-    const leasedPtyIds = activeLeases.map((lease) => lease.ptyId)
+    const attachableLeases = activeLeases.filter((lease) => {
+      if (!lease.relayInstanceId || !relayInstanceId || lease.relayInstanceId === relayInstanceId) {
+        return true
+      }
+      const staleAppPtyId = toAppSshPtyId(this.targetId, lease.ptyId, lease.relayInstanceId)
+      console.warn(
+        `[ssh-relay-session] Expiring stale PTY ${lease.ptyId} for ${this.targetId} after relay generation changed`
+      )
+      this.expireReattachPty(lease.ptyId, staleAppPtyId)
+      return false
+    })
+    const leasedPtyIds = attachableLeases.map((lease) => lease.ptyId)
     // Why: carry each lease's pane identity into the attach so the relay can
     // reject cross-generation id collisions even between split panes in one tab.
     // Older leases may lack leafId, so tabId remains the compatibility fallback.
     const expectedIdentityByPtyId = new Map(
-      activeLeases
+      attachableLeases
         .map((lease): [string, ExpectedPtyIdentity] | null => {
           const expected = expectedIdentityForLease(lease)
           return expected ? [lease.ptyId, expected] : null
@@ -1218,19 +1245,22 @@ export class SshRelaySession {
     )
     // Why: after app restart, ptyOwnership is empty but durable SSH leases
     // still describe remote PTYs that survived in the relay grace window.
-    const ptyIds = Array.from(
-      new Set([
-        ...getPtyIdsForConnection(this.targetId).map((ptyId) =>
-          toRelaySshPtyId(this.targetId, ptyId)
-        ),
-        ...leasedPtyIds
-      ])
-    )
-    const ptyProvider = getSshPtyProvider(this.targetId) as SshPtyProvider | undefined
-    if (!ptyProvider) {
-      return
-    }
-    const relayInstanceId = ptyProvider.getRelayInstanceId?.()
+    const ownedPtyIds = getPtyIdsForConnection(this.targetId).flatMap((appPtyId) => {
+      const parsed = parseAppSshPtyId(appPtyId)
+      if (
+        parsed?.relayInstanceId &&
+        relayInstanceId &&
+        parsed.relayInstanceId !== relayInstanceId
+      ) {
+        console.warn(
+          `[ssh-relay-session] Expiring stale PTY ${parsed.relayPtyId} for ${this.targetId} after relay generation changed`
+        )
+        this.expireReattachPty(parsed.relayPtyId, appPtyId)
+        return []
+      }
+      return [toRelaySshPtyId(this.targetId, appPtyId)]
+    })
+    const ptyIds = Array.from(new Set([...ownedPtyIds, ...leasedPtyIds]))
     for (const ptyId of ptyIds) {
       if (!shouldContinue()) {
         return

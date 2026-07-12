@@ -11,7 +11,6 @@ export type PtyKillIdentity = {
   expectedTabId?: string
 }
 
-const MAX_RETAINED_PTY_KILLS = 64
 const MAX_RETRY_BACKOFF_MS = 30_000
 const retainedPtyKills = new Map<string, RetainedPtyKill>()
 
@@ -26,13 +25,9 @@ export function killPtyRetainingRetryOwnership(
 ): Promise<void> {
   let retained = retainedPtyKills.get(id)
   if (!retained) {
-    if (retainedPtyKills.size >= MAX_RETAINED_PTY_KILLS) {
-      const oldestId = retainedPtyKills.keys().next().value
-      if (typeof oldestId === 'string') {
-        retainedPtyKills.delete(oldestId)
-        console.warn('[pty] Dropped oldest retained shutdown retry at bounded capacity')
-      }
-    }
+    // Why: every entry represents a provider process whose shutdown is still
+    // unconfirmed. Dropping one to cap bookkeeping would orphan the real PTY;
+    // repeated failures for the same PTY still coalesce into this single record.
     retained = { diagnostic, inFlight: null, options, attempts: 0, nextRetryAt: 0 }
   }
   retained.diagnostic = diagnostic

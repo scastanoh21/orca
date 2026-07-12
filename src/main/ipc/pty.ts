@@ -3174,6 +3174,7 @@ export function registerPtyHandlers(
           markNativeWindowsConptyPty(result.id)
         }
         const relayResultId = getRelayPtyId(args.connectionId, result.id)
+        const relayInstanceId = parseAppSshPtyId(result.id)?.relayInstanceId
         const persistSshLease = (): void => {
           if (!store || !args.connectionId) {
             return
@@ -3183,6 +3184,7 @@ export function registerPtyHandlers(
           store.upsertSshRemotePtyLease({
             targetId: args.connectionId,
             ptyId: relayResultId,
+            ...(relayInstanceId ? { relayInstanceId } : {}),
             ...(typeof args.worktreeId === 'string' ? { worktreeId: args.worktreeId } : {}),
             ...(typeof args.tabId === 'string' ? { tabId: args.tabId } : {}),
             ...(typeof args.leafId === 'string' && isTerminalLeafId(args.leafId)
@@ -4153,6 +4155,7 @@ export function registerPtyHandlers(
           }
         }
         const relayResultId = getRelayPtyId(args.connectionId, result.id)
+        const relayInstanceId = parseAppSshPtyId(result.id)?.relayInstanceId
         if (store && args.connectionId) {
           // Why: remote PTYs live in the SSH relay grace window after Orca
           // detaches. Persist their IDs immediately so reconnect can reattach
@@ -4160,6 +4163,7 @@ export function registerPtyHandlers(
           store.upsertSshRemotePtyLease({
             targetId: args.connectionId,
             ptyId: relayResultId,
+            ...(relayInstanceId ? { relayInstanceId } : {}),
             ...(typeof args.worktreeId === 'string' ? { worktreeId: args.worktreeId } : {}),
             ...(typeof args.tabId === 'string' ? { tabId: args.tabId } : {}),
             ...(validatedLeafId ? { leafId: validatedLeafId } : {}),

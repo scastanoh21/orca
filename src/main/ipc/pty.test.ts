@@ -10627,7 +10627,7 @@ describe('registerPtyHandlers', () => {
     expect(piClearPtyMock).toHaveBeenCalledWith(spawnResult.id)
   })
 
-  it('disposes PTY listeners before manual kill IPC', async () => {
+  it('keeps PTY listeners until manual native kill is accepted', async () => {
     const onDataDisposable = makeDisposable()
     const onExitDisposable = makeDisposable()
     // Why: hold a stable reference to the kill spy. On POSIX, destroyPtyProcess
@@ -10654,15 +10654,15 @@ describe('registerPtyHandlers', () => {
 
     await handlers.get('pty:kill')!(null, { id: spawnResult.id })
 
-    expect(onDataDisposable.dispose.mock.invocationCallOrder[0]).toBeLessThan(
-      killSpy.mock.invocationCallOrder[0]
+    expect(killSpy.mock.invocationCallOrder[0]).toBeLessThan(
+      onDataDisposable.dispose.mock.invocationCallOrder[0]
     )
-    expect(onExitDisposable.dispose.mock.invocationCallOrder[0]).toBeLessThan(
-      killSpy.mock.invocationCallOrder[0]
+    expect(killSpy.mock.invocationCallOrder[0]).toBeLessThan(
+      onExitDisposable.dispose.mock.invocationCallOrder[0]
     )
   })
 
-  it('disposes PTY listeners before runtime controller kill', async () => {
+  it('keeps PTY listeners until runtime-controller native kill is accepted', async () => {
     const onDataDisposable = makeDisposable()
     const onExitDisposable = makeDisposable()
     const killSpy = vi.fn()
@@ -10695,11 +10695,11 @@ describe('registerPtyHandlers', () => {
     }
 
     expect(runtimeController.kill(spawnResult.id)).toBe(true)
-    expect(onDataDisposable.dispose.mock.invocationCallOrder[0]).toBeLessThan(
-      killSpy.mock.invocationCallOrder[0]
+    expect(killSpy.mock.invocationCallOrder[0]).toBeLessThan(
+      onDataDisposable.dispose.mock.invocationCallOrder[0]
     )
-    expect(onExitDisposable.dispose.mock.invocationCallOrder[0]).toBeLessThan(
-      killSpy.mock.invocationCallOrder[0]
+    expect(killSpy.mock.invocationCallOrder[0]).toBeLessThan(
+      onExitDisposable.dispose.mock.invocationCallOrder[0]
     )
   })
 
@@ -10994,7 +10994,7 @@ describe('registerPtyHandlers', () => {
     expect(ids).toContain(ptyB.id)
   })
 
-  it('clears PTY state even when kill reports the process is already gone', async () => {
+  it('retains PTY state when native kill throws without an exit proof', async () => {
     const proc = {
       onData: vi.fn(() => makeDisposable()),
       onExit: vi.fn(() => makeDisposable()),
@@ -11014,11 +11014,15 @@ describe('registerPtyHandlers', () => {
       rows: 24
     })) as { id: string }
 
-    await handlers.get('pty:kill')!(null, { id: spawnResult.id })
+    await expect(handlers.get('pty:kill')!(null, { id: spawnResult.id })).rejects.toThrow(
+      'already dead'
+    )
 
-    expect(await handlers.get('pty:hasChildProcesses')!(null, { id: spawnResult.id })).toBe(false)
-    expect(openCodeClearPtyMock).toHaveBeenCalledWith(spawnResult.id)
-    expect(piClearPtyMock).toHaveBeenCalledWith(spawnResult.id)
+    expect((await getLocalPtyProvider().listProcesses()).map(({ id }) => id)).toContain(
+      spawnResult.id
+    )
+    expect(openCodeClearPtyMock).not.toHaveBeenCalledWith(spawnResult.id)
+    expect(piClearPtyMock).not.toHaveBeenCalledWith(spawnResult.id)
   })
 
   describe('agent_started telemetry', () => {

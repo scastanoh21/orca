@@ -22258,7 +22258,11 @@ describe('OrcaRuntimeService', () => {
     await expect(runtime.createTerminal(`id:${TEST_WORKTREE_ID}`)).rejects.toThrow(
       'terminal_admission_blocked_for_project_removal'
     )
+    await expect(
+      runtime.createManagedWorktree({ repoSelector: `id:${TEST_REPO_ID}`, name: 'too-late' })
+    ).rejects.toThrow('project_removal_in_progress')
     expect(spawn).not.toHaveBeenCalled()
+    expect(addWorktree).not.toHaveBeenCalled()
 
     runtime.onPtyExit('pty-1', -1)
     stop.resolve(true)
@@ -22298,6 +22302,40 @@ describe('OrcaRuntimeService', () => {
     await expect(removal).resolves.toEqual({ removed: true })
 
     expect(stopAndWait).toHaveBeenCalledWith('pty-late')
+    expect(removeProject).toHaveBeenCalledWith(TEST_REPO_ID)
+  })
+
+  it('drains a create-first managed worktree before project removal snapshots ownership', async () => {
+    const removeProject = vi.fn()
+    const runtime = new OrcaRuntimeService({ ...store, removeProject } as never)
+    const runCreate = deferred<never>()
+    const runtimeWithCreate = runtime as unknown as {
+      runCreateManagedWorktree: () => Promise<never>
+    }
+    const runCreateSpy = vi
+      .spyOn(runtimeWithCreate, 'runCreateManagedWorktree')
+      .mockReturnValue(runCreate.promise)
+    runtime.setPtyController({
+      write: () => true,
+      kill: () => false,
+      getForegroundProcess: async () => null,
+      listProcesses: async () => []
+    })
+    runtime.attachWindow(1)
+    runtime.syncWindowGraph(1, { tabs: [], leaves: [] })
+
+    const create = runtime.createManagedWorktree({
+      repoSelector: `id:${TEST_REPO_ID}`,
+      name: 'create-first'
+    })
+    await vi.waitFor(() => expect(runCreateSpy).toHaveBeenCalledOnce())
+    const removal = runtime.removeProject(`id:${TEST_REPO_ID}`)
+    await Promise.resolve()
+    expect(removeProject).not.toHaveBeenCalled()
+
+    runCreate.resolve(undefined as never)
+    await expect(create).resolves.toBeUndefined()
+    await expect(removal).resolves.toEqual({ removed: true })
     expect(removeProject).toHaveBeenCalledWith(TEST_REPO_ID)
   })
 

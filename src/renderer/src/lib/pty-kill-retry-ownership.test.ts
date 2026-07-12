@@ -16,7 +16,7 @@ describe('PTY kill retry ownership', () => {
     vi.restoreAllMocks()
   })
 
-  it('bounds retained ids and retries at most one per lifecycle event', async () => {
+  it('retains every live id and retries at most one per lifecycle event', async () => {
     const kill = vi.fn().mockRejectedValue(new Error('provider disconnected'))
     vi.stubGlobal('window', { api: { pty: { kill } } })
     vi.spyOn(console, 'warn').mockImplementation(() => {})
@@ -26,12 +26,15 @@ describe('PTY kill retry ownership', () => {
     }
     kill.mockResolvedValue(undefined)
 
-    retryRetainedPtyKills()
-    await Promise.resolve()
-    await Promise.resolve()
+    for (const _id of IDS) {
+      retryRetainedPtyKills()
+      await Promise.resolve()
+      await Promise.resolve()
+    }
 
-    expect(kill).toHaveBeenCalledTimes(66)
-    expect(kill.mock.calls.filter(([id]) => id === IDS[0])).toHaveLength(1)
-    expect(kill.mock.calls.filter(([id]) => id === IDS[1])).toHaveLength(2)
+    expect(kill).toHaveBeenCalledTimes(IDS.length * 2)
+    for (const id of IDS) {
+      expect(kill.mock.calls.filter(([calledId]) => calledId === id)).toHaveLength(2)
+    }
   })
 })

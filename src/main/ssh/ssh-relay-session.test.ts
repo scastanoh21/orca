@@ -556,32 +556,6 @@ describe('SshRelaySession', () => {
     expect(mockStore.markSshRemotePtyLease).toHaveBeenCalledWith('target-1', 'pty-1', 'attached')
   })
 
-  it('establish re-attaches durable leases after app restart', async () => {
-    const { mockConn, mockStore, mockPortForward, getMainWindow } = createMockDeps()
-    const { getSshPtyProvider } = await import('../ipc/pty')
-    const mockAttach = vi.fn().mockResolvedValue(undefined)
-    vi.mocked(getSshPtyProvider).mockReturnValue({
-      attachForReconnect: mockAttach,
-      getRelayInstanceId: () => 'relay-generation',
-      dispose: vi.fn()
-    } as unknown as ReturnType<typeof getSshPtyProvider>)
-    vi.mocked(getPtyIdsForConnection).mockReturnValue([])
-    vi.mocked(mockStore.getSshRemotePtyLeases).mockReturnValue([
-      { targetId: 'target-1', ptyId: 'pty-live', state: 'detached' },
-      { targetId: 'target-1', ptyId: 'pty-expired', state: 'expired' }
-    ] as ReturnType<typeof mockStore.getSshRemotePtyLeases>)
-
-    const session = new SshRelaySession('target-1', getMainWindow, mockStore, mockPortForward)
-
-    await session.establish(mockConn)
-
-    expect(mockAttach).toHaveBeenCalledWith('pty-live')
-    expect(mockAttach).not.toHaveBeenCalledWith('pty-expired')
-    const expectedAppPtyId = 'ssh:target-1@@relay-generation@@pty-live'
-    expect(setPtyOwnership).toHaveBeenCalledWith(expectedAppPtyId, 'target-1')
-    expect(mockStore.markSshRemotePtyLease).toHaveBeenCalledWith('target-1', 'pty-live', 'attached')
-  })
-
   it('forwards a lease tab identity to reattach so a reset relay cannot cross-wire it', async () => {
     const { mockConn, mockStore, mockPortForward, getMainWindow } = createMockDeps()
     const { getSshPtyProvider } = await import('../ipc/pty')

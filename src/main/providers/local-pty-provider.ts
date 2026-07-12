@@ -145,6 +145,9 @@ function disposePtyListeners(id: string): void {
   }
 }
 
+const ptyShutdownInProgress = new Set<string>()
+const ptyExitDuringShutdown = new Map<string, number>()
+
 function runPtyCleanup(id: string): void {
   const cleanup = ptyCleanupCallbacks.get(id)
   if (!cleanup) {
@@ -186,6 +189,8 @@ function clearPtyState(id: string): void {
   ptyAgentForegroundContextPaths.delete(id)
   ptyTerminalHandle.delete(id)
   ptyLoadGeneration.delete(id)
+  ptyShutdownInProgress.delete(id)
+  ptyExitDuringShutdown.delete(id)
 }
 
 /**
@@ -797,6 +802,10 @@ export class LocalPtyProvider implements IPtyProvider {
       if (process.platform !== 'win32') {
         ;(proc as unknown as { kill: (sig?: string) => void }).kill = () => {}
       }
+      if (ptyShutdownInProgress.has(id)) {
+        ptyExitDuringShutdown.set(id, exitCode)
+        return
+      }
       if (shellReadyTimeout) {
         clearTimeout(shellReadyTimeout)
         shellReadyTimeout = null
@@ -893,23 +902,31 @@ export class LocalPtyProvider implements IPtyProvider {
     if (!proc) {
       return
     }
-    // Why: disposePtyListeners removes the onExit callback, so the natural
-    // exit cleanup path from node-pty won't fire. Cleanup and notification
-    // must happen unconditionally after the try/catch.
-    // Timer/writer cleanup must happen here too: disposing listeners prevents
-    // the natural onExit callback from running the usual clearPtyState path.
-    runPtyCleanup(id)
-    disposePtyListeners(id)
+    // Why: keep listeners live until native shutdown is accepted so a thrown
+    // kill retains retry ownership. The in-progress marker makes a synchronous
+    // onExit an independent death proof without racing duplicate cleanup.
+    ptyShutdownInProgress.add(id)
+    let exitCode = -1
     try {
       proc.kill()
-    } catch {
-      /* Process may already be dead */
+    } catch (error) {
+      if (!ptyExitDuringShutdown.has(id)) {
+        throw error
+      }
+    } finally {
+      ptyShutdownInProgress.delete(id)
+      exitCode = ptyExitDuringShutdown.get(id) ?? -1
+      ptyExitDuringShutdown.delete(id)
     }
+    // Timer/writer cleanup happens only after native shutdown was accepted;
+    // disposing first would suppress the natural exit path on a thrown kill.
+    runPtyCleanup(id)
+    disposePtyListeners(id)
     destroyPtyProcess(proc, { alreadyKilled: true })
     clearPtyState(id)
-    this.opts.onExit?.(id, -1)
+    this.opts.onExit?.(id, exitCode)
     for (const cb of exitListeners) {
-      cb({ id, code: -1 })
+      cb({ id, code: exitCode })
     }
   }
 

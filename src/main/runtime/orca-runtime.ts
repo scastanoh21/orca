@@ -2122,6 +2122,43 @@ async function hasLocalWorktreeBaseRef(
   )
 }
 
+export type CreateManagedWorktreeArgs = {
+  repoSelector: string
+  name: string
+  baseBranch?: string
+  compareBaseRef?: string
+  branchNameOverride?: string
+  linkedIssue?: number | null
+  linkedPR?: number | null
+  linkedLinearIssue?: string
+  linkedLinearIssueWorkspaceId?: string | null
+  linkedLinearIssueOrganizationUrlKey?: string | null
+  linkedGitLabMR?: number | null
+  linkedGitLabIssue?: number | null
+  linkedBitbucketPR?: number | null
+  linkedAzureDevOpsPR?: number | null
+  linkedGiteaPR?: number | null
+  comment?: string
+  displayName?: string
+  telemetrySource?: WorkspaceCreateTelemetrySource
+  workspaceStatus?: string
+  manualOrder?: number
+  sparseCheckout?: { directories: string[]; presetId?: string }
+  pushTarget?: GitPushTarget
+  runHooks?: boolean
+  activate?: boolean
+  setupDecision?: 'run' | 'skip' | 'inherit'
+  createdWithAgent?: TuiAgent
+  startupAgent?: TuiAgent
+  startupPrompt?: string
+  pendingFirstAgentMessageRename?: boolean
+  automationProvenance?: AutomationWorkspaceProvenance
+  startup?: WorktreeStartupLaunch
+  startupDraft?: string
+  startupDraftPaste?: WorktreeStartupDraftPaste
+  lineage?: WorktreeLineageInput
+}
+
 export class OrcaRuntimeService {
   private readonly runtimeId = randomUUID()
   private readonly startedAt = Date.now()
@@ -2229,6 +2266,8 @@ export class OrcaRuntimeService {
   // respect to paired/mobile terminal creation, or a late spawn is orphaned.
   private terminalAdmissionBlockedWorktreeIds = new Set<string>()
   private terminalAdmissionsByWorktreeId = new Map<string, Set<Promise<void>>>()
+  private projectRemovalBlockedRepoIds = new Set<string>()
+  private worktreeCreateAdmissionsByRepoId = new Map<string, Set<Promise<void>>>()
   private titleObservationSequence = 0
   private headlessTerminals = new Map<string, RuntimeHeadlessTerminal>()
   private ptyOutputSequenceById = new Map<string, number>()
@@ -12247,21 +12286,71 @@ export class OrcaRuntimeService {
     }
   }
 
+  private beginWorktreeCreateAdmission(repoId: string): () => void {
+    if (this.projectRemovalBlockedRepoIds.has(repoId)) {
+      throw new Error('project_removal_in_progress')
+    }
+    let resolveDone = (): void => {}
+    const done = new Promise<void>((resolve) => {
+      resolveDone = resolve
+    })
+    const admissions = this.worktreeCreateAdmissionsByRepoId.get(repoId) ?? new Set()
+    admissions.add(done)
+    this.worktreeCreateAdmissionsByRepoId.set(repoId, admissions)
+    let released = false
+    return () => {
+      if (released) {
+        return
+      }
+      released = true
+      admissions.delete(done)
+      if (admissions.size === 0) {
+        this.worktreeCreateAdmissionsByRepoId.delete(repoId)
+      }
+      resolveDone()
+    }
+  }
+
+  private async withWorktreeCreateAdmission<T>(
+    repoId: string,
+    action: () => Promise<T>
+  ): Promise<T> {
+    const release = this.beginWorktreeCreateAdmission(repoId)
+    try {
+      return await action()
+    } finally {
+      release()
+    }
+  }
+
+  private async drainWorktreeCreateAdmissions(repoId: string): Promise<void> {
+    await Promise.all([...(this.worktreeCreateAdmissionsByRepoId.get(repoId) ?? [])])
+  }
+
   async removeProject(repoSelector: string): Promise<{ removed: true }> {
     if (!this.store?.removeProject) {
       throw new Error('runtime_unavailable')
     }
     const repo = await this.resolveRepoSelector(repoSelector)
-    const worktreeIds = (await this.listResolvedWorktrees())
-      .filter((worktree) => worktree.repoId === repo.id)
-      .map((worktree) => worktree.id)
-    if (worktreeIds.some((id) => this.terminalAdmissionBlockedWorktreeIds.has(id))) {
+    if (this.projectRemovalBlockedRepoIds.has(repo.id)) {
       throw new Error('project_removal_in_progress')
     }
-    for (const id of worktreeIds) {
-      this.terminalAdmissionBlockedWorktreeIds.add(id)
-    }
+    this.projectRemovalBlockedRepoIds.add(repo.id)
+    let worktreeIds: string[] = []
     try {
+      // Why: a create that already resolved this repo can publish a new
+      // worktree and terminal after a one-time removal snapshot. Block later
+      // creates and let earlier ones finish before enumerating owned worktrees.
+      await this.drainWorktreeCreateAdmissions(repo.id)
+      worktreeIds = (await this.listResolvedWorktrees())
+        .filter((worktree) => worktree.repoId === repo.id)
+        .map((worktree) => worktree.id)
+      if (worktreeIds.some((id) => this.terminalAdmissionBlockedWorktreeIds.has(id))) {
+        throw new Error('project_removal_in_progress')
+      }
+      for (const id of worktreeIds) {
+        this.terminalAdmissionBlockedWorktreeIds.add(id)
+      }
       // Why: a create that passed admission before the block can still have a
       // provider spawn in flight. Let it register first so the fresh stop
       // snapshot sees and terminates it.
@@ -12280,6 +12369,7 @@ export class OrcaRuntimeService {
       for (const id of worktreeIds) {
         this.terminalAdmissionBlockedWorktreeIds.delete(id)
       }
+      this.projectRemovalBlockedRepoIds.delete(repo.id)
     }
   }
 
@@ -14604,42 +14694,20 @@ export class OrcaRuntimeService {
     })
   }
 
-  async createManagedWorktree(args: {
-    repoSelector: string
-    name: string
-    baseBranch?: string
-    compareBaseRef?: string
-    branchNameOverride?: string
-    linkedIssue?: number | null
-    linkedPR?: number | null
-    linkedLinearIssue?: string
-    linkedLinearIssueWorkspaceId?: string | null
-    linkedLinearIssueOrganizationUrlKey?: string | null
-    linkedGitLabMR?: number | null
-    linkedGitLabIssue?: number | null
-    linkedBitbucketPR?: number | null
-    linkedAzureDevOpsPR?: number | null
-    linkedGiteaPR?: number | null
-    comment?: string
-    displayName?: string
-    telemetrySource?: WorkspaceCreateTelemetrySource
-    workspaceStatus?: string
-    manualOrder?: number
-    sparseCheckout?: { directories: string[]; presetId?: string }
-    pushTarget?: GitPushTarget
-    runHooks?: boolean
-    activate?: boolean
-    setupDecision?: 'run' | 'skip' | 'inherit'
-    createdWithAgent?: TuiAgent
-    startupAgent?: TuiAgent
-    startupPrompt?: string
-    pendingFirstAgentMessageRename?: boolean
-    automationProvenance?: AutomationWorkspaceProvenance
-    startup?: WorktreeStartupLaunch
-    startupDraft?: string
-    startupDraftPaste?: WorktreeStartupDraftPaste
-    lineage?: WorktreeLineageInput
-  }): Promise<CreateWorktreeResult> {
+  async createManagedWorktree(args: CreateManagedWorktreeArgs): Promise<CreateWorktreeResult> {
+    if (!this.store) {
+      throw new Error('runtime_unavailable')
+    }
+
+    const repo = await this.resolveRepoSelector(args.repoSelector)
+    return await this.withWorktreeCreateAdmission(repo.id, () =>
+      this.runCreateManagedWorktree(args)
+    )
+  }
+
+  private async runCreateManagedWorktree(
+    args: CreateManagedWorktreeArgs
+  ): Promise<CreateWorktreeResult> {
     if (!this.store) {
       throw new Error('runtime_unavailable')
     }

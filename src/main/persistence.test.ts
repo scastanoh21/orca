@@ -8783,12 +8783,12 @@ describe('Store', () => {
     expect(session.terminalLayoutsByTabId.tab1.ptyIdsByLeafId).toEqual({})
   })
 
-  it('stores scoped SSH remote PTY leases as raw relay ids', async () => {
+  it('stores scoped SSH remote PTY leases as raw ids with their relay generation', async () => {
     const store = await createStore()
 
     store.upsertSshRemotePtyLease({
       targetId: 'ssh-1',
-      ptyId: 'ssh:ssh-1@@remote-pty',
+      ptyId: 'ssh:ssh-1@@relay-generation@@remote-pty',
       state: 'attached'
     })
 
@@ -8796,6 +8796,7 @@ describe('Store', () => {
       expect.objectContaining({
         targetId: 'ssh-1',
         ptyId: 'remote-pty',
+        relayInstanceId: 'relay-generation',
         state: 'attached'
       })
     ])

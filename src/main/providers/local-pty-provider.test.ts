@@ -980,6 +980,27 @@ describe('LocalPtyProvider', () => {
       expect(destroySpy).not.toHaveBeenCalled()
     })
 
+    it('retains Windows ownership when native shutdown throws so retry can succeed', async () => {
+      Object.defineProperty(process, 'platform', { configurable: true, value: 'win32' })
+      const kill = vi.fn().mockImplementationOnce(() => {
+        throw new Error('native close failed')
+      })
+      spawnMock.mockReturnValue({ ...mockProc, kill })
+      const { id } = await provider.spawn({ cols: 80, rows: 24 })
+
+      await expect(provider.shutdown(id, { immediate: true })).rejects.toThrow(
+        'native close failed'
+      )
+      expect(provider.hasPty(id)).toBe(true)
+      expect(await provider.listProcesses()).toEqual(
+        expect.arrayContaining([expect.objectContaining({ id })])
+      )
+
+      await expect(provider.shutdown(id, { immediate: true })).resolves.toBeUndefined()
+      expect(kill).toHaveBeenCalledTimes(2)
+      expect(provider.hasPty(id)).toBe(false)
+    })
+
     it('cancels pending shell-ready startup delivery on forced shutdown', async () => {
       vi.useFakeTimers()
       try {

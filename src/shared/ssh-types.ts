@@ -119,6 +119,8 @@ export type SshRemotePtyLeaseState = 'attached' | 'detached' | 'terminated' | 'e
 export type SshRemotePtyLease = {
   targetId: string
   ptyId: string
+  /** Relay boot that minted ptyId; absent only on legacy persisted leases. */
+  relayInstanceId?: string
   worktreeId?: string
   tabId?: string
   leafId?: string

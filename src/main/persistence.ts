@@ -116,7 +116,7 @@ import {
   toSshExecutionHostId,
   type ExecutionHostId
 } from '../shared/execution-host'
-import { toRelaySshPtyId } from './providers/ssh-pty-id'
+import { parseAppSshPtyId, toRelaySshPtyId } from './providers/ssh-pty-id'
 import {
   migrateUiHostScopeSshTargetId,
   migrateWorkspaceSessionSshTargetId
@@ -6317,8 +6317,10 @@ export class Store {
     if (normalizedLease.leafId !== undefined && !isTerminalLeafId(normalizedLease.leafId)) {
       delete normalizedLease.leafId
     }
+    const parsedPtyId = parseAppSshPtyId(normalizedLease.ptyId)
+    normalizedLease.relayInstanceId ??= parsedPtyId?.relayInstanceId
     // Why: app-facing SSH PTY ids are globally scoped; durable relay leases
-    // stay target-local so reconnect can call relay pty.attach with raw ids.
+    // keep raw ids plus their boot generation so reconnect can reject reuse.
     normalizedLease.ptyId = this.getRelayPtyIdForSshLeaseStorage(
       normalizedLease.targetId,
       normalizedLease.ptyId
