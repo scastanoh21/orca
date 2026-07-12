@@ -219,6 +219,7 @@ import { isWslUncPath } from '../../../../shared/wsl-paths'
 import { isTuiAgent, TUI_AGENT_CONFIG } from '../../../../shared/tui-agent-config'
 import { createDraftPasteReadyScanner } from '../../../../shared/draft-paste-ready-scanner'
 import { sendAgentDraftPasteContent } from '@/lib/agent-draft-paste-content'
+import { writeTerminalPastePtyInput } from './terminal-pty-paste-writer'
 import {
   beginAgentStartupDeliveryAttempt,
   releaseAgentStartupDeliveryAttempt
@@ -3981,7 +3982,11 @@ export function connectPanePty(
       startupDraftPasteAttempted = true
       cleanupStartupDraftPasteTimers()
       const settings = getSettingsForWorktreeRuntimeOwner(useAppStore.getState(), deps.worktreeId)
-      void sendAgentDraftPasteContent(settings, ptyId, startupDraftPrompt)
+      // Why: xterm focus reports share this transport queue. Bypassing it can
+      // race CSI I against the draft on ConPTY and expose a literal `[I` prefix.
+      void sendAgentDraftPasteContent(settings, ptyId, startupDraftPrompt, (data) =>
+        writeTerminalPastePtyInput(transport, data)
+      )
         .catch(() => false)
         .finally(() => {
           startupDraftPasteInFlight = false
