@@ -173,6 +173,20 @@ async function waitForTabParked(page: Page, tabId: string): Promise<number> {
   return Date.now() - parkWaitStartedAt
 }
 
+// Why: #8262 exempts the single most-recently-hidden tab from cold-park to keep
+// the just-left view instantly warm, so a lone hidden tab never parks. Opening
+// one more tab hides the current view (which then holds that exemption) and
+// leaves the older `targetTabId` free to cold-park. Returns waitForTabParked's
+// elapsed-ms so callers keep their parking annotations.
+async function parkHiddenTabBehindDecoy(
+  page: Page,
+  worktreeId: string,
+  targetTabId: string
+): Promise<number> {
+  await createActiveTerminalTab(page, worktreeId)
+  return waitForTabParked(page, targetTabId)
+}
+
 async function activateTerminalTab(page: Page, tabId: string): Promise<void> {
   await page.evaluate((targetTabId) => {
     const store = window.__store
@@ -306,15 +320,16 @@ test.describe('Terminal hidden view parking', () => {
         .toContain(finalMarker)
 
       const tabBId = await createActiveTerminalTab(orcaPage, worktreeId)
-      const parkDetectedAfterMs = await waitForTabParked(orcaPage, tabAId)
+      const parkDetectedAfterMs = await parkHiddenTabBehindDecoy(orcaPage, worktreeId, tabAId)
       const wiring = await readParkingWiring(orcaPage)
       testInfo.annotations.push({
         type: 'terminal-parking',
         description: `parkDelayMs=${wiring.parkDelayMs ?? PARKING_DELAY_MS} parkDetectedAfterMs=${parkDetectedAfterMs}`
       })
 
-      // Why: parking must be scoped to the hidden tab — the visible tab keeps
-      // a live pane manager and xterm.
+      // Why: parking must be scoped to the parked tab — tab B (hidden more
+      // recently, so #8262 keeps it warm) still holds a live pane manager and
+      // xterm while tab A tore down.
       const tabBState = await readTerminalTabViewState(orcaPage, tabBId)
       expect(tabBState.hasManager).toBe(true)
       expect(tabBState.paneCount).toBeGreaterThan(0)
@@ -370,7 +385,7 @@ test.describe('Terminal hidden view parking', () => {
     const { worktreeId, tabAId, tabAPtyId } = setup
 
     await createActiveTerminalTab(orcaPage, worktreeId)
-    await waitForTabParked(orcaPage, tabAId)
+    await parkHiddenTabBehindDecoy(orcaPage, worktreeId, tabAId)
 
     const runId = randomUUID()
     const parkedTitle = `Parked side effects ${runId}`
@@ -443,8 +458,10 @@ test.describe('Terminal hidden view parking', () => {
       .toBe(tabBId)
 
     // Why: tab A parking proves the machinery ran past the delay in this app
-    // instance, so the tab C assertion below is not vacuously green.
-    await waitForTabParked(orcaPage, tabAId)
+    // instance, so the tab C assertion below is not vacuously green. A decoy
+    // takes the #8262 last-active exemption (tab C is excluded, not a candidate)
+    // so tab A is the one that cold-parks.
+    await parkHiddenTabBehindDecoy(orcaPage, worktreeId, tabAId)
     await orcaPage.waitForTimeout(PARKING_DELAY_MS * 3)
 
     // Premise guard: nothing consumed the pending startup while hidden.
@@ -483,8 +500,11 @@ test.describe('Terminal hidden view parking', () => {
         .toContain(marker)
 
       // Tab B stays visible whenever tab A is parked; toggling the active tab
-      // between them is the deterministic hide/reveal driver.
+      // between them is the deterministic hide/reveal driver. The decoy tab
+      // absorbs the #8262 last-active exemption each cycle (hidden after B) so
+      // tab A — not the just-hidden view — is the one that cold-parks.
       const tabBId = await createActiveTerminalTab(orcaPage, worktreeId)
+      const decoyTabId = await createActiveTerminalTab(orcaPage, worktreeId)
 
       // One park/reveal cycle to run the frame through the snapshot restore for a
       // baseline. Why not compare against the visible-before-park content: an
@@ -495,6 +515,8 @@ test.describe('Terminal hidden view parking', () => {
       // both sides pass through identical machinery, so any later diff is drift.
       const runOneParkRevealCycle = async (cycle: number): Promise<string[]> => {
         await activateTerminalTab(orcaPage, tabBId)
+        // Hide tab B behind the decoy so B (not A) holds the #8262 exemption.
+        await activateTerminalTab(orcaPage, decoyTabId)
         await waitForTabParked(orcaPage, tabAId)
         await activateTerminalTab(orcaPage, tabAId)
         await waitForActiveTerminalManager(orcaPage, 30_000)
