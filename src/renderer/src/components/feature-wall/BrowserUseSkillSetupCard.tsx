@@ -1,6 +1,7 @@
 import type { JSX } from 'react'
 import {
   ORCA_CLI_SKILL_INSTALL_COMMAND,
+  ORCA_CLI_SKILL_NAME,
   ORCA_CLI_SKILL_UPDATE_COMMAND
 } from '@/lib/agent-feature-install-commands'
 import {
@@ -43,6 +44,8 @@ export function BrowserUseSkillSetupCard(props: {
 
   const setupPanel = (
     <AgentSkillSetupPanel
+      managedSkillNames={[ORCA_CLI_SKILL_NAME]}
+      managementTarget={activeSkillRuntime.discoveryTarget}
       className={compact ? 'w-full max-w-[520px]' : undefined}
       title={translate(
         'auto.components.feature.wall.BrowserUseSkillSetupCard.d5bb1cd4ba',

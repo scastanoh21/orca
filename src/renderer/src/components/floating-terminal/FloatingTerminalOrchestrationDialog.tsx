@@ -118,6 +118,8 @@ export function FloatingTerminalOrchestrationDialog({
         </DialogHeader>
 
         <AgentSkillSetupPanel
+          managedSkillNames={[ORCHESTRATION_SKILL_NAME]}
+          managementTarget={activeSkillRuntime.discoveryTarget}
           title={translate(
             'auto.components.floating.terminal.FloatingTerminalOrchestrationDialog.1cd3f8af64',
             'Orchestration skill'

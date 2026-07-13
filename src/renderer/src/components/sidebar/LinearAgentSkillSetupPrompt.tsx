@@ -277,6 +277,7 @@ export function LinearAgentSkillSetupPrompt({
 
   const setupDialog = (
     <LinearAgentSkillSetupDialog
+      managementTarget={skillDiscoveryTarget}
       open={setupDialogOpen}
       showSuccess={showSuccessModal}
       successDescription={successDescription}

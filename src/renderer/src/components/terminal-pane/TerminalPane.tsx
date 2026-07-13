@@ -209,7 +209,7 @@ type TerminalPaneProps = {
   // or persist to the layout snapshot, so returning to the workspace shows
   // the original split layout unchanged.
   isolatedPaneKey?: string | null
-  onPtyExit: (ptyId: string) => void
+  onPtyExit: (ptyId: string, code?: number | null) => void
   onCloseTab: () => void
 }
 

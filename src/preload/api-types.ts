@@ -315,6 +315,13 @@ import type { SourceControlAiSettings } from '../shared/source-control-ai-types'
 import type { ShellOpenLocalPathResult } from '../shared/shell-open-types'
 import type { SkillDiscoveryResult, SkillDiscoveryTarget } from '../shared/skills'
 import type {
+  OrcaSkillInstallResultArgs,
+  SkillAdoptionDismissalArgs,
+  SkillManagementActionArgs,
+  SkillManagementInventory,
+  SkillReplacementPreview
+} from '../shared/skill-management'
+import type {
   CrashReportBreadcrumbData,
   CrashReportCopyDiagnosticsArgs,
   CrashReportRecord,
@@ -2201,6 +2208,13 @@ export type PreloadApi = {
   }
   skills: {
     discover: (target?: SkillDiscoveryTarget) => Promise<SkillDiscoveryResult>
+    managementInventory: (target?: SkillDiscoveryTarget) => Promise<SkillManagementInventory>
+    adopt: (args: SkillManagementActionArgs) => Promise<SkillManagementInventory>
+    dismissAdoption: (args: SkillAdoptionDismissalArgs) => Promise<SkillManagementInventory>
+    previewReplacement: (args: SkillManagementActionArgs) => Promise<SkillReplacementPreview>
+    replace: (args: SkillManagementActionArgs) => Promise<SkillManagementInventory>
+    updateManaged: (args: SkillManagementActionArgs) => Promise<SkillManagementInventory>
+    recordOrcaInstall: (args: OrcaSkillInstallResultArgs) => Promise<SkillManagementInventory>
   }
   pet: {
     import: () => Promise<CustomPet | null>

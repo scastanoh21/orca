@@ -1,4 +1,5 @@
 import type { ProjectExecutionRuntimeResolution } from './project-execution-runtime'
+import type { ExecutionHostId } from './execution-host'
 
 export type SkillProvider = 'codex' | 'claude' | 'agent-skills'
 
@@ -36,6 +37,7 @@ export type SkillDiscoveryResult = {
 }
 
 export type SkillDiscoveryTarget = {
+  executionHostId?: ExecutionHostId
   runtime?: 'host' | 'wsl'
   wslDistro?: string | null
   /** Workspace path whose local .agents/.claude skill roots should be scanned. */

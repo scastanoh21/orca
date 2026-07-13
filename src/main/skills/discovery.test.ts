@@ -57,6 +57,25 @@ describe('skill discovery', () => {
     expect(rootPaths).toContain('/workspace/current/.claude/skills')
   })
 
+  it('hard-excludes reserved updater transactions from skill discovery', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'orca-skills-'))
+    const home = join(root, 'home')
+    const stagedSkill = join(
+      home,
+      '.agents',
+      'skills',
+      '.orca-skill-transactions',
+      'transaction-1',
+      'stage'
+    )
+    await mkdir(stagedSkill, { recursive: true })
+    await writeFile(join(stagedSkill, 'SKILL.md'), '# Staged package')
+
+    const result = await discoverSkills({ homeDir: home, cwd: home, repos: [] })
+
+    expect(result.skills).toEqual([])
+  })
+
   it('discovers skill packages through symlinked skill directories', async () => {
     const root = await mkdtemp(join(tmpdir(), 'orca-skills-'))
     const home = join(root, 'home')

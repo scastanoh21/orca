@@ -1,12 +1,20 @@
 import { Copy } from 'lucide-react'
+import { useRef } from 'react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { OnboardingInlineCommandTerminal } from '@/components/onboarding/OnboardingInlineCommandTerminal'
-import { ORCA_CLI_ORCHESTRATION_SKILL_INSTALL_COMMAND } from '@/lib/agent-feature-install-commands'
+import {
+  ORCA_CLI_ORCHESTRATION_SKILL_INSTALL_COMMAND,
+  ORCA_CLI_SKILL_NAME,
+  ORCHESTRATION_SKILL_NAME
+} from '@/lib/agent-feature-install-commands'
 import { translate } from '@/i18n/i18n'
+import { notifyInstalledAgentSkillsChanged } from '@/hooks/useInstalledAgentSkills'
+import { isSuccessfulSkillInstallExit } from '@/components/settings/skill-install-terminal-exit'
 
 export function CliSkillSetupTerminal(): React.JSX.Element {
+  const installAttemptStartedAtRef = useRef<number | null>(null)
   const handleCopySkillCommand = async (): Promise<void> => {
     try {
       await window.api.ui.writeClipboardText(ORCA_CLI_ORCHESTRATION_SKILL_INSTALL_COMMAND)
@@ -76,6 +84,23 @@ export function CliSkillSetupTerminal(): React.JSX.Element {
         descriptionPaddingClassName="px-4 py-2"
         autoScrollIntoView={false}
         worktreeId="feature-tip-cli-skills-terminal"
+        onOpened={() => {
+          installAttemptStartedAtRef.current ??= Date.now()
+        }}
+        onTerminalExit={(result) => {
+          notifyInstalledAgentSkillsChanged()
+          const startedAt = installAttemptStartedAtRef.current
+          if (!isSuccessfulSkillInstallExit(result, startedAt)) {
+            return
+          }
+          void window.api.skills
+            .recordOrcaInstall({
+              skillNames: [ORCA_CLI_SKILL_NAME, ORCHESTRATION_SKILL_NAME],
+              startedAt
+            })
+            .then(notifyInstalledAgentSkillsChanged)
+            .catch(() => undefined)
+        }}
       />
     </div>
   )

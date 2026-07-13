@@ -10,7 +10,8 @@ import {
   normalizeVisibleExecutionHostIds,
   parseExecutionHostId,
   toRuntimeExecutionHostId,
-  toSshExecutionHostId
+  toSshExecutionHostId,
+  toWslExecutionHostId
 } from './execution-host'
 
 describe('execution host identity', () => {
@@ -31,6 +32,11 @@ describe('execution host identity', () => {
       kind: 'runtime',
       id: 'runtime:prod%2Fserver',
       environmentId: 'prod/server'
+    })
+    expect(parseExecutionHostId(toWslExecutionHostId('Ubuntu 24.04'))).toEqual({
+      kind: 'wsl',
+      id: 'wsl:Ubuntu%2024.04',
+      distro: 'Ubuntu 24.04'
     })
   })
 

@@ -132,7 +132,7 @@ describe('createIpcPtyTransport', () => {
 
     onExit?.({ id: 'pty-new', code: 0 })
 
-    expect(onPtyExit).toHaveBeenCalledWith('pty-new')
+    expect(onPtyExit).toHaveBeenCalledWith('pty-new', 0)
     expect(transport.getPtyId()).toBeNull()
     expect(transport.isConnected()).toBe(false)
   })
@@ -1433,7 +1433,7 @@ describe('createIpcPtyTransport', () => {
 
     // Exit handler should still work (exit handlers are kept alive)
     onExit?.({ id: 'pty-1', code: -1 })
-    expect(onPtyExit).toHaveBeenCalledWith('pty-1')
+    expect(onPtyExit).toHaveBeenCalledWith('pty-1', -1)
   })
 
   it('restores data handlers when an intentional shutdown fails before exit', async () => {
@@ -1747,7 +1747,7 @@ describe('createIpcPtyTransport', () => {
 
     onExit?.({ id: 'pty-detached', code: 0 })
 
-    expect(onPtyExit).toHaveBeenCalledWith('pty-detached')
+    expect(onPtyExit).toHaveBeenCalledWith('pty-detached', 0)
     expect(transport.getPtyId()).toBeNull()
   })
 })

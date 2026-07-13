@@ -48,6 +48,8 @@ export function ComputerUseSkillSetupPanel(): React.JSX.Element {
 
   return (
     <AgentSkillSetupPanel
+      managedSkillNames={[COMPUTER_USE_SKILL_NAME]}
+      managementTarget={activeSkillRuntime.discoveryTarget}
       title={translate('auto.components.settings.ComputerUsePane.93255aaf18', 'Computer Use skill')}
       description={translate(
         'auto.components.settings.ComputerUsePane.1735461723',

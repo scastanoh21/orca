@@ -4,9 +4,11 @@ import { notifyInstalledAgentSkillsChanged } from '@/hooks/useInstalledAgentSkil
 import { OnboardingInlineCommandTerminal } from './OnboardingInlineCommandTerminal'
 import {
   onboardingFeatureSetupTelemetrySelection,
+  selectedOnboardingSkillNames,
   type OnboardingFeatureSetupSelection
 } from './onboarding-feature-setup'
 import { translate } from '@/i18n/i18n'
+import { isSuccessfulSkillInstallExit } from '../settings/skill-install-terminal-exit'
 
 type FeatureSetupInlineTerminalProps = {
   command: string
@@ -18,6 +20,7 @@ export function FeatureSetupInlineTerminal({
   selection
 }: FeatureSetupInlineTerminalProps): React.JSX.Element {
   const terminalOpenedTrackedRef = useRef(false)
+  const installAttemptStartedAtRef = useRef<number | null>(null)
   const terminalInteractedTrackedRef = useRef(false)
 
   const selectionTelemetry = useMemo(
@@ -26,6 +29,7 @@ export function FeatureSetupInlineTerminal({
   )
 
   const trackTerminalOpened = useCallback(() => {
+    installAttemptStartedAtRef.current ??= Date.now()
     if (terminalOpenedTrackedRef.current) {
       return
     }
@@ -74,7 +78,20 @@ export function FeatureSetupInlineTerminal({
       autoScrollIntoView={false}
       onOpened={trackTerminalOpened}
       onInteracted={trackTerminalInteraction}
-      onTerminalExit={notifyInstalledAgentSkillsChanged}
+      onTerminalExit={(result) => {
+        notifyInstalledAgentSkillsChanged()
+        const startedAt = installAttemptStartedAtRef.current
+        if (!isSuccessfulSkillInstallExit(result, startedAt)) {
+          return
+        }
+        void window.api.skills
+          .recordOrcaInstall({
+            skillNames: selectedOnboardingSkillNames(selection),
+            startedAt
+          })
+          .then(notifyInstalledAgentSkillsChanged)
+          .catch(() => undefined)
+      }}
     />
   )
 }

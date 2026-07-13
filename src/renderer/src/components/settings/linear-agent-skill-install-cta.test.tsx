@@ -16,6 +16,8 @@ const mocks = vi.hoisted(() => ({
     refresh: vi.fn(async () => true)
   },
   useInstalledAgentSkillNames: vi.fn(),
+  managementRun: vi.fn(async () => {}),
+  useAgentSkillManagementActions: vi.fn(),
   clipboardWrite: vi.fn(async () => {}),
   toastSuccess: vi.fn(),
   toastError: vi.fn()
@@ -28,6 +30,10 @@ vi.mock('@/hooks/useInstalledAgentSkills', async (importOriginal) => ({
 
 vi.mock('./CliSkillRuntimeSetup', () => ({
   buildSkillCommandForRuntime: (command: string) => command
+}))
+
+vi.mock('./use-agent-skill-management-actions', () => ({
+  useAgentSkillManagementActions: mocks.useAgentSkillManagementActions
 }))
 
 vi.mock('sonner', () => ({
@@ -86,6 +92,15 @@ describe('LinearAgentSkillInstallCta', () => {
     mocks.skillState.refresh.mockClear()
     mocks.useInstalledAgentSkillNames.mockReset()
     mocks.useInstalledAgentSkillNames.mockReturnValue(mocks.skillState)
+    mocks.managementRun.mockClear()
+    mocks.useAgentSkillManagementActions.mockReset()
+    mocks.useAgentSkillManagementActions.mockReturnValue({
+      installation: null,
+      actionLabel: null,
+      statusLabel: null,
+      busy: false,
+      run: mocks.managementRun
+    })
     mocks.clipboardWrite.mockClear()
     mocks.toastSuccess.mockClear()
     mocks.toastError.mockClear()
@@ -134,19 +149,33 @@ describe('LinearAgentSkillInstallCta', () => {
     expect(mocks.toastSuccess).toHaveBeenCalled()
   })
 
-  it('shows a subtle confirmation and the update command when installed', async () => {
+  it('shows the ledger-backed status and action without a raw update command', async () => {
     mocks.skillState.installed = true
     mocks.skillState.skills = [discoveredSkill({ name: 'orca-linear' })]
+    mocks.useAgentSkillManagementActions.mockReturnValue({
+      installation: { managed: true },
+      actionLabel: 'Update',
+      statusLabel: 'Update available',
+      busy: false,
+      run: mocks.managementRun
+    })
 
     const rendered = await renderCta()
 
-    expect(rendered.textContent).toContain('Installed')
-    expect(rendered.textContent).toContain('Agent skill installed. To update it, run:')
-    expect(rendered.textContent).toContain('npx skills update orca-linear --global')
+    expect(rendered.textContent).toContain('Update available')
+    expect(rendered.textContent).toContain('Update')
+    expect(rendered.textContent).not.toContain('npx skills update')
     expect(rendered.textContent).not.toContain('Not installed')
+
+    await act(async () => {
+      Array.from(rendered.querySelectorAll('button'))
+        .find((button) => button.textContent === 'Update')
+        ?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    expect(mocks.managementRun).toHaveBeenCalledTimes(1)
   })
 
-  it('updates through the legacy skill name when only linear-tickets is installed', async () => {
+  it('does not expose a legacy raw updater when only linear-tickets is installed', async () => {
     mocks.skillState.installed = true
     mocks.skillState.skills = [
       discoveredSkill({
@@ -158,7 +187,8 @@ describe('LinearAgentSkillInstallCta', () => {
 
     const rendered = await renderCta()
 
-    expect(rendered.textContent).toContain('npx skills update linear-tickets --global')
+    expect(rendered.textContent).toContain('Installed')
+    expect(rendered.textContent).not.toContain('npx skills update')
   })
 
   it('notes that remote agent environments need their own setup', async () => {

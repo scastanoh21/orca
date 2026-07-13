@@ -4893,7 +4893,15 @@
           "copyCommandAria": "Copy command",
           "runCommandDescription": "Press Enter to run the command.",
           "5f818f12ab": "Preparing...",
-          "4c05b9d7cb": "Preparing setup terminal."
+          "4c05b9d7cb": "Preparing setup terminal.",
+          "checkingManagement": "Checking…",
+          "review": "Review",
+          "manage": "Manage",
+          "manageUpdate": "Manage and update",
+          "update": "Update",
+          "managedCurrent": "Skill is managed and current.",
+          "retryUpdate": "Retry update",
+          "actionFailed": "Skill action failed."
         },
         "AgentsPane": {
           "d83834f5e6": "Detecting installed agents…",
@@ -9021,6 +9029,40 @@
         "TerminalInteractionSection": {
           "567633ff50": "Right-click pastes the clipboard into the terminal. Control-click to open the context menu.",
           "c64497148a": "Right-click pastes the clipboard. Control-click opens the context menu."
+        },
+        "ManagedOrcaSkills": {
+          "unverified": "unverified",
+          "notVisible": "Managed but not visible in {{value0}}.",
+          "replaceTitle": "Replace {{value0}}?",
+          "replaceDescription": "This discards the local changes shown below. Orca keeps a rollback copy until the bundled skill is verified.",
+          "binaryChange": "Binary file contents differ.",
+          "cancel": "Cancel",
+          "replace": "Replace skill",
+          "actionFailed": "Skill action failed.",
+          "title": "Orca agent skills",
+          "description": "Orca updates only exact official copies you explicitly choose to manage.",
+          "refresh": "Refresh",
+          "hostPending": "Detection only on this host; management actions are not available yet.",
+          "managedToast": "Skill is now managed and current.",
+          "manageUpdateAction": "Manage and update",
+          "manageAction": "Manage",
+          "updatedToast": "Skill updated.",
+          "updateAction": "Update",
+          "reviewAction": "Review",
+          "checking": "Checking installed skills…",
+          "none": "No installed Orca skills found in global agent homes.",
+          "replacedToast": "Skill replaced with the bundled version.",
+          "managedCurrent": "Managed",
+          "managedUpdate": "Update available",
+          "availableToManage": "Available to manage",
+          "manageAndUpdate": "Manage and update",
+          "newerKnown": "Newer release",
+          "modified": "Modified",
+          "unknown": "Unknown copy",
+          "external": "Externally managed",
+          "inaccessible": "Inaccessible",
+          "failed": "Update failed",
+          "retryAction": "Retry"
         }
       },
       "right": {
@@ -12930,6 +12972,13 @@
         "searchLabels": "Filter labels…",
         "searchAssignee": "Filter assignee…",
         "back": "Back"
+      },
+      "managedSkills": {
+        "adoptionNudge": {
+          "title": "{{value0}} installed Orca skills can be kept up to date",
+          "description": "Review exact official copies before Orca manages them.",
+          "review": "Review"
+        }
       }
     },
     "i18n": {

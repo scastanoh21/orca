@@ -6711,6 +6711,48 @@ describe('Store', () => {
     expect(existsSync(join(testState.dir, 'terminal-scrollback', `${ref}.bin`))).toBe(false)
   })
 
+  it('durably persists managed skill ownership before returning', async () => {
+    const store = await createStore()
+    const destination = {
+      id: 'local-skill',
+      hostId: 'local' as const,
+      skillName: 'orca-cli',
+      unresolvedPath: '/home/alice/.agents/skills/orca-cli',
+      installedPackageDigest: 'a'.repeat(64)
+    }
+
+    store.setManagedSkillDestination(destination as never)
+
+    expect(
+      (
+        readDataFile() as {
+          skillManagementLedger: { destinations: Record<string, unknown> }
+        }
+      ).skillManagementLedger.destinations['local-skill']
+    ).toMatchObject(destination)
+  })
+
+  it('durably persists an exact skill adoption dismissal before returning', async () => {
+    const store = await createStore()
+    const candidate = {
+      hostId: 'local' as const,
+      physicalIdentity: '1:2',
+      skillName: 'orca-cli',
+      snapshotDigest: 'a'.repeat(64),
+      dismissedAt: 1
+    }
+
+    store.dismissSkillAdoptionCandidate(candidate)
+
+    expect(
+      (
+        readDataFile() as {
+          skillManagementLedger: { dismissedAdoptionCandidates: unknown[] }
+        }
+      ).skillManagementLedger.dismissedAdoptionCandidates
+    ).toContainEqual(candidate)
+  })
+
   it('reads legacy terminal scrollback snapshots for explicit profile data files', async () => {
     const profileDataDirectory = join(testState.dir, 'profiles', 'local-default')
     const profileDataFile = join(profileDataDirectory, 'orca-data.json')

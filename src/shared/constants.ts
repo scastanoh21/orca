@@ -456,7 +456,12 @@ export function getDefaultPersistedState(homedir: string): PersistedState {
     automations: [],
     automationRuns: [],
     onboarding: getDefaultOnboardingState(),
-    featureInteractionTelemetryBuckets: {}
+    featureInteractionTelemetryBuckets: {},
+    skillManagementLedger: {
+      schemaVersion: 1,
+      destinations: {},
+      dismissedAdoptionCandidates: []
+    }
   }
 }
 

@@ -1,0 +1,38 @@
+name: Skill CLI round trip
+
+on:
+  pull_request:
+    paths:
+      - 'skills/**'
+      - 'resources/skills/**'
+      - 'config/scripts/generate-skill-bundle-manifest.mjs'
+      - 'config/scripts/verify-skill-cli-roundtrip.mjs'
+      - '.github/workflows/skill-cli-roundtrip.yml'
+  merge_group:
+  push:
+    branches:
+      - main
+
+jobs:
+  roundtrip:
+    continue-on-error: ${{ matrix.skills-cli == 'latest' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest, windows-latest]
+        skills-cli: ['1.5.16', latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: package.json
+      - name: Verify LF and CRLF installer identities
+        shell: bash
+        run: |
+          node config/scripts/verify-skill-cli-roundtrip.mjs --cli=${{ matrix.skills-cli }} --autocrlf=false --shape=symlink
+          node config/scripts/verify-skill-cli-roundtrip.mjs --cli=${{ matrix.skills-cli }} --autocrlf=false --shape=copy
+          node config/scripts/verify-skill-cli-roundtrip.mjs --cli=${{ matrix.skills-cli }} --autocrlf=true --shape=symlink
+          node config/scripts/verify-skill-cli-roundtrip.mjs --cli=${{ matrix.skills-cli }} --autocrlf=true --shape=copy

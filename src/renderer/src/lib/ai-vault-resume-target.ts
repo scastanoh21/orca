@@ -13,7 +13,7 @@ import { isWslUncPath } from '../../../shared/wsl-paths'
 import type { AppState } from '@/store/types'
 import { getFolderWorkspaceCandidateRepos } from './folder-workspace-connection'
 
-export type AiVaultResumeTargetStatus = 'local' | 'ssh' | 'runtime' | 'unknown'
+export type AiVaultResumeTargetStatus = 'local' | 'ssh' | 'runtime' | 'wsl' | 'unknown'
 
 type AiVaultResumeRepoOwner = Pick<Repo, 'connectionId' | 'executionHostId'>
 
@@ -35,7 +35,7 @@ export function isSupportedAiVaultResumeRepo(
 }
 
 export function isSupportedAiVaultResumeTargetStatus(status: AiVaultResumeTargetStatus): boolean {
-  return status === 'local' || status === 'ssh' || status === 'runtime'
+  return status === 'local' || status === 'ssh' || status === 'runtime' || status === 'wsl'
 }
 
 export function isWslStoredAiVaultSessionFile(sessionFilePath: string | null | undefined): boolean {

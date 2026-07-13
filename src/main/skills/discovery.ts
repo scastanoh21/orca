@@ -14,6 +14,7 @@ import {
   stablePathId,
   type SkillScanRoot
 } from './skill-discovery-sources'
+import { RESERVED_SKILL_TRANSACTION_DIRECTORY } from './skill-transaction-paths'
 
 export { buildSkillDiscoverySources } from './skill-discovery-sources'
 
@@ -92,6 +93,11 @@ async function findSkillFiles(rootPath: string, maxDepth: number): Promise<strin
       return
     }
     for (const entry of entries) {
+      if (entry.name === RESERVED_SKILL_TRANSACTION_DIRECTORY) {
+        // Why: crash-recovery packages may contain a valid SKILL.md but are
+        // transaction state, never install candidates.
+        continue
+      }
       const entryPath = join(dirPath, entry.name)
       if (entry.name === SKILL_FILE_NAME) {
         if (entry.isFile()) {

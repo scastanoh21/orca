@@ -4893,7 +4893,15 @@
           "copyCommandAria": "Copiar comando",
           "runCommandDescription": "Presiona Enter para ejecutar el comando.",
           "5f818f12ab": "Preparando...",
-          "4c05b9d7cb": "Preparando el terminal de configuración."
+          "4c05b9d7cb": "Preparando el terminal de configuración.",
+          "checkingManagement": "Comprobando…",
+          "review": "Revisar",
+          "manage": "Gestionar",
+          "manageUpdate": "Gestionar y actualizar",
+          "update": "Actualizar",
+          "managedCurrent": "El skill está gestionado y actualizado.",
+          "retryUpdate": "Reintentar actualización",
+          "actionFailed": "La acción del skill falló."
         },
         "AgentsPane": {
           "d83834f5e6": "Detectando agents instalados…",
@@ -9021,6 +9029,40 @@
         "TerminalInteractionSection": {
           "567633ff50": "Right-click pastes the clipboard into the terminal. Control-click to open the context menu.",
           "c64497148a": "Right-click pastes the clipboard. Control-click opens the context menu."
+        },
+        "ManagedOrcaSkills": {
+          "unverified": "sin verificar",
+          "notVisible": "Gestionado, pero no visible en {{value0}}.",
+          "replaceTitle": "¿Reemplazar {{value0}}?",
+          "replaceDescription": "Esto descarta los cambios locales que se muestran abajo. Orca conserva una copia de reversión hasta verificar el skill incluido.",
+          "binaryChange": "El contenido del archivo binario es diferente.",
+          "cancel": "Cancelar",
+          "replace": "Reemplazar skill",
+          "actionFailed": "La acción del skill falló.",
+          "title": "Skills de agente de Orca",
+          "description": "Orca solo actualiza copias oficiales exactas que eliges gestionar explícitamente.",
+          "refresh": "Actualizar",
+          "hostPending": "Solo detección en este host; las acciones de gestión aún no están disponibles.",
+          "managedToast": "El skill ahora está gestionado y actualizado.",
+          "manageUpdateAction": "Gestionar y actualizar",
+          "manageAction": "Gestionar",
+          "updatedToast": "Skill actualizado.",
+          "updateAction": "Actualizar",
+          "reviewAction": "Revisar",
+          "checking": "Comprobando los skills instalados…",
+          "none": "No se encontraron skills de Orca instalados en los directorios globales de agentes.",
+          "replacedToast": "El skill se reemplazó con la versión incluida.",
+          "managedCurrent": "Gestionado",
+          "managedUpdate": "Actualización disponible",
+          "availableToManage": "Disponible para gestionar",
+          "manageAndUpdate": "Gestionar y actualizar",
+          "newerKnown": "Versión más reciente",
+          "modified": "Modificado",
+          "unknown": "Copia desconocida",
+          "external": "Gestionado externamente",
+          "inaccessible": "Inaccesible",
+          "failed": "Error de actualización",
+          "retryAction": "Reintentar"
         }
       },
       "right": {
@@ -12930,6 +12972,13 @@
         "searchLabels": "Filtrar etiquetas…",
         "searchAssignee": "Filtrar asignatario…",
         "back": "Atrás"
+      },
+      "managedSkills": {
+        "adoptionNudge": {
+          "title": "Se pueden mantener actualizados {{value0}} skills de Orca instalados",
+          "description": "Revisa las copias oficiales exactas antes de que Orca las gestione.",
+          "review": "Revisar"
+        }
       }
     },
     "i18n": {

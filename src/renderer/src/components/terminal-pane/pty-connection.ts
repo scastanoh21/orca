@@ -2351,7 +2351,7 @@ export function connectPanePty(
       })
     return claimKey
   }
-  const onExit = (ptyId: string): void => {
+  const onExit = (ptyId: string, code: number | null = null): void => {
     if (handledExitPtyId === ptyId) {
       return
     }
@@ -2452,7 +2452,11 @@ export function connectPanePty(
       if (spawnedFreshPtyId === ptyId && !Number.isFinite(lastTerminalInputAt)) {
         return
       }
-      deps.onPtyExitRef.current(ptyId)
+      if (code === null) {
+        deps.onPtyExitRef.current(ptyId)
+      } else {
+        deps.onPtyExitRef.current(ptyId, code)
+      }
       return
     }
     if (

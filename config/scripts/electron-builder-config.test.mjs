@@ -65,6 +65,14 @@ describe('electron-builder config', () => {
         })
       ])
     )
+    for (const platform of ['mac', 'linux', 'win']) {
+      expect(electronBuilderConfig[platform].extraResources).toEqual(
+        expect.arrayContaining([
+          { from: 'skills', to: 'skills/packages' },
+          { from: 'resources/skills', to: 'skills' }
+        ])
+      )
+    }
   })
 
   // Why: on macOS 26 UNUserNotificationCenter aborts for executables launched

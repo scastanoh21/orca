@@ -130,6 +130,8 @@ export function EphemeralVmsPane(): React.JSX.Element {
   return (
     <div className="space-y-6" data-settings-section="ephemeral-vms">
       <AgentSkillSetupPanel
+        managedSkillNames={[EPHEMERAL_VMS_SKILL_NAME]}
+        managementTarget={activeSkillRuntime.discoveryTarget}
         title={translate(
           'auto.components.settings.EphemeralVmsPane.skillTitle',
           'Per-Workspace Environments skill'

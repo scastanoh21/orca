@@ -274,6 +274,7 @@ export function BrowserUseSetup({
           )}
         >
           <BrowserUseSkillStep
+            managementTarget={activeSkillRuntime.discoveryTarget}
             command={browserUseInstallCommand}
             installedCommand={browserUseUpdateCommand}
             skillDetected={skillDetected}

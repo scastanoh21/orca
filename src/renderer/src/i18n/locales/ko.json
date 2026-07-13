@@ -4878,7 +4878,15 @@
           "copyCommandAria": "명령 복사",
           "runCommandDescription": "Enter를 눌러 명령을 실행하세요.",
           "5f818f12ab": "준비 중...",
-          "4c05b9d7cb": "설정 터미널을 준비하고 있습니다."
+          "4c05b9d7cb": "설정 터미널을 준비하고 있습니다.",
+          "checkingManagement": "확인 중…",
+          "review": "검토",
+          "manage": "관리",
+          "manageUpdate": "관리 및 업데이트",
+          "update": "업데이트",
+          "managedCurrent": "스킬이 관리되고 있으며 최신 상태입니다.",
+          "retryUpdate": "업데이트 재시도",
+          "actionFailed": "스킬 작업에 실패했습니다."
         },
         "AgentsPane": {
           "d83834f5e6": "설치된 agents 감지 중…",
@@ -9021,6 +9029,40 @@
         "TerminalInteractionSection": {
           "567633ff50": "Right-click pastes the clipboard into the terminal. Control-click to open the context menu.",
           "c64497148a": "Right-click pastes the clipboard. Control-click opens the context menu."
+        },
+        "ManagedOrcaSkills": {
+          "unverified": "검증되지 않음",
+          "notVisible": "관리 중이지만 {{value0}}에 표시되지 않습니다.",
+          "replaceTitle": "{{value0}}을(를) 교체할까요?",
+          "replaceDescription": "아래 로컬 변경 사항이 삭제됩니다. Orca는 번들 스킬이 검증될 때까지 롤백 복사본을 보관합니다.",
+          "binaryChange": "바이너리 파일 내용이 다릅니다.",
+          "cancel": "취소",
+          "replace": "스킬 교체",
+          "actionFailed": "스킬 작업에 실패했습니다.",
+          "title": "Orca 에이전트 스킬",
+          "description": "Orca는 사용자가 명시적으로 관리하도록 선택한 정확한 공식 복사본만 업데이트합니다.",
+          "refresh": "새로 고침",
+          "hostPending": "이 호스트에서는 감지만 가능하며 관리 작업은 아직 사용할 수 없습니다.",
+          "managedToast": "이제 스킬이 관리되며 최신 상태입니다.",
+          "manageUpdateAction": "관리 및 업데이트",
+          "manageAction": "관리",
+          "updatedToast": "스킬이 업데이트되었습니다.",
+          "updateAction": "업데이트",
+          "reviewAction": "검토",
+          "checking": "설치된 스킬 확인 중…",
+          "none": "전역 에이전트 홈에 설치된 Orca 스킬이 없습니다.",
+          "replacedToast": "스킬을 번들 버전으로 교체했습니다.",
+          "managedCurrent": "관리됨",
+          "managedUpdate": "업데이트 가능",
+          "availableToManage": "관리 가능",
+          "manageAndUpdate": "관리 및 업데이트",
+          "newerKnown": "최신 릴리스",
+          "modified": "수정됨",
+          "unknown": "알 수 없는 복사본",
+          "external": "외부에서 관리됨",
+          "inaccessible": "접근 불가",
+          "failed": "업데이트 실패",
+          "retryAction": "재시도"
         }
       },
       "right": {
@@ -12930,6 +12972,13 @@
         "searchLabels": "레이블 필터…",
         "searchAssignee": "담당자 필터…",
         "back": "뒤로"
+      },
+      "managedSkills": {
+        "adoptionNudge": {
+          "title": "설치된 Orca 스킬 {{value0}}개를 최신 상태로 유지할 수 있습니다",
+          "description": "Orca가 관리하기 전에 정확한 공식 복사본을 검토하세요.",
+          "review": "검토"
+        }
       }
     },
     "i18n": {

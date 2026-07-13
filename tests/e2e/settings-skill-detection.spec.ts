@@ -7,9 +7,82 @@ import type {
   SkillSourceKind
 } from '../../src/shared/skills'
 import { ORCHESTRATION_ENABLED_STORAGE_KEY } from '../../src/renderer/src/lib/orchestration-setup-state'
+import type {
+  SkillManagementInstallation,
+  SkillManagementInventory
+} from '../../src/shared/skill-management'
 
 type MockSkillDiscoveryGlobal = typeof globalThis & {
   __orcaSettingsSkillDiscoveryResult?: SkillDiscoveryResult
+  __orcaSettingsSkillManagementInventory?: SkillManagementInventory
+}
+
+function managedInstallation(
+  name: string,
+  status: SkillManagementInstallation['status']
+): SkillManagementInstallation {
+  const managed = status.startsWith('managed-') || status === 'update-failed'
+  return {
+    id: name,
+    hostId: 'local',
+    name,
+    description: null,
+    rootId: 'home-agents',
+    providers: ['agent-skills', 'codex'],
+    unresolvedPath: `/Users/test/.agents/skills/${name}`,
+    resolvedPath: `/Users/test/.agents/skills/${name}`,
+    physicalIdentity: `1:${name}`,
+    topology: 'canonical-copy',
+    status,
+    eligible: status !== 'modified',
+    adoptionPromptEligible: status === 'known-current',
+    lockCorroborated: true,
+    actionsSupported: true,
+    managed,
+    installedReleaseRevision: 1,
+    installedAppVersion: '1.2.3',
+    currentReleaseRevision: 2,
+    installedPackageDigest: 'a'.repeat(64),
+    currentPackageDigest: 'b'.repeat(64),
+    currentAppVersion: '2.0.0',
+    errorCategory: status === 'update-failed' ? 'filesystem-ebusy' : null
+  }
+}
+
+async function installMockSkillManagement(
+  app: ElectronApplication,
+  inventory: SkillManagementInventory
+): Promise<void> {
+  await app.evaluate((electron, initialInventory) => {
+    ;(globalThis as MockSkillDiscoveryGlobal).__orcaSettingsSkillManagementInventory =
+      initialInventory
+    const current = () =>
+      (globalThis as MockSkillDiscoveryGlobal).__orcaSettingsSkillManagementInventory!
+    for (const channel of [
+      'skills:managementInventory',
+      'skills:adopt',
+      'skills:updateManaged',
+      'skills:dismissAdoption'
+    ]) {
+      electron.ipcMain.removeHandler(channel)
+      electron.ipcMain.handle(channel, current)
+    }
+    electron.ipcMain.removeHandler('skills:previewReplacement')
+    electron.ipcMain.handle(
+      'skills:previewReplacement',
+      (_event, args: { installationId: string }) => ({
+        installationId: args.installationId,
+        skillName: args.installationId,
+        files: [
+          { path: 'SKILL.md', change: 'modified', beforeText: 'local', afterText: 'official' }
+        ]
+      })
+    )
+    electron.ipcMain.removeHandler('skills:replace')
+    electron.ipcMain.handle('skills:replace', () => {
+      throw new Error('injected rollback')
+    })
+  }, inventory)
 }
 
 function makeSkill(sourceKind: SkillSourceKind, directoryPath: string): DiscoveredSkill {
@@ -117,9 +190,45 @@ test.describe('Settings skill detection', () => {
     )
     await section.getByRole('button', { name: 'Re-check' }).click()
 
-    await expect(section.getByText('Installed', { exact: true })).toBeVisible()
+    await expect(section.getByText('Manage and update', { exact: true }).first()).toBeVisible()
     await expect(
       section.getByText('Enables agents to hand off context and coordinate work through Orca.')
     ).toBeVisible()
+  })
+
+  test('shows managed adoption, update, conflict, retry, nudge, and retained failure review', async ({
+    electronApp,
+    orcaPage
+  }) => {
+    const installations = [
+      managedInstallation('orca-cli', 'known-current'),
+      managedInstallation('orchestration', 'managed-update-available'),
+      managedInstallation('computer-use', 'modified'),
+      managedInstallation('orca-linear', 'update-failed')
+    ]
+    await installMockSkillManagement(electronApp, {
+      schemaVersion: 1,
+      hostId: 'local',
+      installations,
+      adoptionCandidateCount: 1,
+      scannedAt: Date.now()
+    })
+    await orcaPage.evaluate(() => {
+      const state = window.__store!.getState()
+      state.openSettingsTarget({ pane: 'agents', repoId: null })
+      state.openSettingsPage()
+      window.dispatchEvent(new Event('orca:installed-agent-skills-changed'))
+    })
+
+    await expect(orcaPage.getByText('Orca agent skills', { exact: true })).toBeVisible()
+    await expect(orcaPage.getByRole('button', { name: 'Manage', exact: true })).toBeVisible()
+    await expect(orcaPage.getByRole('button', { name: 'Update', exact: true })).toBeVisible()
+    await expect(orcaPage.getByRole('button', { name: 'Retry', exact: true })).toBeVisible()
+    await expect(orcaPage.getByText('1 installed Orca skills can be kept up to date')).toBeVisible()
+    await orcaPage.locator('#agents').getByRole('button', { name: 'Review', exact: true }).click()
+    await expect(orcaPage.getByRole('heading', { name: 'Replace computer-use?' })).toBeVisible()
+    await orcaPage.getByRole('button', { name: 'Replace skill' }).click()
+    await expect(orcaPage.getByRole('heading', { name: 'Replace computer-use?' })).toBeVisible()
+    await expect(orcaPage.locator('#agents').getByText('injected rollback')).toBeVisible()
   })
 })

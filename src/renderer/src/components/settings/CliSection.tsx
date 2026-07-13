@@ -363,6 +363,8 @@ export function CliSection({
             </div>
 
             <AgentSkillSetupPanel
+              managedSkillNames={[ORCA_CLI_SKILL_NAME]}
+              managementTarget={cliSkillDiscoveryTarget}
               className="mt-3"
               variant="inline"
               title={translate('auto.components.settings.CliSection.6053cf736c', 'CLI skill')}

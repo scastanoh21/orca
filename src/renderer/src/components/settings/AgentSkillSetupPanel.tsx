@@ -5,11 +5,14 @@ import { IntegrationStatusPill } from '../integration-status-pill'
 import { OnboardingInlineCommandTerminal } from '../onboarding/OnboardingInlineCommandTerminal'
 import { Button } from '../ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/tooltip'
-import { notifyInstalledAgentSkillsChanged } from '@/hooks/useInstalledAgentSkills'
 import { useMountedRef } from '@/hooks/useMountedRef'
 import { isOrcaCliAvailableOnPath } from '@/lib/agent-skill-cli-prerequisite'
 import { cn } from '@/lib/utils'
 import { translate } from '@/i18n/i18n'
+import type { SkillDiscoveryTarget } from '../../../../shared/skills'
+import { useAgentSkillManagementActions } from './use-agent-skill-management-actions'
+
+const EMPTY_MANAGED_SKILL_NAMES: readonly string[] = []
 
 type AgentSkillSetupPanelVariant = 'card' | 'inline'
 type SkillPrerequisiteStatus = Awaited<ReturnType<typeof window.api.cli.getInstallStatus>>
@@ -46,6 +49,8 @@ type AgentSkillSetupPanelProps = {
   actionHint?: ReactNode
   openingHint?: ReactNode
   footer?: ReactNode
+  managedSkillNames?: readonly string[]
+  managementTarget?: SkillDiscoveryTarget
   onRecheck: () => void | Promise<unknown>
 }
 
@@ -79,6 +84,8 @@ export function AgentSkillSetupPanel({
   actionHint,
   openingHint,
   footer,
+  managedSkillNames = EMPTY_MANAGED_SKILL_NAMES,
+  managementTarget,
   onRecheck
 }: AgentSkillSetupPanelProps): React.JSX.Element {
   const [terminalOpen, setTerminalOpen] = useState(false)
@@ -88,6 +95,11 @@ export function AgentSkillSetupPanel({
     Boolean(preInstallNotice && !installed)
   )
   const mountedRef = useMountedRef()
+  const skillManagement = useAgentSkillManagementActions({
+    installed,
+    skillNames: managedSkillNames,
+    target: managementTarget
+  })
   const readPrerequisiteStatus = useCallback(
     () => (getPrerequisiteStatus ?? window.api.cli.getInstallStatus)(),
     [getPrerequisiteStatus]
@@ -161,7 +173,25 @@ export function AgentSkillSetupPanel({
 
   const actionRow = (
     <div className="mt-3 flex flex-wrap items-center gap-2">
-      {!installed || showInstallWhenInstalled ? (
+      {skillManagement.applicable ? (
+        skillManagement.actionLabel ? (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={skillManagement.busy}
+            onClick={() => void skillManagement.run()}
+          >
+            {skillManagement.actionBusy ? <Loader2 className="size-3.5 animate-spin" /> : null}
+            {skillManagement.actionBusy && !skillManagement.installation
+              ? translate(
+                  'auto.components.settings.AgentSkillSetupPanel.checkingManagement',
+                  'Checking…'
+                )
+              : skillManagement.actionLabel}
+          </Button>
+        ) : null
+      ) : !installed || showInstallWhenInstalled ? (
         <Button
           type="button"
           variant="outline"
@@ -184,6 +214,7 @@ export function AgentSkillSetupPanel({
                 if (mountedRef.current) {
                   setTerminalOpening(false)
                   if (shouldOpenTerminal) {
+                    skillManagement.beginInstallAttempt()
                     setTerminalCommand(nextCommand)
                     setTerminalOpen(true)
                   }
@@ -262,6 +293,12 @@ export function AgentSkillSetupPanel({
                       'auto.components.settings.AgentSkillSetupPanel.68a468752e',
                       'Checking...'
                     )}
+                  </IntegrationStatusPill>
+                ) : installed && skillManagement.installation ? (
+                  <IntegrationStatusPill
+                    tone={skillManagement.installation.managed ? 'connected' : 'neutral'}
+                  >
+                    {skillManagement.statusLabel}
                   </IntegrationStatusPill>
                 ) : installed ? (
                   <IntegrationStatusPill tone="connected">
@@ -350,7 +387,7 @@ export function AgentSkillSetupPanel({
             terminalTopMarginPx={8}
             descriptionPaddingClassName="px-4 py-2"
             autoScrollIntoView={false}
-            onTerminalExit={notifyInstalledAgentSkillsChanged}
+            onTerminalExit={skillManagement.recordTerminalInstall}
           />
         </div>
       ) : null}

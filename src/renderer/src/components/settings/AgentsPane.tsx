@@ -48,6 +48,7 @@ import { getSettingOwnershipSummary } from './setting-ownership'
 import { translate } from '@/i18n/i18n'
 import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/tooltip'
 import { parseAgentDefaultEnvDraft, stringifyAgentDefaultEnvDraft } from './agent-default-env-draft'
+import { ManagedOrcaSkillsSection } from './ManagedOrcaSkillsSection'
 
 export { getAgentsPaneSearchEntries } from './agents-search'
 
@@ -828,6 +829,8 @@ export function AgentsPane({
         wslDistros={wslDistros}
         wslCapabilitiesLoading={wslCapabilitiesLoading}
       />
+
+      <ManagedOrcaSkillsSection />
 
       <AgentStatusHooksSetting settings={settings} updateSettings={updateSettings} />
 

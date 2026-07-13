@@ -73,6 +73,11 @@ import {
 } from '../shared/project-execution-runtime'
 import { projectHostSetupProjectionFromRepos } from '../shared/project-host-setup-projection'
 import type { GitRemoteIdentity } from '../shared/git-remote-identity'
+import type {
+  DismissedSkillAdoptionCandidate,
+  ManagedSkillDestination,
+  SkillManagementLedger
+} from '../shared/skill-management'
 import {
   buildTaskSourceContextFromRepo,
   buildWorkspaceRunContext
@@ -236,6 +241,10 @@ import {
 import { track } from './telemetry/client'
 import { getCohortAtEmit } from './telemetry/cohort-classifier'
 import { isStartupDiagnosticsEnabled, logStartupDiagnostic } from './startup/startup-diagnostics'
+import {
+  normalizeSkillManagementLedger,
+  skillAdoptionDismissalKey
+} from './skills/skill-management-ledger'
 
 function encrypt(plaintext: string): string {
   if (!plaintext || !safeStorage.isEncryptionAvailable()) {
@@ -3106,6 +3115,9 @@ export class Store {
           featureInteractionTelemetryBuckets: normalizeFeatureInteractionTelemetryBuckets(
             parsed.featureInteractionTelemetryBuckets
           ),
+          // Why: missing or malformed ownership state must never grant write
+          // authority; exact-snapshot adoption can reconstruct it explicitly.
+          skillManagementLedger: normalizeSkillManagementLedger(parsed.skillManagementLedger),
           projectGroups: normalizedProjectGroups,
           folderWorkspaces: normalizeFolderWorkspaces(
             parsed.folderWorkspaces,
@@ -3802,6 +3814,43 @@ export class Store {
 
   getRepos(): Repo[] {
     return this.state.repos.map((repo) => this.hydrateRepo(repo))
+  }
+
+  getSkillManagementLedger(): SkillManagementLedger {
+    return structuredClone(this.state.skillManagementLedger)
+  }
+
+  setManagedSkillDestination(destination: ManagedSkillDestination): void {
+    const previous = this.state.skillManagementLedger.destinations[destination.id]
+    this.state.skillManagementLedger.destinations[destination.id] = structuredClone(destination)
+    try {
+      // Why: transaction cleanup may delete the only rollback copy immediately
+      // after this callback, so ownership must reach disk before it returns.
+      this.flushOrThrow()
+    } catch (error) {
+      if (previous) {
+        this.state.skillManagementLedger.destinations[destination.id] = previous
+      } else {
+        delete this.state.skillManagementLedger.destinations[destination.id]
+      }
+      throw error
+    }
+  }
+
+  dismissSkillAdoptionCandidate(candidate: DismissedSkillAdoptionCandidate): void {
+    const previous = this.state.skillManagementLedger.dismissedAdoptionCandidates
+    const key = skillAdoptionDismissalKey(candidate)
+    const retained = previous.filter((entry) => skillAdoptionDismissalKey(entry) !== key)
+    retained.push(structuredClone(candidate))
+    this.state.skillManagementLedger.dismissedAdoptionCandidates = retained
+    try {
+      // Why: toast closure is the user's one suppression action, so the tuple
+      // must be durable before the renderer treats that lifecycle as complete.
+      this.flushOrThrow()
+    } catch (error) {
+      this.state.skillManagementLedger.dismissedAdoptionCandidates = previous
+      throw error
+    }
   }
 
   getProjects(): Project[] {

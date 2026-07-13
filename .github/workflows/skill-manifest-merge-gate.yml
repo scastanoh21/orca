@@ -1,0 +1,21 @@
+name: Skill manifest merge gate
+
+on:
+  merge_group:
+  push:
+    branches:
+      - main
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: package.json
+      # Why: rerunning generation on the integrated head prevents two skill
+      # changes from independently claiming the same immutable revision.
+      - run: node config/scripts/generate-skill-bundle-manifest.mjs --base-ref=HEAD^

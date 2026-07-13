@@ -2578,7 +2578,25 @@ function createSkillsApi(): NonNullable<Partial<PreloadApi>['skills']> {
         skills: [],
         sources: [],
         scannedAt: Date.now()
-      }))
+      })),
+    managementInventory: () =>
+      Promise.resolve({
+        schemaVersion: 1,
+        hostId: LOCAL_EXECUTION_HOST_ID,
+        installations: [],
+        adoptionCandidateCount: 0,
+        scannedAt: Date.now()
+      }),
+    adopt: () => Promise.reject(new Error('Skill management is unavailable in the web client.')),
+    dismissAdoption: () =>
+      Promise.reject(new Error('Skill management is unavailable in the web client.')),
+    previewReplacement: () =>
+      Promise.reject(new Error('Skill management is unavailable in the web client.')),
+    replace: () => Promise.reject(new Error('Skill management is unavailable in the web client.')),
+    updateManaged: () =>
+      Promise.reject(new Error('Skill management is unavailable in the web client.')),
+    recordOrcaInstall: () =>
+      Promise.reject(new Error('Skill management is unavailable in the web client.'))
   }
 }
 

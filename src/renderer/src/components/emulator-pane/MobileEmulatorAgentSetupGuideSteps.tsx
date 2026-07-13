@@ -1,7 +1,10 @@
 import { Loader2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useAppStore } from '@/store'
-import { ORCA_CLI_SKILL_INSTALL_COMMAND } from '@/lib/agent-feature-install-commands'
+import {
+  ORCA_CLI_SKILL_INSTALL_COMMAND,
+  ORCA_CLI_SKILL_NAME
+} from '@/lib/agent-feature-install-commands'
 import {
   AGENT_SKILL_CLI_PREREQUISITE_NOTICE,
   ensureOrcaCliAvailableForAgentSkillTerminal
@@ -138,6 +141,7 @@ export function MobileEmulatorAgentSetupGuideSteps({
             )}
           </p>
           <AgentSkillSetupPanel
+            managedSkillNames={[ORCA_CLI_SKILL_NAME]}
             variant="inline"
             hideHeader
             className="min-w-0"

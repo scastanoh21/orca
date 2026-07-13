@@ -55,6 +55,10 @@ const FEATURE_SKILL_NAMES: Record<OnboardingFeatureSetupId, string> = {
   linearTickets: ORCA_LINEAR_SKILL_NAME
 }
 
+export function selectedOnboardingSkillNames(selection: OnboardingFeatureSetupSelection): string[] {
+  return selectedOnboardingFeatureSetupIds(selection).map((id) => FEATURE_SKILL_NAMES[id])
+}
+
 const FEATURE_TELEMETRY_IDS: Record<
   OnboardingFeatureSetupId,
   EventProps<'onboarding_feature_setup_toggled'>['feature']
@@ -112,9 +116,7 @@ export function buildOnboardingFeatureSetupClipboardText(
 export function buildOnboardingFeatureSetupSkillCommand(
   selection: OnboardingFeatureSetupSelection
 ): string | null {
-  const skillNames = selectedOnboardingFeatureSetupIds(selection).map(
-    (id) => FEATURE_SKILL_NAMES[id]
-  )
+  const skillNames = selectedOnboardingSkillNames(selection)
   if (skillNames.length === 0) {
     return null
   }

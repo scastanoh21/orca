@@ -52,6 +52,7 @@ export function buildHostHeaderMenuModel(input: HostHeaderMenuInput): HostHeader
       actions.push('runtime-check-connection')
       break
     case 'local':
+    case 'wsl':
       break
   }
 

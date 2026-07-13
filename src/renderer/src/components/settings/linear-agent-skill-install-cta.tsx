@@ -13,7 +13,6 @@ import {
   ORCA_LINEAR_SKILL_INSTALL_COMMAND,
   ORCA_LINEAR_SKILL_NAME
 } from '@/lib/agent-feature-install-commands'
-import { getLinearAgentSkillUpdateCommand } from '@/lib/linear-agent-skill-update-command'
 import { cn } from '@/lib/utils'
 import { getLinearAgentSkillSetupInlineRuntimeCopy } from '../sidebar/linear-agent-skill-setup-copy'
 import {
@@ -28,6 +27,7 @@ import {
   useIntegrationSubordinateRowClass
 } from './integration-card-presentation'
 import { translate } from '@/i18n/i18n'
+import { useAgentSkillManagementActions } from './use-agent-skill-management-actions'
 
 type LinearAgentSkillInstallCtaProps = {
   settings: LinearAgentSkillPromptSettings | null | undefined
@@ -55,15 +55,14 @@ export function LinearAgentSkillInstallCta({
     sourceKinds: GLOBAL_AGENT_SKILL_SOURCE_KINDS
   })
   const command = useMemo(
-    () =>
-      buildSkillCommandForRuntime(
-        skill.installed
-          ? getLinearAgentSkillUpdateCommand(skill.skills, skill.installed)
-          : ORCA_LINEAR_SKILL_INSTALL_COMMAND,
-        agentRuntime
-      ),
-    [agentRuntime, skill.installed, skill.skills]
+    () => buildSkillCommandForRuntime(ORCA_LINEAR_SKILL_INSTALL_COMMAND, agentRuntime),
+    [agentRuntime]
   )
+  const management = useAgentSkillManagementActions({
+    installed: skill.installed,
+    skillNames: LINEAR_AGENT_SKILL_NAMES,
+    target: skillDiscoveryTarget
+  })
   const subordinateRowClass = useIntegrationSubordinateRowClass('space-y-1.5')
   const commandRowClass = useIntegrationCommandRowClass()
 
@@ -106,11 +105,12 @@ export function LinearAgentSkillInstallCta({
             )}
           </IntegrationStatusPill>
         ) : skill.installed ? (
-          <IntegrationStatusPill tone="connected">
-            {translate(
-              'auto.components.settings.linear.agent.skill.install.cta.installed',
-              'Installed'
-            )}
+          <IntegrationStatusPill tone={management.installation?.managed ? 'connected' : 'neutral'}>
+            {management.statusLabel ??
+              translate(
+                'auto.components.settings.linear.agent.skill.install.cta.installed',
+                'Installed'
+              )}
           </IntegrationStatusPill>
         ) : (
           <IntegrationStatusPill tone="attention">
@@ -136,44 +136,53 @@ export function LinearAgentSkillInstallCta({
       {!skill.loading && (
         <>
           <p className="text-xs text-muted-foreground">
-            {skill.installed
-              ? translate(
-                  'auto.components.settings.linear.agent.skill.install.cta.installedDescription',
-                  'Agent skill installed. To update it, run:'
-                )
-              : translate(
-                  'auto.components.settings.linear.agent.skill.install.cta.description',
-                  'Let your agents read and edit Linear tasks.'
-                )}
+            {translate(
+              'auto.components.settings.linear.agent.skill.install.cta.description',
+              'Let your agents read and edit Linear tasks.'
+            )}
           </p>
-          <div className={commandRowClass}>
-            <code className="scrollbar-sleek min-w-0 flex-1 overflow-x-auto whitespace-nowrap">
-              {command}
-            </code>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon-xs"
-                  className="shrink-0"
-                  aria-label={translate(
+          {skill.installed ? (
+            management.actionLabel ? (
+              <Button
+                type="button"
+                variant="outline"
+                size="xs"
+                disabled={management.busy}
+                onClick={() => void management.run()}
+              >
+                {management.actionLabel}
+              </Button>
+            ) : null
+          ) : (
+            <div className={commandRowClass}>
+              <code className="scrollbar-sleek min-w-0 flex-1 overflow-x-auto whitespace-nowrap">
+                {command}
+              </code>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon-xs"
+                    className="shrink-0"
+                    aria-label={translate(
+                      'auto.components.settings.linear.agent.skill.install.cta.copyCommand',
+                      'Copy command'
+                    )}
+                    onClick={() => void copyCommand()}
+                  >
+                    <Copy className="size-3.5" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="top" sideOffset={4}>
+                  {translate(
                     'auto.components.settings.linear.agent.skill.install.cta.copyCommand',
                     'Copy command'
                   )}
-                  onClick={() => void copyCommand()}
-                >
-                  <Copy className="size-3.5" />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent side="top" sideOffset={4}>
-                {translate(
-                  'auto.components.settings.linear.agent.skill.install.cta.copyCommand',
-                  'Copy command'
-                )}
-              </TooltipContent>
-            </Tooltip>
-          </div>
+                </TooltipContent>
+              </Tooltip>
+            </div>
+          )}
           {remote || agentRuntime.runtime === 'wsl' ? (
             <p className="text-[11px] text-muted-foreground/70">
               {getLinearAgentSkillSetupInlineRuntimeCopy(remote, agentRuntime)}

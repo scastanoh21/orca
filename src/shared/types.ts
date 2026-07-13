@@ -1,5 +1,6 @@
 /* eslint-disable max-lines */
 import type { ExecutionHostId } from './execution-host'
+import type { SkillManagementLedger } from './skill-management'
 import type { RemovedSshTargetTombstone, SshRemotePtyLease, SshTarget } from './ssh-types'
 import type { Automation, AutomationExecutionTargetType, AutomationRun } from './automations-types'
 import type { WorkspaceSource } from './workspace-source'
@@ -251,7 +252,7 @@ export type Repo = {
    * Explicit execution owner for this repo. Runtime-host repos need this
    * because they otherwise look identical to local repos (`connectionId: null`).
    */
-  executionHostId?: 'local' | `ssh:${string}` | `runtime:${string}` | null
+  executionHostId?: ExecutionHostId | null
   /** Per-repo override for issue-source resolution. `undefined` is treated
    *  identically to `'auto'`; writers leave it undefined on creation so
    *  existing persisted records stay forward-compatible. */
@@ -3223,7 +3224,7 @@ export type ActiveRightSidebarTab = Exclude<RightSidebarTab, 'search'>
 export type RightSidebarExplorerView = 'files' | 'search'
 
 export type ProjectOrderBy = 'manual' | 'recent'
-export type WorkspaceHostScope = 'all' | 'local' | `ssh:${string}` | `runtime:${string}`
+export type WorkspaceHostScope = 'all' | ExecutionHostId
 export type VisibleWorkspaceHostIds = Exclude<WorkspaceHostScope, 'all'>[] | null
 export type WorkspaceHostOrder = Exclude<WorkspaceHostScope, 'all'>[]
 
@@ -3604,6 +3605,8 @@ export type PersistedState = {
   onboarding: OnboardingState
   /** Main-owned telemetry de-dupe marker; never exposed through PersistedUIState. */
   featureInteractionTelemetryBuckets?: FeatureInteractionTelemetryBucketState
+  /** Orca-owned write authority for exact physical skill destinations. */
+  skillManagementLedger: SkillManagementLedger
 }
 
 // ─── Filesystem ─────────────────────────────────────────────

@@ -1,6 +1,7 @@
 import { Import, Loader2 } from 'lucide-react'
 import {
   ORCA_CLI_SKILL_INSTALL_COMMAND,
+  ORCA_CLI_SKILL_NAME,
   ORCA_CLI_SKILL_UPDATE_COMMAND
 } from '@/lib/agent-feature-install-commands'
 import {
@@ -143,6 +144,7 @@ export function MobileEmulatorAgentControlRow(): React.JSX.Element {
 
         <div className={cn('py-3', setup.step2Blocked && 'opacity-60')}>
           <AgentSkillSetupPanel
+            managedSkillNames={[ORCA_CLI_SKILL_NAME]}
             variant="inline"
             title={translate(
               'auto.components.settings.MobileEmulatorAgentControlRow.67e19ee03c',

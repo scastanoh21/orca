@@ -157,6 +157,18 @@ describe('AgentSkillSetupPanel', () => {
     expect(buttonLabels(html)).toContain('Re-check')
   })
 
+  it('suppresses the raw updater while managed status is still loading', () => {
+    const html = renderPanel({
+      installed: true,
+      installedCommand: UPDATE_COMMAND,
+      managedSkillNames: ['orca-cli']
+    })
+
+    expect(buttonLabels(html)).toContain('Checking…')
+    expect(buttonLabels(html)).not.toContain('Update')
+    expect(html).not.toContain(UPDATE_COMMAND)
+  })
+
   it('hides only re-check when installed re-checks are disabled', () => {
     const html = renderPanel({ installed: true, showRecheckWhenInstalled: false })
 

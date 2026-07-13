@@ -140,6 +140,10 @@ function operationOwnerFromHostId(hostId: ExecutionHostId): FileExplorerOperatio
       return { kind: 'ssh', connectionId: parsed.targetId }
     case 'runtime':
       return { kind: 'runtime', environmentId: parsed.environmentId }
+    case 'wsl':
+      // Why: WSL skill state needs a durable host key before general file
+      // operations gain an in-distro routing contract; destructive work fails closed.
+      return { kind: 'unresolved' }
     case undefined:
       return { kind: 'unresolved' }
   }

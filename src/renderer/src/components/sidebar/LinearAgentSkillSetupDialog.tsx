@@ -16,6 +16,8 @@ import {
   isOrcaCliAvailableOnPath
 } from '@/lib/agent-skill-cli-prerequisite'
 import { translate } from '@/i18n/i18n'
+import { LINEAR_AGENT_SKILL_NAMES } from '@/lib/agent-feature-install-commands'
+import type { SkillDiscoveryTarget } from '../../../../shared/skills'
 
 type AgentSkillSetupPanelProps = ComponentProps<typeof AgentSkillSetupPanel>
 
@@ -33,6 +35,7 @@ type LinearAgentSkillSetupDialogProps = {
   getPrerequisiteStatus?: AgentSkillSetupPanelProps['getPrerequisiteStatus']
   onBeforeOpenTerminal: AgentSkillSetupPanelProps['onBeforeOpenTerminal']
   onRecheck: AgentSkillSetupPanelProps['onRecheck']
+  managementTarget?: SkillDiscoveryTarget
   onOpenChange: (open: boolean) => void
   onDismissPermanently: () => void
   onSnoozeForSession: () => void
@@ -53,6 +56,7 @@ export function LinearAgentSkillSetupDialog({
   getPrerequisiteStatus,
   onBeforeOpenTerminal,
   onRecheck,
+  managementTarget,
   onOpenChange,
   onDismissPermanently,
   onSnoozeForSession,
@@ -117,6 +121,8 @@ export function LinearAgentSkillSetupDialog({
               </div>
             </div>
             <AgentSkillSetupPanel
+              managedSkillNames={LINEAR_AGENT_SKILL_NAMES}
+              managementTarget={managementTarget}
               className="px-6 pt-4 pb-3"
               variant="inline"
               hideHeader

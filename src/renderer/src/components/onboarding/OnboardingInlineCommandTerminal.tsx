@@ -28,7 +28,7 @@ type OnboardingInlineCommandTerminalProps = {
   shellOverride?: string
   onOpened?: () => void
   onInteracted?: (method: 'keyboard' | 'pointer', event?: KeyboardEvent<HTMLElement>) => void
-  onTerminalExit?: () => void
+  onTerminalExit?: (result: { code: number | null }) => void
 }
 
 /**
@@ -294,8 +294,8 @@ export function OnboardingInlineCommandTerminal({
               cwd={cwd}
               isActive
               isVisible
-              onPtyExit={() => {
-                onTerminalExit?.()
+              onPtyExit={(_ptyId, code) => {
+                onTerminalExit?.({ code: code ?? null })
                 closeTab(tabId, { recordInteraction: false })
               }}
               onCloseTab={() => closeTab(tabId, { recordInteraction: false })}

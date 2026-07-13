@@ -394,7 +394,7 @@ describe('createRemoteRuntimePtyTransport', () => {
 
     // Why: no red xterm error — retire quietly and let the next session-tabs
     // snapshot drive respawn/removal.
-    await vi.waitFor(() => expect(onPtyExit).toHaveBeenCalledWith('remote:env-1@@terminal-1'))
+    await vi.waitFor(() => expect(onPtyExit).toHaveBeenCalledWith('remote:env-1@@terminal-1', null))
     expect(transport.getPtyId()).toBeNull()
     expect(onError).not.toHaveBeenCalled()
   })
@@ -472,7 +472,7 @@ describe('createRemoteRuntimePtyTransport', () => {
     })
 
     expect(onError).not.toHaveBeenCalled()
-    expect(onPtyExit).toHaveBeenCalledWith('remote:env-1@@terminal-stale')
+    expect(onPtyExit).toHaveBeenCalledWith('remote:env-1@@terminal-stale', null)
     expect(transport.getPtyId()).toBeNull()
   })
 
@@ -520,7 +520,7 @@ describe('createRemoteRuntimePtyTransport', () => {
       result: { type: 'end', streamId: newStreamId }
     })
 
-    expect(onPtyExit).toHaveBeenCalledWith('remote:env-1@@terminal-new')
+    expect(onPtyExit).toHaveBeenCalledWith('remote:env-1@@terminal-new', null)
     expect(transport.getPtyId()).toBeNull()
     expect(transport.isConnected()).toBe(false)
   })

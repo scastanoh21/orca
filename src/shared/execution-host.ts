@@ -3,8 +3,12 @@ import type { GlobalSettings, Repo } from './types'
 export const LOCAL_EXECUTION_HOST_ID = 'local'
 export const ALL_EXECUTION_HOSTS_SCOPE = 'all'
 
-export type ExecutionHostKind = 'local' | 'ssh' | 'runtime'
-export type ExecutionHostId = typeof LOCAL_EXECUTION_HOST_ID | `ssh:${string}` | `runtime:${string}`
+export type ExecutionHostKind = 'local' | 'ssh' | 'runtime' | 'wsl'
+export type ExecutionHostId =
+  | typeof LOCAL_EXECUTION_HOST_ID
+  | `ssh:${string}`
+  | `runtime:${string}`
+  | `wsl:${string}`
 
 export type ExecutionHostScope = typeof ALL_EXECUTION_HOSTS_SCOPE | ExecutionHostId
 
@@ -12,6 +16,7 @@ export type ParsedExecutionHost =
   | { kind: 'local'; id: typeof LOCAL_EXECUTION_HOST_ID }
   | { kind: 'ssh'; id: `ssh:${string}`; targetId: string }
   | { kind: 'runtime'; id: `runtime:${string}`; environmentId: string }
+  | { kind: 'wsl'; id: `wsl:${string}`; distro: string }
 
 function getCurrentLocalPlatform(): NodeJS.Platform | null {
   const globalNavigator = (globalThis as { navigator?: { userAgent?: string; platform?: string } })
@@ -56,6 +61,10 @@ export function toRuntimeExecutionHostId(environmentId: string): `runtime:${stri
   return `runtime:${encodeURIComponent(environmentId)}`
 }
 
+export function toWslExecutionHostId(distro: string): `wsl:${string}` {
+  return `wsl:${encodeURIComponent(distro)}`
+}
+
 // Why: runtime-owned (ephemeral-VM) SSH targets are hidden from user-facing
 // SSH/run-target surfaces. The renderer can't read the target.owner field, so it
 // recognizes them by their deterministic id prefix. getRuntimeOwnedSshTargetId
@@ -94,6 +103,18 @@ export function parseExecutionHostId(value: string | null | undefined): ParsedEx
     try {
       const environmentId = decodeURIComponent(encoded)
       return environmentId ? { kind: 'runtime', id: `runtime:${encoded}`, environmentId } : null
+    } catch {
+      return null
+    }
+  }
+  if (normalized.startsWith('wsl:')) {
+    const encoded = normalized.slice('wsl:'.length)
+    if (!encoded) {
+      return null
+    }
+    try {
+      const distro = decodeURIComponent(encoded)
+      return distro ? { kind: 'wsl', id: `wsl:${encoded}`, distro } : null
     } catch {
       return null
     }
@@ -174,5 +195,7 @@ export function getExecutionHostLabel(id: ExecutionHostScope): string {
       return parsed.targetId
     case 'runtime':
       return parsed.environmentId
+    case 'wsl':
+      return `WSL: ${parsed.distro}`
   }
 }

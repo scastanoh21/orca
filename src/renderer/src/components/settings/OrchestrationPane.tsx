@@ -86,6 +86,8 @@ export function OrchestrationPane(): React.JSX.Element {
       className="space-y-5 py-2"
     >
       <AgentSkillSetupPanel
+        managedSkillNames={[ORCHESTRATION_SKILL_NAME]}
+        managementTarget={activeSkillRuntime.discoveryTarget}
         title={translate(
           'auto.components.settings.OrchestrationPane.07641b9768',
           'Orchestration skill'

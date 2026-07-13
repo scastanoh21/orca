@@ -32,7 +32,8 @@ export function buildSkillDiscoverySources(
   const roots: SkillScanRoot[] = [
     source('home-codex', 'Codex home', join(home, '.codex', 'skills'), 'home', ['codex']),
     source('home-agents', 'Agent skills home', join(home, '.agents', 'skills'), 'home', [
-      'agent-skills'
+      'agent-skills',
+      'codex'
     ]),
     source('home-claude', 'Claude home', join(home, '.claude', 'skills'), 'home', ['claude']),
     source(

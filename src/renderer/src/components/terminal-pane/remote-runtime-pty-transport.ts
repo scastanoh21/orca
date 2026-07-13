@@ -410,7 +410,7 @@ export function createRemoteRuntimePtyTransport(
     remotePtyId = null
     closeMultiplexedStream()
     if (stalePtyId) {
-      onPtyExit?.(stalePtyId)
+      onPtyExit?.(stalePtyId, null)
     }
   }
 
@@ -542,10 +542,11 @@ export function createRemoteRuntimePtyTransport(
           multiplexedStream = null
           multiplexedStreamHandle = null
           clearPendingViewportClaim()
-          storedCallbacks.onExit?.(0)
           storedCallbacks.onDisconnect?.()
           if (subscribedPtyId) {
-            onPtyExit?.(subscribedPtyId)
+            // Why: a remote stream ending proves disconnection, not the
+            // subprocess exit status required for install ownership.
+            onPtyExit?.(subscribedPtyId, null)
           }
         },
         onError: (message) => {
@@ -741,7 +742,7 @@ export function createRemoteRuntimePtyTransport(
       remotePtyId = null
       storedCallbacks.onDisconnect?.()
       if (id) {
-        onPtyExit?.(id)
+        onPtyExit?.(id, null)
       }
     },
 

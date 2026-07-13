@@ -17,6 +17,7 @@ import {
 } from './CliSkillRuntimeSetup'
 import { useAppStore } from '@/store'
 import { translate } from '@/i18n/i18n'
+import { ORCHESTRATION_SKILL_NAME } from '@/lib/agent-feature-install-commands'
 
 export function OrchestrationSetupCard(props: {
   compact?: boolean
@@ -40,6 +41,8 @@ export function OrchestrationSetupCard(props: {
 
   const setupPanel = (
     <AgentSkillSetupPanel
+      managedSkillNames={[ORCHESTRATION_SKILL_NAME]}
+      managementTarget={activeSkillRuntime.discoveryTarget}
       className={compact ? 'w-full max-w-[520px]' : undefined}
       title={translate(
         'auto.components.settings.OrchestrationSetupCard.2777ff0fdc',

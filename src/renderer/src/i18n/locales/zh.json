@@ -4878,7 +4878,15 @@
           "copyCommandAria": "复制命令",
           "runCommandDescription": "按 Enter 运行命令。",
           "5f818f12ab": "正在准备...",
-          "4c05b9d7cb": "正在准备设置终端。"
+          "4c05b9d7cb": "正在准备设置终端。",
+          "checkingManagement": "正在检查…",
+          "review": "查看",
+          "manage": "管理",
+          "manageUpdate": "管理并更新",
+          "update": "更新",
+          "managedCurrent": "技能已纳入管理并且是最新版本。",
+          "retryUpdate": "重试更新",
+          "actionFailed": "技能操作失败。"
         },
         "AgentsPane": {
           "d83834f5e6": "检测已安装的智能体...",
@@ -9021,6 +9029,40 @@
         "TerminalInteractionSection": {
           "567633ff50": "Right-click pastes the clipboard into the terminal. Control-click to open the context menu.",
           "c64497148a": "Right-click pastes the clipboard. Control-click opens the context menu."
+        },
+        "ManagedOrcaSkills": {
+          "unverified": "未验证",
+          "notVisible": "已管理，但在 {{value0}} 中不可见。",
+          "replaceTitle": "替换 {{value0}}？",
+          "replaceDescription": "这会丢弃下面显示的本地更改。在验证捆绑技能之前，Orca 会保留回滚副本。",
+          "binaryChange": "二进制文件内容不同。",
+          "cancel": "取消",
+          "replace": "替换技能",
+          "actionFailed": "技能操作失败。",
+          "title": "Orca 代理技能",
+          "description": "Orca 只会更新你明确选择管理的完全一致的官方副本。",
+          "refresh": "刷新",
+          "hostPending": "此主机仅支持检测；管理操作尚不可用。",
+          "managedToast": "技能现已纳入管理并更新到最新版本。",
+          "manageUpdateAction": "管理并更新",
+          "manageAction": "管理",
+          "updatedToast": "技能已更新。",
+          "updateAction": "更新",
+          "reviewAction": "查看",
+          "checking": "正在检查已安装的技能…",
+          "none": "在全局代理主目录中未找到已安装的 Orca 技能。",
+          "replacedToast": "技能已替换为捆绑版本。",
+          "managedCurrent": "已管理",
+          "managedUpdate": "有可用更新",
+          "availableToManage": "可管理",
+          "manageAndUpdate": "管理并更新",
+          "newerKnown": "较新版本",
+          "modified": "已修改",
+          "unknown": "未知副本",
+          "external": "由外部管理",
+          "inaccessible": "无法访问",
+          "failed": "更新失败",
+          "retryAction": "重试"
         }
       },
       "right": {
@@ -12930,6 +12972,13 @@
         "searchLabels": "筛选标签…",
         "searchAssignee": "筛选负责人…",
         "back": "返回"
+      },
+      "managedSkills": {
+        "adoptionNudge": {
+          "title": "可将已安装的 {{value0}} 个 Orca 技能保持为最新版本",
+          "description": "在 Orca 管理之前，请检查完全一致的官方副本。",
+          "review": "查看"
+        }
       }
     },
     "i18n": {

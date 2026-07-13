@@ -2,6 +2,8 @@ import type { ReactNode } from 'react'
 import { AgentSkillSetupPanel } from './AgentSkillSetupPanel'
 import { StepBadge } from './BrowserUseStepBadge'
 import { translate } from '@/i18n/i18n'
+import { ORCA_CLI_SKILL_NAME } from '@/lib/agent-feature-install-commands'
+import type { SkillDiscoveryTarget } from '../../../../shared/skills'
 
 type Props = {
   command: string
@@ -14,6 +16,7 @@ type Props = {
   preInstallNotice?: ReactNode
   getPrerequisiteStatus?: () => Promise<Awaited<ReturnType<typeof window.api.cli.getInstallStatus>>>
   onBeforeOpenTerminal?: () => void | Promise<void>
+  managementTarget?: SkillDiscoveryTarget
   onRecheck: () => void | Promise<unknown>
 }
 
@@ -28,10 +31,13 @@ export function BrowserUseSkillStep({
   preInstallNotice,
   getPrerequisiteStatus,
   onBeforeOpenTerminal,
+  managementTarget,
   onRecheck
 }: Props): React.JSX.Element {
   return (
     <AgentSkillSetupPanel
+      managedSkillNames={[ORCA_CLI_SKILL_NAME]}
+      managementTarget={managementTarget}
       variant="inline"
       title={translate(
         'auto.components.settings.BrowserUseSkillStep.459e24eebc',

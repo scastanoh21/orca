@@ -70,6 +70,13 @@ import type { GitHistoryOptions, GitHistoryResult } from '../shared/git-history'
 import type { ShellOpenLocalPathResult } from '../shared/shell-open-types'
 import type { SkillDiscoveryResult, SkillDiscoveryTarget } from '../shared/skills'
 import type {
+  OrcaSkillInstallResultArgs,
+  SkillAdoptionDismissalArgs,
+  SkillManagementActionArgs,
+  SkillManagementInventory,
+  SkillReplacementPreview
+} from '../shared/skill-management'
+import type {
   RuntimeBrowserDriverState,
   RuntimeMobileSessionTabMove,
   RuntimeStatus,
@@ -2166,7 +2173,21 @@ const api = {
 
   skills: {
     discover: (target?: SkillDiscoveryTarget): Promise<SkillDiscoveryResult> =>
-      ipcRenderer.invoke('skills:discover', target)
+      ipcRenderer.invoke('skills:discover', target),
+    managementInventory: (target?: SkillDiscoveryTarget): Promise<SkillManagementInventory> =>
+      ipcRenderer.invoke('skills:managementInventory', target),
+    adopt: (args: SkillManagementActionArgs): Promise<SkillManagementInventory> =>
+      ipcRenderer.invoke('skills:adopt', args),
+    dismissAdoption: (args: SkillAdoptionDismissalArgs): Promise<SkillManagementInventory> =>
+      ipcRenderer.invoke('skills:dismissAdoption', args),
+    previewReplacement: (args: SkillManagementActionArgs): Promise<SkillReplacementPreview> =>
+      ipcRenderer.invoke('skills:previewReplacement', args),
+    replace: (args: SkillManagementActionArgs): Promise<SkillManagementInventory> =>
+      ipcRenderer.invoke('skills:replace', args),
+    updateManaged: (args: SkillManagementActionArgs): Promise<SkillManagementInventory> =>
+      ipcRenderer.invoke('skills:updateManaged', args),
+    recordOrcaInstall: (args: OrcaSkillInstallResultArgs): Promise<SkillManagementInventory> =>
+      ipcRenderer.invoke('skills:recordOrcaInstall', args)
   },
 
   pet: {
