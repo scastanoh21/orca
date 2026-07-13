@@ -456,7 +456,9 @@ describe('createEditorSlice openDiff', () => {
     expect(store.getState().openFiles).toEqual([
       expect.objectContaining({
         id: 'wt-1::diff::unstaged::file.ts',
-        runtimeEnvironmentId: undefined
+        // A worktree with no explicit runtime owner stamps `null` (local), which
+        // routes to local IPC instead of the global default runtime (#8484).
+        runtimeEnvironmentId: null
       }),
       expect.objectContaining({
         id: 'editor-diff:wt-1:env-1:unstaged:file.ts',
@@ -496,6 +498,40 @@ describe('createEditorSlice openDiff', () => {
         runtimeEnvironmentId: 'env-1'
       })
     )
+  })
+
+  it('routes host-split diffs by the worktree owner, not the global default runtime (#8484)', () => {
+    const store = createEditorStore()
+    // Same project registered on both local and a paired runtime under one
+    // repoId; each host's worktree carries no explicit hostId (legacy metadata).
+    store.setState({
+      settings: { activeRuntimeEnvironmentId: 'env-1' } as unknown as AppState['settings'],
+      repos: [
+        { id: 'proj', executionHostId: 'local', path: '/Users/me/proj' },
+        { id: 'proj', executionHostId: 'runtime:env-1', path: '/srv/proj' }
+      ] as unknown as AppState['repos'],
+      worktreesByRepo: {
+        proj: [
+          { id: 'proj::/Users/me/proj-wt', repoId: 'proj' },
+          { id: 'proj::/srv/proj-wt', repoId: 'proj' }
+        ]
+      } as unknown as AppState['worktreesByRepo']
+    })
+
+    store
+      .getState()
+      .openDiff('proj::/Users/me/proj-wt', '/Users/me/proj-wt/a.ts', 'a.ts', 'typescript', false)
+    store
+      .getState()
+      .openDiff('proj::/srv/proj-wt', '/srv/proj-wt/a.ts', 'a.ts', 'typescript', false)
+
+    const byWorktree = Object.fromEntries(
+      store.getState().openFiles.map((file) => [file.worktreeId, file.runtimeEnvironmentId])
+    )
+    // Local worktree stays local even though the runtime is the global default.
+    expect(byWorktree['proj::/Users/me/proj-wt']).toBeNull()
+    // Runtime worktree routes to its owner rather than falling to the default.
+    expect(byWorktree['proj::/srv/proj-wt']).toBe('env-1')
   })
 
   it('repairs an existing diff tab entry to the correct mode and staged state', () => {

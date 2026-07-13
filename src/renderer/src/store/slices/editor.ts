@@ -335,9 +335,11 @@ function resolveDiffRuntimeEnvironmentId(
   if (explicitRuntimeEnvironmentId !== undefined) {
     return explicitRuntimeEnvironmentId
   }
-  // Why: Source Control callers often know only the worktree. Runtime-host
-  // diffs still need their owner stamped so content loads through runtime RPC.
-  return getRuntimeEnvironmentIdForWorktree(state, worktreeId) ?? undefined
+  // Why: Source Control callers often know only the worktree. Stamp the
+  // worktree's resolved owner verbatim — a `null` owner means explicit local,
+  // so it must not collapse to `undefined` (which routes to the global default
+  // runtime) when a runtime is the default and the worktree is local (#8484).
+  return getRuntimeEnvironmentIdForWorktree(state, worktreeId)
 }
 
 export type PendingEditorReveal = {
