@@ -1877,6 +1877,9 @@ const api = {
     set: (args: Record<string, unknown>): Promise<unknown> =>
       ipcRenderer.invoke('settings:set', args),
 
+    updatePRBotAuthorOverride: (args: { author: string; isBot: boolean }): Promise<unknown> =>
+      ipcRenderer.invoke('settings:update-pr-bot-author-override', args),
+
     listFonts: (): Promise<string[]> => ipcRenderer.invoke('settings:listFonts'),
 
     previewGhosttyImport: (): Promise<GhosttyImportPreview> =>
@@ -4257,6 +4260,13 @@ const api = {
           deviceId: string
         }
     > => ipcRenderer.invoke('mobile:getPairingQR', args),
+
+    getWindowsFirewallStatus: (args?: { address?: string }) =>
+      ipcRenderer.invoke('mobile:getWindowsFirewallStatus', args),
+
+    repairWindowsFirewall: () => ipcRenderer.invoke('mobile:repairWindowsFirewall'),
+
+    openWindowsNetworkSettings: () => ipcRenderer.invoke('mobile:openWindowsNetworkSettings'),
 
     getRuntimePairingUrl: (args?: {
       address?: string

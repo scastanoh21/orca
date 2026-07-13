@@ -2078,6 +2078,7 @@ export type PreloadApi = {
      *  IPC — call sparingly. */
     getSync: () => GlobalSettings | null
     set: (args: Partial<GlobalSettings>) => Promise<GlobalSettings>
+    updatePRBotAuthorOverride: (args: { author: string; isBot: boolean }) => Promise<GlobalSettings>
     listFonts: () => Promise<string[]>
     previewGhosttyImport: () => Promise<GhosttyImportPreview>
     previewWarpThemeImport: (source: WarpThemeImportSource) => Promise<WarpThemeImportPreview>
@@ -3134,6 +3135,21 @@ export type PreloadApi = {
           deviceId: string
         }
     >
+    getWindowsFirewallStatus: (args?: { address?: string }) => Promise<
+      | { supported: false }
+      | {
+          supported: true
+          port: number
+          ruleAllowed: boolean
+          privateFirewallEnabled: boolean
+          networkCategory: 'private' | 'public' | 'domain' | 'unknown'
+          inspectionAvailable: boolean
+        }
+    >
+    repairWindowsFirewall: () => Promise<
+      { ok: true } | { ok: false; reason: 'cancelled' | 'failed' | 'unsupported' }
+    >
+    openWindowsNetworkSettings: () => Promise<boolean>
     getRuntimePairingUrl: (args?: { address?: string; rotate?: boolean }) => Promise<
       | { available: false }
       | {
