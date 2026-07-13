@@ -98,10 +98,8 @@ export function isClaudeAgent(title: string): boolean {
     return true
   }
   if (containsBrailleSpinner(title)) {
-    // Why: named non-Claude agents can carry braille spinners too; Claude-only
-    // prompt-cache paths must not fire for those explicit agent titles. Gate Cursor
-    // by its identity titles (not the token) so a Claude title merely mentioning a
-    // text cursor still resolves as Claude; openclaude stays a token guard.
+    // Why: named non-Claude agents carry braille spinners too. Gate Cursor by its
+    // identity title, not the token, so a Claude title mentioning a cursor stays Claude.
     return !isCursorAgentTitle(title) && !lower.includes('openclaude')
   }
   // Why: permission/action-required Claude titles can omit the usual prefixes.
@@ -182,11 +180,8 @@ export function getAgentLabel(title: string): string | null {
   if (titleHasAgentName(title, 'aider')) {
     return 'Aider'
   }
-  // Why: `cursor` is ordinary editor vocabulary in another agent's task title, so a
-  // name token is not identity — token-matching it labels a Claude/Codex tab working
-  // on cursor code as Cursor. Match Cursor's closed native/synthesized title set
-  // instead (mirrors @cursor orchestration routing), before `isClaudeAgent` so a real
-  // "⠋ Cursor Agent" frame isn't claimed by Claude's generic braille heuristic.
+  // Why: `cursor` is ordinary editor vocabulary, not identity. Match Cursor's closed
+  // title set (mirrors @cursor routing), before `isClaudeAgent` claims the braille frame.
   if (isCursorAgentTitle(title)) {
     return 'Cursor'
   }

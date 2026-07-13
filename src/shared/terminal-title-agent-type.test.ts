@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  isClaudeAgent,
   isGrokRotatingWorkingTitle,
   resolveExplicitTerminalTitleAgentType,
   resolveTerminalTitleAgentType
@@ -79,10 +80,23 @@ describe('resolveTerminalTitleAgentType', () => {
   // the "cursor" it mentions is task text, not Cursor's own identity title.
   it('labels cursor-mentioning agent tabs by their true agent, real Cursor as cursor', () => {
     expect(resolveTerminalTitleAgentType('⠋ Cursor Agent')).toBe('cursor')
+    expect(resolveTerminalTitleAgentType('Cursor Agent')).toBe('cursor')
     expect(resolveTerminalTitleAgentType('Cursor ready')).toBe('cursor')
+    expect(resolveTerminalTitleAgentType('Cursor - action required')).toBe('cursor')
     expect(resolveTerminalTitleAgentType('⠋ preserve cursor visibility across replays')).toBe(
       'claude'
     )
     expect(resolveTerminalTitleAgentType('⠋ Codex: fix cursor offsets')).toBe('codex')
+  })
+})
+
+// Why: this module carries its own isClaudeAgent copy parallel to agent-title-identity.ts;
+// both got the identical isCursorAgentTitle guard, so pin this copy directly to catch drift.
+describe('isClaudeAgent', () => {
+  it('excludes real Cursor identity titles, keeps cursor-mentioning Claude braille titles', () => {
+    expect(isClaudeAgent('⠋ Cursor Agent')).toBe(false)
+    expect(isClaudeAgent('Cursor ready')).toBe(false)
+    expect(isClaudeAgent('⠋ preserve cursor visibility across replays')).toBe(true)
+    expect(isClaudeAgent('⠋ OpenClaude')).toBe(false)
   })
 })
