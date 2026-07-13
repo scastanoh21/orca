@@ -6,71 +6,94 @@ import {
 } from '../source-control/hosted-review-git-options'
 import { parseAuthStatus } from './auth-diagnose'
 import {
+  ghRepoExecOptions,
   getRemoteUrlForRepo,
   githubRepoContext,
-  parseGitHubRemoteIdentity
+  parseGitHubRemoteIdentity,
+  type LocalGitExecOptions
 } from './github-repository-identity'
 
 export type GitHubEnterpriseRepoSlug = GitHubOwnerRepo & { host: string }
 
 // Why: `gh` only ever manages github.com / GitHub Enterprise credentials, so a
-// host that `gh auth status` reports as logged-in is definitively a GitHub host.
-// This is the same signal `glab auth status` provides for GitLab self-hosted
-// detection, mirrored here so GHES is not left to fall through to Gitea (#8312).
-const AUTHENTICATED_HOSTS_TTL_MS = 60_000
+// host `gh auth status` reports as logged-in is definitively a GitHub host. This
+// mirrors the `glab auth status` signal GitLab self-hosted detection uses, so a
+// GHES remote is not left to fall through to Gitea (#8312).
+const HOST_AUTH_TTL_MS = 60_000
 
-type AuthenticatedHostsCacheEntry = {
-  hosts: ReadonlySet<string>
+type HostAuthCacheEntry = {
+  authenticated: boolean
   expiresAt: number
 }
 
-const authenticatedHostsCache = new Map<string, AuthenticatedHostsCacheEntry>()
+const hostAuthCache = new Map<string, HostAuthCacheEntry>()
 
-function connectionCacheKey(connectionId?: string | null): string {
-  return connectionId ?? 'local'
+// Why: gh's authenticated hosts live in per-runtime config — a WSL distro and an
+// SSH host each carry their own `hosts.yml` — so cache state must be keyed by the
+// runtime that executes gh, not shared under one "local" bucket. Mirrors the
+// runtime scoping used by owner/repo resolution.
+function runtimeCacheKey(connectionId?: string | null, wslDistro?: string): string {
+  return connectionId ?? `local:${wslDistro ?? 'host'}`
 }
 
 /** @internal - exposed for tests only */
-export function _resetAuthenticatedGitHubHostsCache(): void {
-  authenticatedHostsCache.clear()
+export function _resetGitHubHostAuthCache(): void {
+  hostAuthCache.clear()
+}
+
+// Only gh's own stdout/stderr — not the Error.message — counts as an
+// authoritative answer. A spawn failure (gh missing, ENOENT) carries just a
+// message and no command output, and must stay indeterminate rather than be
+// read as "host not authenticated".
+function ghCommandOutput(error: unknown): string {
+  const execErr = error as { stdout?: unknown; stderr?: unknown }
+  return [execErr?.stdout, execErr?.stderr]
+    .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+    .join('\n')
 }
 
 /**
- * Hosts the local `gh` CLI is authenticated to, lowercased. Cached briefly so a
- * `gh auth login --hostname <ghes>` performed after startup is picked up without
- * spawning `gh auth status` on every provider-detection poll. Failures are not
- * cached so a later probe (gh installed, tunnel ready) can still discover hosts.
+ * Whether `gh` is authenticated to `host` from the repository's own runtime.
+ *
+ * The probe runs `gh auth status --hostname <host>` with the repo's execution
+ * options (cwd / WSL distro, or SSH-local like the create path), so a GHES login
+ * stored only in that runtime's gh config — or a `GH_ENTERPRISE_TOKEN` inferred
+ * from it — is honored instead of the host/default-distro gh. Cached briefly per
+ * runtime+host so provider-detection polling does not re-spawn gh each time.
  */
-export async function getAuthenticatedGitHubHosts(
-  connectionId?: string | null
-): Promise<ReadonlySet<string>> {
-  const key = connectionCacheKey(connectionId)
+export async function isGitHubHostAuthenticated(
+  host: string,
+  repoPath: string,
+  connectionId?: string | null,
+  localGitOptions: LocalGitExecOptions = {}
+): Promise<boolean> {
+  const normalizedHost = host.toLowerCase()
+  const cacheKey = `${runtimeCacheKey(connectionId, localGitOptions.wslDistro)}\0${normalizedHost}`
   const now = Date.now()
-  const cached = authenticatedHostsCache.get(key)
+  const cached = hostAuthCache.get(cacheKey)
   if (cached && cached.expiresAt > now) {
-    return cached.hosts
+    return cached.authenticated
   }
-  let text = ''
+  const execOptions = ghRepoExecOptions(githubRepoContext(repoPath, connectionId, localGitOptions))
+  let authenticated: boolean
   try {
-    // Why: `gh auth status` reads gh's own config, so it is host-scoped rather
-    // than cwd-scoped — no repo context is needed to enumerate logged-in hosts.
-    const { stdout, stderr } = await ghExecFileAsync(['auth', 'status'])
-    text = `${stdout}\n${stderr}`
-  } catch (err) {
-    // gh exits non-zero when any host has a token problem but still prints the
-    // per-host status we parse; recover its output before giving up.
-    const execErr = err as { stdout?: unknown; stderr?: unknown }
-    text = `${String(execErr?.stdout ?? '')}\n${String(execErr?.stderr ?? '')}`.trim()
-    if (!text) {
-      return new Set()
+    await ghExecFileAsync(['auth', 'status', '--hostname', normalizedHost], execOptions)
+    authenticated = true
+  } catch (error) {
+    const output = ghCommandOutput(error)
+    if (!output) {
+      // Indeterminate (gh missing / spawn failure) — do not cache so a later
+      // probe (gh installed, tunnel ready, token added) can recover.
+      return false
     }
+    // gh exits non-zero when a host has a token problem but still prints the
+    // per-host status; treat the host as GitHub only when it is actually listed.
+    authenticated = parseAuthStatus(output).some(
+      (account) => account.host.toLowerCase() === normalizedHost
+    )
   }
-  const hosts = new Set(parseAuthStatus(text).map((account) => account.host.toLowerCase()))
-  if (hosts.size === 0) {
-    return hosts
-  }
-  authenticatedHostsCache.set(key, { hosts, expiresAt: now + AUTHENTICATED_HOSTS_TTL_MS })
-  return hosts
+  hostAuthCache.set(cacheKey, { authenticated, expiresAt: now + HOST_AUTH_TTL_MS })
+  return authenticated
 }
 
 /**
@@ -85,7 +108,8 @@ export async function getEnterpriseGitHubRepoSlug(
   connectionId?: string | null,
   options: HostedReviewExecutionOptions = {}
 ): Promise<GitHubEnterpriseRepoSlug | null> {
-  const context = githubRepoContext(repoPath, connectionId, getHostedReviewLocalGitOptions(options))
+  const localGitOptions = getHostedReviewLocalGitOptions(options)
+  const context = githubRepoContext(repoPath, connectionId, localGitOptions)
   let remoteUrl: string | null
   try {
     remoteUrl = await getRemoteUrlForRepo(context, 'origin')
@@ -96,8 +120,11 @@ export async function getEnterpriseGitHubRepoSlug(
   if (!identity || identity.host === 'github.com') {
     return null
   }
-  const authenticatedHosts = await getAuthenticatedGitHubHosts(connectionId)
-  return authenticatedHosts.has(identity.host)
-    ? { owner: identity.owner, repo: identity.repo, host: identity.host }
-    : null
+  const authenticated = await isGitHubHostAuthenticated(
+    identity.host,
+    repoPath,
+    connectionId,
+    localGitOptions
+  )
+  return authenticated ? { owner: identity.owner, repo: identity.repo, host: identity.host } : null
 }
