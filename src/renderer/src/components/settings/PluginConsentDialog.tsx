@@ -92,12 +92,16 @@ export function PluginConsentDialog({
     if (!plugin?.hasSkills || !plugin.consentFingerprint) {
       return
     }
+    const requestId = crypto.randomUUID()
     let current = true
     void window.api.plugins
-      .previewConsent({
-        pluginKey: plugin.pluginKey,
-        reviewedFingerprint: plugin.consentFingerprint
-      })
+      .previewConsent(
+        {
+          pluginKey: plugin.pluginKey,
+          reviewedFingerprint: plugin.consentFingerprint
+        },
+        requestId
+      )
       .then((result) => {
         if (!current) {
           return
@@ -113,6 +117,7 @@ export function PluginConsentDialog({
       })
     return () => {
       current = false
+      window.api.plugins.cancelConsentPreview(requestId)
     }
   }, [plugin])
 

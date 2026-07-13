@@ -3255,7 +3255,11 @@ export type PreloadApi = {
   }
   plugins: {
     list: () => Promise<PluginHostListEntry[]>
-    previewConsent: (args: PluginConsentPreviewRequest) => Promise<PluginConsentPreviewResult>
+    previewConsent: (
+      args: PluginConsentPreviewRequest,
+      requestId: string
+    ) => Promise<PluginConsentPreviewResult>
+    cancelConsentPreview: (requestId: string) => void
     listThemes: () => Promise<PluginThemeRegistration[]>
     listLanguagePacks: () => Promise<PluginLanguagePackRegistration[]>
     listIconThemes: () => Promise<PluginIconThemeMetadata[]>

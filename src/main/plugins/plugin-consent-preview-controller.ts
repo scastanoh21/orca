@@ -110,6 +110,11 @@ export class PluginConsentPreviewController {
       } finally {
         record.consumers.delete(consumer)
         if (record.consumers.size === 0) {
+          // A canceled snapshot must not remain a coalescing target while its
+          // bounded filesystem reads drain in the background.
+          if (this.inFlight.get(identity) === record) {
+            this.inFlight.delete(identity)
+          }
           record.controller.abort()
         }
       }

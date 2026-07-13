@@ -19,10 +19,6 @@ import type { PluginService } from '../plugins/plugin-service'
 import { bindPluginPanelOwnerLifecycle } from '../plugins/plugin-panel-owner-lifecycle'
 import { isQualifiedPluginKey } from '../../shared/plugins/plugin-manifest'
 import { pluginConsentRequestSchema } from '../../shared/plugins/plugin-consent-request'
-import {
-  pluginConsentPreviewRequestSchema,
-  type PluginConsentPreviewResult
-} from '../../shared/plugins/plugin-consent-preview'
 import { normalizePluginIdList } from '../../shared/plugins/plugin-consent-state'
 import {
   isAllowedPluginGitUrl,
@@ -34,7 +30,7 @@ import {
   registerPluginMarketplaceHandlers,
   type PluginMarketplaceHandlerServices
 } from './plugin-marketplaces'
-import { previewPluginConsentForClient } from '../plugins/plugin-consent-preview-controller'
+import { registerPluginConsentPreviewHandlers } from './plugin-consent-preview-ipc'
 
 export function parsePluginConsentArgs(args: unknown): z.infer<typeof pluginConsentRequestSchema> {
   return pluginConsentRequestSchema.parse(args)
@@ -132,17 +128,7 @@ export function registerPluginHandlers(
   // Why: startup discovery is fire-and-forget; every handler awaits it so an
   // early renderer fetch can't observe the empty pre-discovery list.
   ipcMain.handle('plugins:list', async () => listPluginsForClients(pluginService))
-  ipcMain.handle(
-    'plugins:previewConsent',
-    async (event, args: unknown): Promise<PluginConsentPreviewResult> => {
-      await pluginService.whenReady()
-      return previewPluginConsentForClient(
-        pluginService,
-        pluginConsentPreviewRequestSchema.parse(args),
-        { ownerKey: rendererPanelOwner(event.sender.id) }
-      )
-    }
-  )
+  registerPluginConsentPreviewHandlers(pluginService)
   ipcMain.handle('plugins:listThemes', async () => {
     await pluginService.whenReady()
     return pluginService.contentPacks.themes.list()

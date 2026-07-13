@@ -564,8 +564,13 @@ const api = {
 
   plugins: {
     list: (): Promise<PluginHostListEntry[]> => ipcRenderer.invoke('plugins:list'),
-    previewConsent: (args: PluginConsentPreviewRequest): Promise<PluginConsentPreviewResult> =>
-      ipcRenderer.invoke('plugins:previewConsent', args),
+    previewConsent: (
+      args: PluginConsentPreviewRequest,
+      requestId: string
+    ): Promise<PluginConsentPreviewResult> =>
+      ipcRenderer.invoke('plugins:previewConsent', { request: args, requestId }),
+    cancelConsentPreview: (requestId: string): void =>
+      ipcRenderer.send('plugins:cancelConsentPreview', { requestId }),
     listThemes: () => ipcRenderer.invoke('plugins:listThemes'),
     listLanguagePacks: () => ipcRenderer.invoke('plugins:listLanguagePacks'),
     listIconThemes: () => ipcRenderer.invoke('plugins:listIconThemes'),

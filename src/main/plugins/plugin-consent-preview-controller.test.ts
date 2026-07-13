@@ -104,4 +104,38 @@ describe('PluginConsentPreviewController', () => {
     })
     expect(loader.mock.calls[0]?.[2]?.aborted).toBe(true)
   })
+
+  it('replaces an aborted snapshot without letting its settlement delete the replacement', async () => {
+    const finishes: ((result: PluginConsentPreviewResult) => void)[] = []
+    const loader = vi.fn(
+      () =>
+        new Promise<PluginConsentPreviewResult>((resolve) => {
+          finishes.push(resolve)
+        })
+    )
+    const service = pluginService()
+    const controller = new PluginConsentPreviewController(loader)
+    const disconnected = new AbortController()
+    const first = controller.preview(service, request('first'), {
+      ownerKey: 'client-one',
+      signal: disconnected.signal
+    })
+
+    disconnected.abort()
+    await expect(first).resolves.toEqual({
+      ok: false,
+      error: 'plugin consent preview unavailable'
+    })
+
+    const second = controller.preview(service, request('first'), { ownerKey: 'client-two' })
+    expect(loader).toHaveBeenCalledTimes(2)
+    finishes[0]?.({ ok: false, error: 'plugin consent preview unavailable' })
+    await Promise.resolve()
+
+    const third = controller.preview(service, request('first'), { ownerKey: 'client-three' })
+    expect(loader).toHaveBeenCalledTimes(2)
+    finishes[1]?.(success)
+    await expect(second).resolves.toEqual(success)
+    await expect(third).resolves.toEqual(success)
+  })
 })
