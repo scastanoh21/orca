@@ -49,11 +49,6 @@ export const ORCA_CLOUD_CALLBACK_SUCCESS_PAGE = `<!doctype html>
         padding: 48px 0;
         text-align: center;
       }
-      .brand {
-        margin-bottom: 36px;
-        font-size: 14px;
-        font-weight: 650;
-      }
       .success-mark {
         width: 44px;
         height: 44px;
@@ -82,7 +77,6 @@ export const ORCA_CLOUD_CALLBACK_SUCCESS_PAGE = `<!doctype html>
   </head>
   <body>
     <main>
-      <div class="brand">Orca</div>
       <div class="success-mark" aria-hidden="true">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="m5 12 4 4L19 6"></path>
