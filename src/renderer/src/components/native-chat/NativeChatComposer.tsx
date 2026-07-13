@@ -44,6 +44,7 @@ import { useNativeChatComposerPaste } from './use-native-chat-composer-paste'
 import { useNativeChatExternalAttachments } from './use-native-chat-external-attachments'
 import { dispatchDictationControl } from '../dictation/dictation-control-events'
 import { useNativeChatComposerKeyDown } from './use-native-chat-composer-keydown'
+import { useNativeChatSendLifecycle } from './use-native-chat-send-lifecycle'
 
 // Why: a plain ESC byte is what the agent TUIs read as the interrupt key over a
 // PTY (matching how xterm forwards Escape). The richer interrupt-intent
@@ -126,6 +127,10 @@ export const NativeChatComposer = forwardRef<NativeChatComposerHandle, NativeCha
     const [dictationPressed, setDictationPressed] = useState(false)
     const skills = useNativeChatSkills(agent, terminalTabId)
     const textareaRef = useRef<HTMLTextAreaElement>(null)
+    const { cancelPendingSends, trackPendingSend } = useNativeChatSendLifecycle(
+      terminalTabId,
+      targetPtyId
+    )
     const dictationState = useAppStore((store) => store.dictationState)
     const voiceSettings = useAppStore((store) => store.settings?.voice)
     const isDictationHoldMode = voiceSettings?.dictationMode === 'hold'
@@ -294,11 +299,13 @@ export const NativeChatComposer = forwardRef<NativeChatComposerHandle, NativeCha
       // chip needs no TUI un-paste: send images, then text, then Enter atomically.
       const isSlashCommand = isSlashCommandDraft(text)
       if (isSlashCommand) {
-        sendNativeChatMessage(target.settings, target.ptyId, text)
+        trackPendingSend(sendNativeChatMessage(target.settings, target.ptyId, text))
       } else if (imagePaths.length > 0) {
-        sendNativeChatMessageWithImageAttachments(target.settings, target.ptyId, text, imagePaths)
+        trackPendingSend(
+          sendNativeChatMessageWithImageAttachments(target.settings, target.ptyId, text, imagePaths)
+        )
       } else if (text.trim().length > 0) {
-        sendNativeChatMessage(target.settings, target.ptyId, text)
+        trackPendingSend(sendNativeChatMessage(target.settings, target.ptyId, text))
       } else {
         submitNativeChatPrompt(target.settings, target.ptyId)
       }
@@ -329,10 +336,12 @@ export const NativeChatComposer = forwardRef<NativeChatComposerHandle, NativeCha
       resolveTarget,
       onOptimisticSend,
       onSlashCommand,
+      trackPendingSend,
       setDraft
     ])
 
     const interrupt = useCallback(() => {
+      cancelPendingSends()
       if (isWorking && onStop) {
         onStop()
         return
@@ -342,7 +351,7 @@ export const NativeChatComposer = forwardRef<NativeChatComposerHandle, NativeCha
         return
       }
       sendRuntimePtyInput(target.settings, target.ptyId, ESC)
-    }, [isWorking, onStop, resolveTarget])
+    }, [cancelPendingSends, isWorking, onStop, resolveTarget])
 
     const chooseSlash = useCallback(
       (command: SlashCommandSuggestion) => {
@@ -362,7 +371,7 @@ export const NativeChatComposer = forwardRef<NativeChatComposerHandle, NativeCha
         if (!target || disabled) {
           return
         }
-        sendNativeChatMessage(target.settings, target.ptyId, next)
+        trackPendingSend(sendNativeChatMessage(target.settings, target.ptyId, next))
         // Surface the command as a system line (this is the autocomplete-menu
         // dispatch path; the typed-Enter path in `send` does the same).
         onSlashCommand?.(next.trim())
@@ -376,7 +385,7 @@ export const NativeChatComposer = forwardRef<NativeChatComposerHandle, NativeCha
         setActiveSuggestion(0)
         setNotice(null)
       },
-      [agent, disabled, resolveTarget, onSlashCommand, setDraft]
+      [agent, disabled, resolveTarget, onSlashCommand, setDraft, trackPendingSend]
     )
 
     const handleKeyDown = useNativeChatComposerKeyDown({
