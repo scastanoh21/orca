@@ -116,14 +116,22 @@ function createWslRunner(
       return options.interopReady === false ? 'no' : 'yes'
     }
     if (command.includes('rm -f')) {
-      if (
-        files.has(bridgePath) &&
-        !files.get(bridgePath)?.includes('# Orca managed WSL CLI PowerShell bridge')
-      ) {
-        throw new Error('__ORCA_CONFLICT__')
+      if (command.includes(`rm -f '${commandPath}'`)) {
+        if (
+          files.has(bridgePath) &&
+          !files.get(bridgePath)?.includes('# Orca managed WSL CLI PowerShell bridge')
+        ) {
+          throw new Error('__ORCA_CONFLICT__')
+        }
+        files.delete(commandPath)
+        files.delete(bridgePath)
       }
-      files.delete(commandPath)
-      files.delete(bridgePath)
+      if (
+        command.includes(legacyCommandPath) &&
+        files.get(legacyCommandPath)?.includes('# Orca managed WSL CLI launcher')
+      ) {
+        files.delete(legacyCommandPath)
+      }
       return ''
     }
     if (command.includes('cat ')) {
@@ -469,11 +477,18 @@ describe('WslCliInstaller', () => {
       wslRunner: conflictingBridge.runner
     })
 
-    await expect(conflictingBridgeInstaller.repairManagedRegistration()).rejects.toThrow(
-      '__ORCA_CONFLICT__'
-    )
+    // Why: a stale launcher with a user-owned bridge must surface as a
+    // non-throwing conflict, not retry a doomed install on every startup.
+    await expect(conflictingBridgeInstaller.repairManagedRegistration()).resolves.toMatchObject({
+      changed: false,
+      managed: true,
+      status: { state: 'conflict' }
+    })
     expect(conflictingBridge.getBridge()).toBe('Write-Output "user-owned bridge"\n')
     expect(conflictingBridge.getFile()).toBe(PRE_RC4_MANAGED_WSL_LAUNCHER)
+    expect(
+      conflictingBridge.calls.some((command) => command.includes('cat > "$command_tmp"'))
+    ).toBe(false)
   })
 
   it('retains command ownership when only the bridge conflicts', async () => {
@@ -536,6 +551,79 @@ describe('WslCliInstaller', () => {
     expect(unmanagedLegacy.getLegacyFile()).toBe('#!/bin/sh\necho user-owned\n')
   })
 
+  it('does not adopt a legacy-managed registration when the bridge is user-owned', async () => {
+    const wsl = createWslRunner(null, true, {
+      initialBridge: 'Write-Output "user-owned bridge"\n',
+      initialLegacyFile: PRE_RC4_MANAGED_WSL_LAUNCHER
+    })
+    const installer = new WslCliInstaller({
+      platform: 'win32',
+      distro: 'Ubuntu',
+      hostInstaller: { getStatus: async () => makeHostStatus() },
+      wslRunner: wsl.runner
+    })
+
+    // Why: adoption would fail install()'s bridge guard on every startup;
+    // repair must report blocked-but-managed instead of a doomed install.
+    await expect(installer.repairManagedRegistration()).resolves.toMatchObject({
+      changed: false,
+      managed: true,
+      status: { state: 'not_installed' }
+    })
+    expect(wsl.getLegacyFile()).toBe(PRE_RC4_MANAGED_WSL_LAUNCHER)
+    expect(wsl.calls.some((command) => command.includes('cat > "$command_tmp"'))).toBe(false)
+  })
+
+  it('removes the managed legacy launcher on removal so reconciliation cannot re-adopt it', async () => {
+    const nativeLauncher = 'C:\\Orca\\resources\\bin\\orca.exe'
+    const managedLegacy = createWslRunner(null, true, {
+      initialBridge: _internals.buildWslBridgeScript(),
+      initialLegacyFile: PRE_RC4_MANAGED_WSL_LAUNCHER
+    })
+    const managedLegacyInstaller = new WslCliInstaller({
+      platform: 'win32',
+      distro: 'Ubuntu',
+      hostInstaller: { getStatus: async () => makeHostStatus(nativeLauncher) },
+      wslRunner: managedLegacy.runner
+    })
+    await expect(managedLegacyInstaller.remove()).resolves.toMatchObject({
+      state: 'not_installed'
+    })
+    expect(managedLegacy.getLegacyFile()).toBeNull()
+
+    const unmanagedLegacy = createWslRunner(null, true, {
+      initialLegacyFile: '#!/bin/sh\necho user-owned\n'
+    })
+    const unmanagedInstaller2 = new WslCliInstaller({
+      platform: 'win32',
+      distro: 'Ubuntu',
+      hostInstaller: { getStatus: async () => makeHostStatus(nativeLauncher) },
+      wslRunner: unmanagedLegacy.runner
+    })
+    await expect(unmanagedInstaller2.remove()).resolves.toMatchObject({
+      state: 'not_installed'
+    })
+    expect(unmanagedLegacy.getLegacyFile()).toBe('#!/bin/sh\necho user-owned\n')
+
+    const installedWithLegacy = createWslRunner(
+      _internals.buildWslLauncher(
+        nativeLauncher,
+        '/home/alice/.local/share/orca/orca-wsl-bridge.ps1'
+      ),
+      true,
+      { initialLegacyFile: PRE_RC4_MANAGED_WSL_LAUNCHER }
+    )
+    const installedInstaller = new WslCliInstaller({
+      platform: 'win32',
+      distro: 'Ubuntu',
+      hostInstaller: { getStatus: async () => makeHostStatus(nativeLauncher) },
+      wslRunner: installedWithLegacy.runner
+    })
+    await expect(installedInstaller.remove()).resolves.toMatchObject({ state: 'not_installed' })
+    expect(installedWithLegacy.getFile()).toBeNull()
+    expect(installedWithLegacy.getLegacyFile()).toBeNull()
+  })
+
   it('keeps the pre-rc4 files on a transactional replacement failure', async () => {
     const bridge = _internals.buildWslBridgeScript()
     const wsl = createWslRunner(PRE_RC4_MANAGED_WSL_LAUNCHER, true, {
@@ -559,11 +647,15 @@ describe('WslCliInstaller', () => {
     const installCommand = wsl.calls.find((command) => command.includes('cat > "$command_tmp"'))
     expect(installCommand).toContain('rollback() {')
     expect(installCommand).toContain('set +e')
-    expect(installCommand).toContain('command_backup="${command_tmp}.backup"')
     expect(installCommand).toContain('bridge_backup="${bridge_tmp}.backup"')
+    expect(installCommand).toContain('cp -p')
     expect(installCommand).toContain('elif [ "$bridge_touched" -eq 1 ]')
-    expect(installCommand).toContain('elif [ "$command_touched" -eq 1 ]')
     expect(installCommand).toContain('committed=1')
+    expect(installCommand).toContain('flock -x -w 30 9')
+    // Why: the command replace must stay one atomic rename; a mv-based backup
+    // would leave a window where a concurrent shell finds no orca-ide at all.
+    expect(installCommand).not.toContain('command_backup')
+    expect(installCommand).not.toContain(`mv -f '/home/alice/.local/bin/orca-ide'`)
   })
 
   it.skipIf(process.platform === 'win32')(

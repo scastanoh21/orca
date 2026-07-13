@@ -5,6 +5,8 @@ import type { CliInstallStatus } from '../../shared/cli-install-types'
 import { getDefaultWslDistro } from '../wsl'
 import { CliInstaller } from './cli-installer'
 import {
+  buildManagedLegacyRemoveCommand,
+  buildRegistrationLockPrelude,
   buildSafeRemoveCommand,
   buildSafeReplaceGuard,
   buildWslBridgeScript,
@@ -125,17 +127,31 @@ export class WslCliInstaller {
       })
     }
 
+    // Why: a stale managed launcher is only repairable when its bridge is
+    // ours too; reporting conflict here keeps repair from a doomed install
+    // whose bridge guard would fail on every startup.
+    const bridgeConflict = managed && (await this.isBridgeConflict(ready.distro, ready.bridgePath))
     return this.buildStatus({
       distro: ready.distro,
       commandPath: ready.commandPath,
       launcherPath: ready.launcherPath,
-      state: managed ? 'stale' : 'conflict',
+      state: managed && !bridgeConflict ? 'stale' : 'conflict',
       currentTarget,
       pathConfigured: ready.pathConfigured,
-      detail: managed
-        ? `${ready.commandPath} points to a different Orca launcher.`
-        : `${ready.commandPath} exists but is not managed by Orca.`
+      detail: !managed
+        ? `${ready.commandPath} exists but is not managed by Orca.`
+        : bridgeConflict
+          ? `${ready.bridgePath} exists but is not managed by Orca.`
+          : `${ready.commandPath} points to a different Orca launcher.`
     })
+  }
+
+  private async isBridgeConflict(distro: string, bridgePath: string): Promise<boolean> {
+    const bridgeContent = await this.readCommandFile(distro, bridgePath)
+    if (bridgeContent === null) {
+      return false
+    }
+    return bridgeContent === 'not_file' || !bridgeContent.includes(BRIDGE_MANAGED_MARKER)
   }
 
   async repairManagedRegistration(): Promise<ManagedWslCliRepairResult> {
@@ -150,7 +166,7 @@ export class WslCliInstaller {
     }
 
     if (status.state === 'stale') {
-      return { changed: true, managed: true, status: await this.install() }
+      return { changed: true, managed: true, status: await this.install(status) }
     }
 
     const legacyCommandPath = status.commandPath
@@ -167,13 +183,24 @@ export class WslCliInstaller {
       return { changed: false, managed: status.state === 'installed', status }
     }
 
+    if (
+      status.commandPath &&
+      (await this.isBridgeConflict(this.distro, getBridgePathFromCommandPath(status.commandPath)))
+    ) {
+      // Why: adopting the legacy command would fail install()'s bridge guard
+      // forever; stay registered so reconciliation retries after an update.
+      return { changed: false, managed: true, status }
+    }
+
     // Why: a legacy-only managed command proves the user opted into WSL CLI
     // registration; install the current name before removing that owned script.
-    return { changed: true, managed: true, status: await this.install() }
+    return { changed: true, managed: true, status: await this.install(status) }
   }
 
-  async install(): Promise<CliInstallStatus> {
-    const status = await this.getStatus()
+  async install(precomputedStatus?: CliInstallStatus): Promise<CliInstallStatus> {
+    // Why: repair passes its fresh probe; re-probing here would double every
+    // WSL round trip on the startup reconciliation path.
+    const status = precomputedStatus ?? (await this.getStatus())
     if (!status.supported || !status.commandPath || !status.launcherPath) {
       throw new Error(status.detail ?? 'WSL CLI registration is unavailable.')
     }
@@ -181,25 +208,24 @@ export class WslCliInstaller {
       throw new Error(`Refusing to replace non-Orca command at ${status.commandPath}.`)
     }
 
-    // Why: the launcher and PowerShell bridge are one registration; preserve
-    // both originals until both replacements have committed successfully.
+    // Why: the launcher and PowerShell bridge are one registration; the
+    // command replacement stays a single atomic rename (never missing for a
+    // concurrent shell) while a bridge copy enables rollback of the pair.
     await this.run(
       this.distro as string,
       [
         'set -euo pipefail',
         `mkdir -p ${quoteShell(status.pathDirectory as string)}`,
         `mkdir -p ${quoteShell(getPosixDirname(getBridgePathFromCommandPath(status.commandPath)))}`,
+        buildRegistrationLockPrelude(status.commandPath),
         `command_tmp=${quoteShell(`${status.commandPath}.tmp`)}.$$`,
         `bridge_path=${quoteShell(getBridgePathFromCommandPath(status.commandPath))}`,
         `legacy_command_path=${quoteShell(
           `${getPosixDirname(status.commandPath)}/${LEGACY_WSL_COMMAND_NAME}`
         )}`,
         'bridge_tmp="${bridge_path}.tmp.$$"',
-        'command_backup="${command_tmp}.backup"',
         'bridge_backup="${bridge_tmp}.backup"',
-        'command_had_original=0',
         'bridge_had_original=0',
-        'command_touched=0',
         'bridge_touched=0',
         'committed=0',
         'rollback() {',
@@ -207,9 +233,8 @@ export class WslCliInstaller {
         '  set +e',
         '  if [ "$committed" -ne 1 ]; then',
         `    if [ "$bridge_had_original" -eq 1 ]; then mv -f "$bridge_backup" ${quoteShell(getBridgePathFromCommandPath(status.commandPath))}; elif [ "$bridge_touched" -eq 1 ]; then rm -f ${quoteShell(getBridgePathFromCommandPath(status.commandPath))}; fi`,
-        `    if [ "$command_had_original" -eq 1 ]; then mv -f "$command_backup" ${quoteShell(status.commandPath)}; elif [ "$command_touched" -eq 1 ]; then rm -f ${quoteShell(status.commandPath)}; fi`,
         '  fi',
-        '  rm -f "$command_tmp" "$bridge_tmp" "$command_backup" "$bridge_backup"',
+        '  rm -f "$command_tmp" "$bridge_tmp" "$bridge_backup"',
         '  exit "$result"',
         '}',
         'trap rollback EXIT',
@@ -231,17 +256,15 @@ export class WslCliInstaller {
           getBridgePathFromCommandPath(status.commandPath),
           BRIDGE_MANAGED_MARKER
         ),
-        `if [ -f ${quoteShell(status.commandPath)} ]; then mv -f ${quoteShell(status.commandPath)} "$command_backup"; command_had_original=1; command_touched=1; fi`,
-        `if [ -f ${quoteShell(getBridgePathFromCommandPath(status.commandPath))} ]; then mv -f ${quoteShell(getBridgePathFromCommandPath(status.commandPath))} "$bridge_backup"; bridge_had_original=1; bridge_touched=1; fi`,
+        `if [ -f ${quoteShell(getBridgePathFromCommandPath(status.commandPath))} ]; then cp -p ${quoteShell(getBridgePathFromCommandPath(status.commandPath))} "$bridge_backup"; bridge_had_original=1; fi`,
         `mv -f "$bridge_tmp" ${quoteShell(getBridgePathFromCommandPath(status.commandPath))}`,
         'bridge_touched=1',
         `mv -f "$command_tmp" ${quoteShell(status.commandPath)}`,
-        'command_touched=1',
         'committed=1',
-        'rm -f "$command_backup" "$bridge_backup"',
+        'rm -f "$bridge_backup"',
         // Why: the command was renamed to avoid GNOME Orca; remove only the
         // old Orca-managed WSL wrapper after the replacement has committed.
-        `if [ ! -L "$legacy_command_path" ] && [ -f "$legacy_command_path" ] && grep -Fq ${quoteShell(MANAGED_MARKER)} "$legacy_command_path"; then rm -f "$legacy_command_path"; fi`,
+        buildManagedLegacyRemoveCommand('"$legacy_command_path"'),
         'trap - EXIT'
       ].join('\n')
     )
@@ -253,14 +276,26 @@ export class WslCliInstaller {
     if (!status.supported || !status.commandPath) {
       return status
     }
+    const legacyCommandPath = `${getPosixDirname(status.commandPath)}/${LEGACY_WSL_COMMAND_NAME}`
     if (status.state === 'not_installed') {
+      // Why: a managed legacy `orca` left behind would later be re-adopted by
+      // startup reconciliation as opt-in proof, silently undoing this removal.
+      await this.run(
+        this.distro as string,
+        ['set -euo pipefail', buildManagedLegacyRemoveCommand(quoteShell(legacyCommandPath))].join(
+          '\n'
+        )
+      )
       return status
     }
     if (status.state === 'conflict') {
       throw new Error(`Refusing to remove non-Orca command at ${status.commandPath}.`)
     }
 
-    await this.run(this.distro as string, buildSafeRemoveCommand(status.commandPath))
+    await this.run(
+      this.distro as string,
+      buildSafeRemoveCommand(status.commandPath, legacyCommandPath)
+    )
     return this.getStatus()
   }
 

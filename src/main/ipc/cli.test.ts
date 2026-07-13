@@ -6,7 +6,6 @@ const {
   wslInstallerMock,
   recordInstalledMock,
   recordRemovedMock,
-  invalidateRegistryMock,
   getDefaultWslDistroMock
 } = vi.hoisted(() => ({
   handlers: new Map<string, (...args: unknown[]) => unknown>(),
@@ -14,7 +13,6 @@ const {
   wslInstallerMock: vi.fn(),
   recordInstalledMock: vi.fn(),
   recordRemovedMock: vi.fn(),
-  invalidateRegistryMock: vi.fn(),
   getDefaultWslDistroMock: vi.fn()
 }))
 
@@ -23,8 +21,7 @@ vi.mock('../cli/cli-installer', () => ({ CliInstaller: vi.fn() }))
 vi.mock('../cli/wsl-cli-installer', () => ({ WslCliInstaller: wslInstallerMock }))
 vi.mock('../cli/wsl-cli-registration-registry', () => ({
   recordWslCliRegistrationInstalled: recordInstalledMock,
-  recordWslCliRegistrationRemoved: recordRemovedMock,
-  invalidateWslCliRegistrationRegistry: invalidateRegistryMock
+  recordWslCliRegistrationRemoved: recordRemovedMock
 }))
 vi.mock('../persistence', () => ({ getCanonicalUserDataPath: () => '/canonical-user-data' }))
 vi.mock('../startup/hydrate-shell-path', () => ({
@@ -57,7 +54,6 @@ describe('WSL CLI registration IPC', () => {
     wslInstallerMock.mockReset()
     recordInstalledMock.mockReset().mockResolvedValue(undefined)
     recordRemovedMock.mockReset().mockResolvedValue(undefined)
-    invalidateRegistryMock.mockReset().mockResolvedValue(undefined)
     getDefaultWslDistroMock.mockReset().mockReturnValue('Ubuntu')
     registerCliHandlers()
   })
@@ -104,7 +100,6 @@ describe('WSL CLI registration IPC', () => {
     recordInstalledMock.mockRejectedValueOnce(new Error('ENOSPC'))
 
     await expect(getWslHandler('cli:installWsl')({})).resolves.toEqual({ state: 'installed' })
-    expect(invalidateRegistryMock).toHaveBeenCalledWith('/canonical-user-data')
   })
 
   it('keeps successful removal successful when advisory registry persistence fails', async () => {
@@ -115,7 +110,6 @@ describe('WSL CLI registration IPC', () => {
     recordRemovedMock.mockRejectedValueOnce(new Error('EACCES'))
 
     await expect(getWslHandler('cli:removeWsl')({})).resolves.toEqual({ state: 'not_installed' })
-    expect(invalidateRegistryMock).toHaveBeenCalledWith('/canonical-user-data')
   })
 
   it('serializes a concurrent removal after installation and ownership persistence', async () => {

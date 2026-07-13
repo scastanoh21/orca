@@ -54,6 +54,7 @@ describe('WSL distro discovery cache', () => {
   })
 
   it('retries asynchronous discovery after a transient wsl.exe failure', async () => {
+    vi.useFakeTimers()
     execFileMock
       .mockImplementationOnce((_command, _args, _options, callback) => {
         callback(new Error('transient failure'), '')
@@ -62,24 +63,40 @@ describe('WSL distro discovery cache', () => {
         callback(null, 'Ubuntu\n')
       })
 
-    await withPlatformAsync('win32', async () => {
-      await expect(listWslDistrosAsync()).resolves.toEqual([])
-      expect(getCachedWslDistros()).toBeNull()
-      await expect(listWslDistrosAsync()).resolves.toEqual(['Ubuntu'])
-    })
+    try {
+      await withPlatformAsync('win32', async () => {
+        await expect(listWslDistrosAsync()).resolves.toEqual([])
+        expect(getCachedWslDistros()).toBeNull()
+        // Brief negative caching bounds the wsl.exe spawn rate between retries.
+        await expect(listWslDistrosAsync()).resolves.toEqual([])
+        expect(execFileMock).toHaveBeenCalledTimes(1)
+        vi.advanceTimersByTime(15_000)
+        await expect(listWslDistrosAsync()).resolves.toEqual(['Ubuntu'])
+      })
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('retries synchronous discovery after a transient wsl.exe failure', () => {
+    vi.useFakeTimers()
     execFileSyncMock.mockImplementationOnce(() => {
       throw new Error('transient failure')
     })
     execFileSyncMock.mockReturnValueOnce('Ubuntu\n')
 
-    withPlatform('win32', () => {
-      expect(listWslDistros()).toEqual([])
-      expect(getCachedWslDistros()).toBeNull()
-      expect(listWslDistros()).toEqual(['Ubuntu'])
-    })
+    try {
+      withPlatform('win32', () => {
+        expect(listWslDistros()).toEqual([])
+        expect(getCachedWslDistros()).toBeNull()
+        expect(listWslDistros()).toEqual([])
+        expect(execFileSyncMock).toHaveBeenCalledTimes(1)
+        vi.advanceTimersByTime(15_000)
+        expect(listWslDistros()).toEqual(['Ubuntu'])
+      })
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
 

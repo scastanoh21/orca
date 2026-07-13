@@ -33,13 +33,16 @@ describe('reconcileManagedWslCliRegistrations', () => {
       }
     })
 
-    expect(registry.getCandidates).toHaveBeenCalledWith(['Ubuntu', 'Debian', 'Fedora'])
+    expect(registry.getCandidates).toHaveBeenCalledWith(['Ubuntu', 'Debian', 'Fedora'], {
+      currentTarget: null,
+      appVersion: ''
+    })
     expect(registry.recordObservations).toHaveBeenCalledTimes(2)
     expect(registry.recordObservations).toHaveBeenCalledWith([
       { distro: 'Ubuntu', inspected: true, managed: true }
     ])
     expect(registry.recordObservations).toHaveBeenCalledWith([
-      { distro: 'Debian', inspected: true, managed: false }
+      { distro: 'Debian', inspected: true, managed: false, reconciled: null }
     ])
     expect(results).toEqual([
       { distro: 'Ubuntu', outcome: 'repaired', state: 'installed', managed: true },
@@ -47,7 +50,44 @@ describe('reconcileManagedWslCliRegistrations', () => {
     ])
   })
 
-  it('does not mark failed or unsupported distros as inspected', async () => {
+  it('passes the host launcher target through and records reconciliations against it', async () => {
+    const registry = {
+      getCandidates: vi.fn(async () => ['Ubuntu']),
+      recordObservations: vi.fn(async () => undefined)
+    }
+
+    await reconcileManagedWslCliRegistrations({
+      platform: 'win32',
+      isPackaged: true,
+      userDataPath: '/user-data',
+      appVersion: '1.4.138',
+      listDistros: async () => ['Ubuntu'],
+      getHostLauncherTarget: async () => 'C:\\Orca\\resources\\bin\\orca.exe',
+      registry,
+      createInstaller: () => ({
+        repairManagedRegistration: async () => ({
+          changed: true,
+          managed: true,
+          status: { state: 'installed' as const }
+        })
+      })
+    })
+
+    expect(registry.getCandidates).toHaveBeenCalledWith(['Ubuntu'], {
+      currentTarget: 'C:\\Orca\\resources\\bin\\orca.exe',
+      appVersion: '1.4.138'
+    })
+    expect(registry.recordObservations).toHaveBeenCalledWith([
+      {
+        distro: 'Ubuntu',
+        inspected: true,
+        managed: true,
+        reconciled: { target: 'C:\\Orca\\resources\\bin\\orca.exe', appVersion: '1.4.138' }
+      }
+    ])
+  })
+
+  it('records unsupported distros without changing ownership and skips failed ones', async () => {
     const registry = {
       getCandidates: vi.fn(async () => ['Broken Distro', 'No Interop']),
       recordObservations: vi.fn(async () => undefined)
@@ -77,9 +117,44 @@ describe('reconcileManagedWslCliRegistrations', () => {
       { distro: 'Broken Distro', outcome: 'failed', error: 'WSL interop failed' },
       { distro: 'No Interop', outcome: 'unchanged', state: 'unsupported', managed: false }
     ])
+    expect(registry.recordObservations).toHaveBeenCalledTimes(1)
+    // Why: unsupported gets a TTL-stamped inspection (managed: null) so an
+    // interop-off distro is not re-probed and VM-booted on every startup.
     expect(registry.recordObservations).toHaveBeenCalledWith([
-      { distro: 'No Interop', inspected: false, managed: false }
+      { distro: 'No Interop', inspected: true, managed: null, reconciled: null }
     ])
+  })
+
+  it('keeps a successful repair result when observation recording fails', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    try {
+      const results = await reconcileManagedWslCliRegistrations({
+        platform: 'win32',
+        isPackaged: true,
+        userDataPath: '/user-data',
+        listDistros: async () => ['Ubuntu'],
+        registry: {
+          getCandidates: async () => ['Ubuntu'],
+          recordObservations: async () => {
+            throw new Error('ENOSPC')
+          }
+        },
+        createInstaller: () => ({
+          repairManagedRegistration: async () => ({
+            changed: true,
+            managed: true,
+            status: { state: 'installed' as const }
+          })
+        })
+      })
+
+      expect(results).toEqual([
+        { distro: 'Ubuntu', outcome: 'repaired', state: 'installed', managed: true }
+      ])
+      expect(warn).toHaveBeenCalledOnce()
+    } finally {
+      warn.mockRestore()
+    }
   })
 
   it.each([

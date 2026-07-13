@@ -1612,7 +1612,8 @@ app.whenReady().then(async () => {
   // their launcher and bridge contract synchronized across app updates.
   managedWslCliReconciliationReady = reconcileManagedWslCliRegistrations({
     isPackaged: app.isPackaged,
-    userDataPath: getCanonicalUserDataPath()
+    userDataPath: getCanonicalUserDataPath(),
+    appVersion: app.getVersion()
   })
     .then((results) => {
       for (const result of results) {

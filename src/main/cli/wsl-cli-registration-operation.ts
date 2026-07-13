@@ -1,6 +1,12 @@
+import { runKeyedSerializedOperation } from './keyed-promise-queue'
+
 const operationQueues = new Map<string, Promise<void>>()
 
-function normalizeDistro(distro: string): string {
+/**
+ * Canonical key for a WSL distro name. The operation queue and the
+ * registration registry must agree on this to serialize against each other.
+ */
+export function normalizeWslDistroKey(distro: string): string {
   return distro.trim().toLowerCase()
 }
 
@@ -13,20 +19,5 @@ export function runSerializedWslCliRegistrationOperation<T>(
 ): Promise<T> {
   // Why: startup repair continues in the background and can otherwise undo a
   // concurrent Settings install/remove or overwrite its ownership metadata.
-  const key = normalizeDistro(distro)
-  const previous = operationQueues.get(key) ?? Promise.resolve()
-  const current = previous.catch(() => undefined).then(operation)
-  const queued = current.then(
-    () => undefined,
-    () => undefined
-  )
-  operationQueues.set(key, queued)
-
-  const clear = (): void => {
-    if (operationQueues.get(key) === queued) {
-      operationQueues.delete(key)
-    }
-  }
-  queued.then(clear, clear)
-  return current
+  return runKeyedSerializedOperation(operationQueues, normalizeWslDistroKey(distro), operation)
 }

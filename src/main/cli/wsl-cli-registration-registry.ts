@@ -1,45 +1,56 @@
-import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
+import { mkdir, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import { writeFileAtomically } from '../codex-accounts/fs-utils'
+import { getKeyedSerializedQueueTail, runKeyedSerializedOperation } from './keyed-promise-queue'
+import { normalizeWslDistroKey } from './wsl-cli-registration-operation'
 
 const REGISTRY_FILE_NAME = 'wsl-cli-registrations.json'
 const REGISTRY_SCHEMA_VERSION = 2
 const DEFAULT_NEGATIVE_INSPECTION_TTL_MS = 7 * 24 * 60 * 60 * 1_000
+// Why: the registry is advisory; cap per-distro bookkeeping so hosts that
+// cycle many uniquely named distros cannot grow the file without bound.
+const MAX_INSPECTION_ENTRIES = 64
+
+type WslCliRegistrationReconciliation = {
+  target: string
+  appVersion: string
+}
 
 type WslCliRegistrationRegistryState = {
   schemaVersion: 2
   registeredDistros: string[]
-  inspectedDistros: string[]
   inspectionTimes: Record<string, number>
+  reconciliations: Record<string, WslCliRegistrationReconciliation>
 }
 
 type WslCliRegistrationRegistryTiming = {
   now?: number
   negativeInspectionTtlMs?: number
+  // Why: a registered distro already reconciled against this exact launcher
+  // by this exact app build has nothing to repair; skipping it avoids booting
+  // its VM on every startup while still re-probing after each app update.
+  currentTarget?: string | null
+  appVersion?: string | null
 }
 
 export type WslCliRegistrationObservation = {
   distro: string
   inspected: boolean
-  managed: boolean
+  // Why: null records an inspection without changing registration ownership —
+  // used for 'unsupported' probes where managed-ness could not be determined.
+  managed: boolean | null
+  reconciled?: WslCliRegistrationReconciliation | null
 }
 
 const writeQueues = new Map<string, Promise<void>>()
-
-type WslCliRegistrationRegistryInvalidationOptions = {
-  removeFile?: (filePath: string, options: { force: true }) => Promise<void>
-}
 
 function emptyState(): WslCliRegistrationRegistryState {
   return {
     schemaVersion: REGISTRY_SCHEMA_VERSION,
     registeredDistros: [],
-    inspectedDistros: [],
-    inspectionTimes: {}
+    inspectionTimes: {},
+    reconciliations: {}
   }
-}
-
-function normalizeDistro(distro: string): string {
-  return distro.trim().toLowerCase()
 }
 
 function uniqueDistros(value: unknown): string[] {
@@ -53,13 +64,28 @@ function uniqueDistros(value: unknown): string[] {
       continue
     }
     const distro = entry.trim()
-    const key = normalizeDistro(distro)
+    const key = normalizeWslDistroKey(distro)
     if (!seen.has(key)) {
       seen.add(key)
       distros.push(distro)
     }
   }
   return distros
+}
+
+function parseReconciliations(value: unknown): Record<string, WslCliRegistrationReconciliation> {
+  if (!value || typeof value !== 'object') {
+    return {}
+  }
+  return Object.fromEntries(
+    Object.entries(value).filter(
+      (entry): entry is [string, WslCliRegistrationReconciliation] =>
+        !!entry[1] &&
+        typeof entry[1] === 'object' &&
+        typeof (entry[1] as WslCliRegistrationReconciliation).target === 'string' &&
+        typeof (entry[1] as WslCliRegistrationReconciliation).appVersion === 'string'
+    )
+  )
 }
 
 function parseState(content: string): WslCliRegistrationRegistryState {
@@ -80,8 +106,8 @@ function parseState(content: string): WslCliRegistrationRegistryState {
     return {
       schemaVersion: REGISTRY_SCHEMA_VERSION,
       registeredDistros: uniqueDistros(parsed.registeredDistros),
-      inspectedDistros: uniqueDistros(parsed.inspectedDistros),
-      inspectionTimes
+      inspectionTimes,
+      reconciliations: parseReconciliations(parsed.reconciliations)
     }
   } catch {
     // Why: a corrupt advisory registry must trigger safe rediscovery rather
@@ -110,8 +136,8 @@ async function readState(userDataPath: string): Promise<WslCliRegistrationRegist
 }
 
 function upsertDistro(distros: string[], distro: string): string[] {
-  const key = normalizeDistro(distro)
-  const existingIndex = distros.findIndex((entry) => normalizeDistro(entry) === key)
+  const key = normalizeWslDistroKey(distro)
+  const existingIndex = distros.findIndex((entry) => normalizeWslDistroKey(entry) === key)
   if (existingIndex < 0) {
     return [...distros, distro.trim()]
   }
@@ -119,8 +145,8 @@ function upsertDistro(distros: string[], distro: string): string[] {
 }
 
 function removeDistro(distros: string[], distro: string): string[] {
-  const key = normalizeDistro(distro)
-  return distros.filter((entry) => normalizeDistro(entry) !== key)
+  const key = normalizeWslDistroKey(distro)
+  return distros.filter((entry) => normalizeWslDistroKey(entry) !== key)
 }
 
 async function writeState(
@@ -128,43 +154,36 @@ async function writeState(
   state: WslCliRegistrationRegistryState
 ): Promise<void> {
   await mkdir(userDataPath, { recursive: true })
-  const registryPath = getRegistryPath(userDataPath)
-  const temporaryPath = `${registryPath}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`
-  let renamed = false
-  try {
-    await writeFile(temporaryPath, `${JSON.stringify(state, null, 2)}\n`, 'utf8')
-    await rename(temporaryPath, registryPath)
-    renamed = true
-  } finally {
-    if (!renamed) {
-      await rm(temporaryPath, { force: true }).catch(() => {})
-    }
-  }
+  // Why: userData writes on Windows can hit Chromium's Protected-DACL EPERM;
+  // writeFileAtomically carries the ACL-repair retry a plain rename lacks.
+  writeFileAtomically(getRegistryPath(userDataPath), `${JSON.stringify(state, null, 2)}\n`)
 }
 
-function enqueueRegistryOperation(
-  userDataPath: string,
-  operation: () => Promise<void>
-): Promise<void> {
-  const registryPath = getRegistryPath(userDataPath)
-  const previous = writeQueues.get(registryPath) ?? Promise.resolve()
-  const current = previous.catch(() => undefined).then(operation)
-  writeQueues.set(registryPath, current)
-  const clear = (): void => {
-    if (writeQueues.get(registryPath) === current) {
-      writeQueues.delete(registryPath)
-    }
-  }
-  current.then(clear, clear)
-  return current
+function capInspectionEntries(
+  state: WslCliRegistrationRegistryState
+): WslCliRegistrationRegistryState {
+  const registered = new Set(state.registeredDistros.map(normalizeWslDistroKey))
+  const entries = Object.entries(state.inspectionTimes)
+  const inspectionTimes =
+    entries.length <= MAX_INSPECTION_ENTRIES
+      ? state.inspectionTimes
+      : Object.fromEntries(
+          entries
+            .sort((a, b) => b[1] - a[1])
+            .filter((entry, index) => index < MAX_INSPECTION_ENTRIES || registered.has(entry[0]))
+        )
+  const reconciliations = Object.fromEntries(
+    Object.entries(state.reconciliations).filter(([key]) => registered.has(key))
+  )
+  return { ...state, inspectionTimes, reconciliations }
 }
 
 function updateState(
   userDataPath: string,
   update: (state: WslCliRegistrationRegistryState) => WslCliRegistrationRegistryState
 ): Promise<void> {
-  return enqueueRegistryOperation(userDataPath, async () => {
-    await writeState(userDataPath, update(await readState(userDataPath)))
+  return runKeyedSerializedOperation(writeQueues, getRegistryPath(userDataPath), async () => {
+    await writeState(userDataPath, capInspectionEntries(update(await readState(userDataPath))))
   })
 }
 
@@ -173,19 +192,29 @@ export async function getWslCliRegistrationCandidates(
   availableDistros: string[],
   timing: WslCliRegistrationRegistryTiming = {}
 ): Promise<string[]> {
-  await writeQueues.get(getRegistryPath(userDataPath))
+  // Why: the stored queue tail never rejects, so a failed concurrent write
+  // cannot abort candidate discovery; reads still see fully applied updates.
+  await getKeyedSerializedQueueTail(writeQueues, getRegistryPath(userDataPath))
   const state = await readState(userDataPath)
-  const registered = new Set(state.registeredDistros.map(normalizeDistro))
-  const inspected = new Set(state.inspectedDistros.map(normalizeDistro))
+  const registered = new Set(state.registeredDistros.map(normalizeWslDistroKey))
   const now = timing.now ?? Date.now()
   const negativeInspectionTtlMs =
     timing.negativeInspectionTtlMs ?? DEFAULT_NEGATIVE_INSPECTION_TTL_MS
   return uniqueDistros(availableDistros).filter((distro) => {
-    const key = normalizeDistro(distro)
+    const key = normalizeWslDistroKey(distro)
+    if (registered.has(key)) {
+      const reconciliation = state.reconciliations[key]
+      return !(
+        reconciliation &&
+        timing.currentTarget &&
+        reconciliation.target === timing.currentTarget &&
+        reconciliation.appVersion === (timing.appVersion ?? '')
+      )
+    }
     const inspectedAt = state.inspectionTimes[key]
-    const negativeInspectionExpired =
+    return (
       inspectedAt === undefined || inspectedAt > now || now - inspectedAt >= negativeInspectionTtlMs
-    return registered.has(key) || !inspected.has(key) || negativeInspectionExpired
+    )
   })
 }
 
@@ -194,29 +223,39 @@ export function recordWslCliRegistrationObservations(
   observations: WslCliRegistrationObservation[],
   timing: Pick<WslCliRegistrationRegistryTiming, 'now'> = {}
 ): Promise<void> {
-  if (observations.length === 0) {
+  const effective = observations.filter(
+    (observation) => observation.inspected && observation.distro.trim()
+  )
+  if (effective.length === 0) {
     return Promise.resolve()
   }
   return updateState(userDataPath, (state) => {
     let registeredDistros = state.registeredDistros
-    let inspectedDistros = state.inspectedDistros
     let inspectionTimes = state.inspectionTimes
+    let reconciliations = state.reconciliations
     const now = timing.now ?? Date.now()
-    for (const observation of observations) {
-      if (!observation.inspected || !observation.distro.trim()) {
-        continue
+    for (const observation of effective) {
+      const key = normalizeWslDistroKey(observation.distro)
+      inspectionTimes = { ...inspectionTimes, [key]: now }
+      if (observation.managed === true) {
+        registeredDistros = upsertDistro(registeredDistros, observation.distro)
+      } else if (observation.managed === false) {
+        registeredDistros = removeDistro(registeredDistros, observation.distro)
       }
-      inspectedDistros = upsertDistro(inspectedDistros, observation.distro)
-      inspectionTimes = { ...inspectionTimes, [normalizeDistro(observation.distro)]: now }
-      registeredDistros = observation.managed
-        ? upsertDistro(registeredDistros, observation.distro)
-        : removeDistro(registeredDistros, observation.distro)
+      if (observation.reconciled !== undefined) {
+        if (observation.reconciled === null) {
+          const { [key]: _removed, ...rest } = reconciliations
+          reconciliations = rest
+        } else {
+          reconciliations = { ...reconciliations, [key]: observation.reconciled }
+        }
+      }
     }
     return {
       schemaVersion: REGISTRY_SCHEMA_VERSION,
       registeredDistros,
-      inspectedDistros,
-      inspectionTimes
+      inspectionTimes,
+      reconciliations
     }
   })
 }
@@ -235,19 +274,6 @@ export function recordWslCliRegistrationRemoved(
   distro: string
 ): Promise<void> {
   return recordWslCliRegistrationObservations(userDataPath, [
-    { distro, inspected: true, managed: false }
+    { distro, inspected: true, managed: false, reconciled: null }
   ])
-}
-
-export function invalidateWslCliRegistrationRegistry(
-  userDataPath: string,
-  options: WslCliRegistrationRegistryInvalidationOptions = {}
-): Promise<void> {
-  const registryPath = getRegistryPath(userDataPath)
-  // Why: the registry is advisory; deleting stale discovery state makes the
-  // next startup rediscover ownership, and serialization prevents deleting a
-  // newer successful Settings update that starts while invalidation is pending.
-  return enqueueRegistryOperation(userDataPath, () =>
-    (options.removeFile ?? rm)(registryPath, { force: true })
-  )
 }

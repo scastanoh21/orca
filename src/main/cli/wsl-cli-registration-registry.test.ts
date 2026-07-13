@@ -4,7 +4,6 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
   getWslCliRegistrationCandidates,
-  invalidateWslCliRegistrationRegistry,
   recordWslCliRegistrationObservations,
   recordWslCliRegistrationRemoved
 } from './wsl-cli-registration-registry'
@@ -39,12 +38,80 @@ describe('WSL CLI registration registry', () => {
     expect(state).toMatchObject({
       schemaVersion: 2,
       registeredDistros: ['Debian'],
-      inspectedDistros: ['Ubuntu', 'Debian'],
       inspectionTimes: {
         ubuntu: expect.any(Number),
         debian: expect.any(Number)
       }
     })
+  })
+
+  it('skips a registered distro already reconciled by this build against this launcher', async () => {
+    const reconciled = { target: 'C:\\Orca\\resources\\bin\\orca.exe', appVersion: '1.4.138' }
+    await recordWslCliRegistrationObservations(userDataPath, [
+      { distro: 'Ubuntu', inspected: true, managed: true, reconciled }
+    ])
+
+    await expect(
+      getWslCliRegistrationCandidates(userDataPath, ['Ubuntu'], {
+        currentTarget: reconciled.target,
+        appVersion: reconciled.appVersion
+      })
+    ).resolves.toEqual([])
+    // A launcher move or app update re-probes the registered distro.
+    await expect(
+      getWslCliRegistrationCandidates(userDataPath, ['Ubuntu'], {
+        currentTarget: 'D:\\Elsewhere\\orca.exe',
+        appVersion: reconciled.appVersion
+      })
+    ).resolves.toEqual(['Ubuntu'])
+    await expect(
+      getWslCliRegistrationCandidates(userDataPath, ['Ubuntu'], {
+        currentTarget: reconciled.target,
+        appVersion: '1.4.139'
+      })
+    ).resolves.toEqual(['Ubuntu'])
+    await expect(
+      getWslCliRegistrationCandidates(userDataPath, ['Ubuntu'], {
+        currentTarget: reconciled.target,
+        appVersion: reconciled.appVersion,
+        now: Date.now() + 365 * 24 * 60 * 60 * 1_000
+      })
+    ).resolves.toEqual([])
+  })
+
+  it('records unsupported inspections without changing registration ownership', async () => {
+    await recordWslCliRegistrationObservations(userDataPath, [
+      { distro: 'Ubuntu', inspected: true, managed: true }
+    ])
+
+    await recordWslCliRegistrationObservations(
+      userDataPath,
+      [{ distro: 'Ubuntu', inspected: true, managed: null, reconciled: null }],
+      { now: 1_000 }
+    )
+    const state = JSON.parse(
+      await readFile(join(userDataPath, 'wsl-cli-registrations.json'), 'utf8')
+    ) as { registeredDistros: string[] }
+    expect(state.registeredDistros).toEqual(['Ubuntu'])
+
+    await recordWslCliRegistrationObservations(
+      userDataPath,
+      [{ distro: 'Fedora', inspected: true, managed: null }],
+      { now: 1_000 }
+    )
+    // Unregistered unsupported distros gain the negative-inspection TTL.
+    await expect(
+      getWslCliRegistrationCandidates(userDataPath, ['Fedora'], {
+        now: 2_000,
+        negativeInspectionTtlMs: 10_000
+      })
+    ).resolves.toEqual([])
+    await expect(
+      getWslCliRegistrationCandidates(userDataPath, ['Fedora'], {
+        now: 12_000,
+        negativeInspectionTtlMs: 10_000
+      })
+    ).resolves.toEqual(['Fedora'])
   })
 
   it('serializes concurrent registry updates without losing a distro', async () => {
@@ -141,40 +208,26 @@ describe('WSL CLI registration registry', () => {
     ).resolves.toEqual(['Ubuntu', 'Debian'])
   })
 
-  it('serializes invalidation before a newer registry update', async () => {
-    await recordWslCliRegistrationObservations(userDataPath, [
-      { distro: 'Ubuntu', inspected: true, managed: true }
-    ])
-    let releaseRemoval!: () => void
-    let removalStarted!: () => void
-    const started = new Promise<void>((resolve) => {
-      removalStarted = resolve
-    })
-    const invalidation = invalidateWslCliRegistrationRegistry(userDataPath, {
-      removeFile: async (filePath, options) => {
-        removalStarted()
-        await new Promise<void>((resolve) => {
-          releaseRemoval = resolve
-        })
-        await rm(filePath, options)
-      }
-    })
-    await started
+  it('caps inspection bookkeeping while always keeping registered distros', async () => {
+    const observations = Array.from({ length: 70 }, (_, index) => ({
+      distro: `Distro${index}`,
+      inspected: true,
+      managed: false as const
+    }))
+    for (const [index, observation] of observations.entries()) {
+      await recordWslCliRegistrationObservations(userDataPath, [observation], { now: index })
+    }
+    await recordWslCliRegistrationObservations(
+      userDataPath,
+      [{ distro: 'Managed Oldest', inspected: true, managed: true }],
+      { now: 0 }
+    )
 
-    let updateSettled = false
-    const update = recordWslCliRegistrationObservations(userDataPath, [
-      { distro: 'Debian', inspected: true, managed: true }
-    ]).then(() => {
-      updateSettled = true
-    })
-    await Promise.resolve()
-    expect(updateSettled).toBe(false)
-
-    releaseRemoval()
-    await Promise.all([invalidation, update])
     const state = JSON.parse(
       await readFile(join(userDataPath, 'wsl-cli-registrations.json'), 'utf8')
-    ) as { registeredDistros: string[] }
-    expect(state.registeredDistros).toEqual(['Debian'])
+    ) as { registeredDistros: string[]; inspectionTimes: Record<string, number> }
+    expect(state.registeredDistros).toEqual(['Managed Oldest'])
+    expect(Object.keys(state.inspectionTimes).length).toBeLessThanOrEqual(65)
+    expect(state.inspectionTimes['managed oldest']).toBe(0)
   })
 })

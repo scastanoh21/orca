@@ -2,7 +2,6 @@ import { ipcMain } from 'electron'
 import type { CliInstallStatus } from '../../shared/cli-install-types'
 import { CliInstaller } from '../cli/cli-installer'
 import {
-  invalidateWslCliRegistrationRegistry,
   recordWslCliRegistrationInstalled,
   recordWslCliRegistrationRemoved
 } from '../cli/wsl-cli-registration-registry'
@@ -35,18 +34,12 @@ async function persistWslCliRegistration(
     await operation()
   } catch (error) {
     // Why: the WSL file operation already succeeded; advisory metadata must
-    // not turn that success into a false Settings failure.
+    // not turn that success into a false Settings failure. The atomic write
+    // left the prior registry intact, and repair is disk-authoritative, so a
+    // stale entry self-corrects on the next startup probe.
     console.warn(
       `[wsl-cli] Failed to persist ${action} registration metadata:`,
       error instanceof Error ? error.message : String(error)
-    )
-    await invalidateWslCliRegistrationRegistry(getCanonicalUserDataPath()).catch(
-      (invalidateError) => {
-        console.warn(
-          '[wsl-cli] Failed to invalidate registration metadata:',
-          invalidateError instanceof Error ? invalidateError.message : String(invalidateError)
-        )
-      }
     )
   }
 }
@@ -82,10 +75,10 @@ export function registerCliHandlers(): void {
   ipcMain.handle(
     'cli:getWslInstallStatus',
     async (_event, args?: { distro?: string | null }): Promise<CliInstallStatus> => {
-      const distro = resolveWslCliDistro(args)
-      return runWslCliRegistrationOperation(distro, () =>
-        new WslCliInstaller({ distro }).getStatus()
-      )
+      // Why: status is a read-only probe; queuing it behind a long-running
+      // repair/install would hang the Settings spinner for its duration, and
+      // Settings re-polls, so a rare transient read self-corrects.
+      return new WslCliInstaller({ distro: resolveWslCliDistro(args) }).getStatus()
     }
   )
 
