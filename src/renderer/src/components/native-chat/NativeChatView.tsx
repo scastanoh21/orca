@@ -247,16 +247,28 @@ function NativeChatResolvedView({
     (text: string, imagePaths?: string[]) => {
       setWorkingInterrupted(false)
       const sentAt = Date.now()
+      const boundary = session.messages.at(-1)
       const entry: NativeChatPendingSend = {
         id: nextNativeChatPendingSendId(sentAt),
         text,
         sentAt,
-        afterMessageId: session.messages.at(-1)?.id ?? null,
+        afterMessageId: boundary?.id ?? null,
+        afterMessageTimestamp: boundary?.timestamp ?? null,
         ...(imagePaths ? { imagePaths } : {})
       }
       setPending(appendPendingSendCache(pendingScope, entry))
+      return entry.id
     },
     [pendingScope, session.messages]
+  )
+  const onOptimisticSendCanceled = useCallback(
+    (pendingId: string) => {
+      // Why: detach/interrupt cancels the delayed Enter, so its optimistic echo
+      // must not come back from the pane cache as a prompt that was delivered.
+      const next = readPendingSendCache(pendingScope).filter((entry) => entry.id !== pendingId)
+      setPending(writePendingSendCache(pendingScope, next))
+    },
+    [pendingScope]
   )
   const onSlashCommand = useCallback(
     (command: string) => {
@@ -439,6 +451,7 @@ function NativeChatResolvedView({
         isWorking={isWorking}
         onStop={stopAgent}
         onOptimisticSend={onOptimisticSend}
+        onOptimisticSendCanceled={onOptimisticSendCanceled}
         onSlashCommand={onSlashCommand}
       />
       {contextMenu.menu}

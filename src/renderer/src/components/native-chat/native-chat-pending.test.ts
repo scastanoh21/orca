@@ -42,6 +42,16 @@ function assistantMessage(id: string, text: string): NativeChatMessage {
   }
 }
 
+function imageMessage(id: string, ...paths: string[]): NativeChatMessage {
+  return {
+    id,
+    role: 'user',
+    blocks: paths.map((path) => ({ type: 'image-ref' as const, path })),
+    timestamp: 1,
+    source: 'transcript'
+  }
+}
+
 const pendingOf = (id: string, text: string): NativeChatPendingSend => ({ id, text, sentAt: 100 })
 
 describe('prunePendingSends', () => {
@@ -83,6 +93,16 @@ describe('prunePendingSends', () => {
       assistantMessage('m2', 'an image')
     ])
     expect(next).toEqual([])
+  })
+
+  it('drops an attachment-only pending send once its image turn advances', () => {
+    const pending = [{ ...pendingOf('p1', ''), imagePaths: ['/tmp/first.png', '/tmp/second.png'] }]
+    const transcript = [
+      imageMessage('m1', '/tmp/first.png', '/tmp/second.png'),
+      assistantMessage('m2', 'two images')
+    ]
+
+    expect(prunePendingSends(pending, transcript)).toEqual([])
   })
 
   it('keeps a pending send that has not landed yet', () => {
@@ -146,6 +166,12 @@ describe('pendingSendsAsMessages', () => {
     ])
   })
 
+  it('hides an attachment-only pending send while its real image turn is visible', () => {
+    const pending = [{ ...pendingOf('p1', ''), imagePaths: ['/tmp/shot.png'] }]
+
+    expect(pendingSendsAsMessages(pending, [imageMessage('u1', '/tmp/shot.png')])).toEqual([])
+  })
+
   it('hides a pending send while its real user turn is visible', () => {
     const pending = [pendingOf('p1', 'first prompt')]
 
@@ -173,6 +199,24 @@ describe('pendingSendsAsMessages', () => {
       'pending:new-send'
     ])
     expect(prunePendingSends(pending, history)).toEqual(pending)
+  })
+
+  it('uses the transcript boundary clock after pagination, not the renderer send clock', () => {
+    const pending = [
+      {
+        ...pendingOf('new-send', 'run tests'),
+        sentAt: 100_000,
+        afterMessageId: 'paged-out-answer',
+        afterMessageTimestamp: 20
+      }
+    ]
+    const remoteTranscript = [
+      { ...userMessage('new-user', 'run tests'), timestamp: 30 },
+      { ...assistantMessage('new-answer', 'passed'), timestamp: 40 }
+    ]
+
+    expect(pendingSendsAsMessages(pending, remoteTranscript)).toEqual([])
+    expect(prunePendingSends(pending, remoteTranscript)).toEqual([])
   })
 
   it('hides only one of two identical pending sends for one real user turn', () => {

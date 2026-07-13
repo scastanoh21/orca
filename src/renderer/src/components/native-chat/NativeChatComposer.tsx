@@ -17,6 +17,7 @@ import {
   sendNativeChatMessageWithImageAttachments,
   submitNativeChatPrompt
 } from './native-chat-runtime-send'
+import type { NativeChatSendHandle } from './native-chat-runtime-send'
 import { getAgentSlashCommands } from './native-chat-agent-commands'
 import { emitNativeChatMessageSent } from '@/lib/native-chat-telemetry'
 import {
@@ -71,7 +72,9 @@ export type NativeChatComposerProps = {
   onStop?: () => void
   /** Optional optimistic-send hook: called with the sent text so the view can
    *  render a "queued" echo until the real transcript turn lands (mobile parity). */
-  onOptimisticSend?: (text: string, imagePaths?: string[]) => void
+  onOptimisticSend?: (text: string, imagePaths?: string[]) => string | undefined
+  /** Remove an optimistic echo when its delayed submit is canceled. */
+  onOptimisticSendCanceled?: (pendingId: string) => void
   /** Called with a dispatched slash command (e.g. `/clear`) so the view can show
    *  a small "Ran /clear" system line — slash commands aren't chat turns and
    *  otherwise leave no visible trace that anything happened. */
@@ -112,6 +115,7 @@ export const NativeChatComposer = forwardRef<NativeChatComposerHandle, NativeCha
       isWorking = false,
       onStop,
       onOptimisticSend,
+      onOptimisticSendCanceled,
       onSlashCommand
     },
     ref
@@ -129,7 +133,8 @@ export const NativeChatComposer = forwardRef<NativeChatComposerHandle, NativeCha
     const textareaRef = useRef<HTMLTextAreaElement>(null)
     const { cancelPendingSends, trackPendingSend } = useNativeChatSendLifecycle(
       terminalTabId,
-      targetPtyId
+      targetPtyId,
+      onOptimisticSendCanceled
     )
     const dictationState = useAppStore((store) => store.dictationState)
     const voiceSettings = useAppStore((store) => store.settings?.voice)
@@ -298,23 +303,33 @@ export const NativeChatComposer = forwardRef<NativeChatComposerHandle, NativeCha
       // (like text) so the GUI chips and TUI input stay in sync and removing a
       // chip needs no TUI un-paste: send images, then text, then Enter atomically.
       const isSlashCommand = isSlashCommandDraft(text)
+      let pendingHandle: NativeChatSendHandle | null = null
       if (isSlashCommand) {
-        trackPendingSend(sendNativeChatMessage(target.settings, target.ptyId, text))
+        pendingHandle = sendNativeChatMessage(target.settings, target.ptyId, text)
       } else if (imagePaths.length > 0) {
-        trackPendingSend(
-          sendNativeChatMessageWithImageAttachments(target.settings, target.ptyId, text, imagePaths)
+        pendingHandle = sendNativeChatMessageWithImageAttachments(
+          target.settings,
+          target.ptyId,
+          text,
+          imagePaths
         )
       } else if (text.trim().length > 0) {
-        trackPendingSend(sendNativeChatMessage(target.settings, target.ptyId, text))
+        pendingHandle = sendNativeChatMessage(target.settings, target.ptyId, text)
       } else {
         submitNativeChatPrompt(target.settings, target.ptyId)
       }
       // Slash commands don't echo a user bubble, but DO surface a small
       // "Ran /clear" system line so the command leaves a visible trace.
       if (isSlashCommand) {
+        if (pendingHandle) {
+          trackPendingSend(pendingHandle)
+        }
         onSlashCommand?.(text.trim())
       } else {
-        onOptimisticSend?.(text, imagePaths)
+        const pendingId = onOptimisticSend?.(text, imagePaths)
+        if (pendingHandle) {
+          trackPendingSend(pendingHandle, pendingId)
+        }
       }
       // Why: U10 telemetry — record adoption + local-vs-remote runtime split. The
       // agent prop is the loose AgentType; the emitter narrows unknowns to 'other'.
@@ -453,7 +468,7 @@ export const NativeChatComposer = forwardRef<NativeChatComposerHandle, NativeCha
         onDictationHoldStart={startHoldDictation}
         onDictationHoldEnd={stopHoldDictation}
         onSend={send}
-        onStop={onStop}
+        onStop={interrupt}
       />
     )
   }
