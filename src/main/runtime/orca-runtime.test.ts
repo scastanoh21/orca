@@ -22270,6 +22270,52 @@ describe('OrcaRuntimeService', () => {
     expect(removeProject).toHaveBeenCalledWith(TEST_REPO_ID)
   })
 
+  it('drains create-first work before host-scoped project removal mutates persistence', async () => {
+    const removeProjectForHost = vi.fn()
+    const localRepo = store.getRepos()[0]
+    const hostStore = {
+      ...store,
+      getRepos: () => [localRepo],
+      removeProjectForHost
+    }
+    const runtime = new OrcaRuntimeService(hostStore as never)
+    const create = deferred<void>()
+    vi.mocked(listWorktrees).mockResolvedValue([])
+
+    const admittedCreate = runtime.runWithWorktreeCreateAdmission(TEST_REPO_ID, () => create.promise)
+    const removal = runtime.removeProjectForHost(TEST_REPO_ID, 'local')
+    await Promise.resolve()
+    expect(removeProjectForHost).not.toHaveBeenCalled()
+
+    create.resolve()
+    await admittedCreate
+    await expect(removal).resolves.toEqual({ removed: true })
+    expect(removeProjectForHost).toHaveBeenCalledWith(TEST_REPO_ID, 'local')
+  })
+
+  it('rejects removal-first worktree creation for a host-scoped project removal', async () => {
+    const removeProjectForHost = vi.fn()
+    const localRepo = store.getRepos()[0]
+    const hostStore = {
+      ...store,
+      getRepos: () => [localRepo],
+      removeProjectForHost
+    }
+    const runtime = new OrcaRuntimeService(hostStore as never)
+    const scan = deferred<Awaited<ReturnType<typeof listWorktrees>>>()
+    vi.mocked(listWorktrees).mockImplementation(() => scan.promise)
+
+    const removal = runtime.removeProjectForHost(TEST_REPO_ID, 'local')
+    await vi.waitFor(() => expect(listWorktrees).toHaveBeenCalled())
+    await expect(
+      runtime.runWithWorktreeCreateAdmission(TEST_REPO_ID, async () => undefined)
+    ).rejects.toThrow('project_removal_in_progress')
+
+    scan.resolve([])
+    await expect(removal).resolves.toEqual({ removed: true })
+    expect(removeProjectForHost).toHaveBeenCalledWith(TEST_REPO_ID, 'local')
+  })
+
   it('drains a create-first spawn before project removal snapshots liveness', async () => {
     const removeProject = vi.fn()
     const runtime = new OrcaRuntimeService({ ...store, removeProject } as never)
@@ -28449,6 +28495,7 @@ describe('OrcaRuntimeService', () => {
     const worktreeId = `${TEST_REPO_ID}::${missingWorktreePath}`
     const { runtimeStore, removeWorktreeMeta } = createStaleRuntimeWorktreeStore(worktreeId)
     const runtime = new OrcaRuntimeService(runtimeStore as never)
+    const verifyStopped = vi.spyOn(runtime, 'verifyTerminalsStoppedForRemoval')
     const notifier = { worktreesChanged: vi.fn() }
     runtime.setNotifier(notifier as never)
 
@@ -28458,6 +28505,7 @@ describe('OrcaRuntimeService', () => {
       await expect(runtime.removeManagedWorktree(worktreeId, true)).resolves.toEqual({})
 
       expect(removeWorktree).not.toHaveBeenCalled()
+      expect(verifyStopped).toHaveBeenCalledWith(worktreeId)
       expect(removeWorktreeMeta).toHaveBeenCalledWith(worktreeId)
       expect(deleteWorktreeHistoryDirMock).toHaveBeenCalledWith(worktreeId)
       expect(invalidateAuthorizedRootsCacheMock).toHaveBeenCalled()

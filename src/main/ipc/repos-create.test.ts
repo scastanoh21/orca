@@ -32,6 +32,7 @@ const {
     getRepos: vi.fn().mockReturnValue([]),
     addRepo: vi.fn(),
     removeProject: vi.fn(),
+    removeProjectForHost: vi.fn(),
     getRepo: vi.fn(),
     updateRepo: vi.fn()
   },
@@ -132,6 +133,8 @@ describe('repos:create', () => {
     removeHandlerMock.mockReset()
     mockStore.getRepos.mockReset().mockReturnValue([])
     mockStore.addRepo.mockReset()
+    mockStore.removeProject.mockReset()
+    mockStore.removeProjectForHost.mockReset()
     mockWindow.webContents.send.mockReset()
     invalidateAuthorizedRootsCacheMock.mockReset()
     prepareLocalWorktreeRootForRepoMock.mockReset().mockResolvedValue(undefined)
@@ -172,6 +175,19 @@ describe('repos:create', () => {
 
     expect(runtime.removeProject).toHaveBeenCalledWith('id:repo-1')
     expect(mockStore.removeProject).not.toHaveBeenCalled()
+  })
+
+  it('routes host-scoped repo removal through the runtime teardown transaction', async () => {
+    const runtime = { removeProjectForHost: vi.fn().mockResolvedValue({ removed: true }) }
+    registerRepoHandlers(mockWindow as never, mockStore as never, runtime as never)
+
+    await handlers.get('repos:removeForHost')?.(null, {
+      repoId: 'repo-1',
+      hostId: 'local'
+    })
+
+    expect(runtime.removeProjectForHost).toHaveBeenCalledWith('repo-1', 'local')
+    expect(mockStore.removeProjectForHost).not.toHaveBeenCalled()
   })
 
   // ── input validation ──────────────────────────────────────────────

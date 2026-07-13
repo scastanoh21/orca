@@ -7680,6 +7680,9 @@ describe('registerWorktreeHandlers', () => {
     expect(killAllProcessesForWorktreeMock).not.toHaveBeenCalled()
     expect(runHookMock).not.toHaveBeenCalled()
     expect(removeWorktreeMock).not.toHaveBeenCalled()
+    expect(runtimeStub.verifyTerminalsStoppedForRemoval).toHaveBeenCalledWith(
+      'repo-1::/workspace/already-deleted-wt'
+    )
     expect(runtimeStub.clearOptimisticReconcileToken).toHaveBeenCalledWith(
       'repo-1::/workspace/already-deleted-wt'
     )

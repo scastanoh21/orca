@@ -40,6 +40,7 @@ import { shouldUseShellReadyStartupDelivery } from '../../../shared/codex-startu
 import { isMainTerminalSideEffectAuthorityForPty } from '@/components/terminal-pane/terminal-side-effect-facts-handler'
 import { resolveLocalWindowsAgentStartupShell } from '../../../shared/windows-terminal-shell'
 import { runBestEffortAgentBackgroundCleanups } from '@/lib/agent-background-session-cleanup'
+import { killPtyRetainingRetryOwnership } from '@/lib/pty-kill-retry-ownership'
 
 export async function launchAgentBackgroundSession(
   args: LaunchAgentBackgroundSessionArgs
@@ -323,7 +324,11 @@ export async function launchAgentBackgroundSession(
             terminal: runtimeTerminalHandle
           })
         } else if (runtimeTarget.kind === 'local') {
-          await window.api.pty.kill(ptyId)
+          await killPtyRetainingRetryOwnership(
+            ptyId,
+            '[pty] Failed to stop PTY after background launch failure',
+            { expectedTabId: tab.id }
+          )
         }
       } catch {
         // Best-effort close; retiring the invalid hidden tab must still proceed.

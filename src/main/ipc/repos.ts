@@ -1948,7 +1948,11 @@ export function registerRepoHandlers(
       if (!hostId) {
         throw new Error(`Invalid host ID: ${args.hostId}`)
       }
-      store.removeProjectForHost(args.repoId, hostId)
+      if (runtime?.removeProjectForHost) {
+        await runtime.removeProjectForHost(args.repoId, hostId)
+      } else {
+        store.removeProjectForHost(args.repoId, hostId)
+      }
       invalidateAuthorizedRootsCache()
       notifyReposChanged(mainWindow)
     }

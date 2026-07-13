@@ -1512,6 +1512,7 @@ export function registerWorktreeHandlers(
             if (!args.force) {
               throw new Error(ORPHANED_WORKTREE_DIRECTORY_MESSAGE)
             }
+            await verifyTerminalsStopped(args.worktreeId)
             if (repo.connectionId) {
               await fsProvider!.deletePath(worktreePath, true)
               await cleanupUnusedWorktreePushTargetRemoteSsh(
@@ -1560,6 +1561,7 @@ export function registerWorktreeHandlers(
               if (!args.force) {
                 throw new Error(ORPHANED_WORKTREE_DIRECTORY_MESSAGE)
               }
+              await verifyTerminalsStopped(args.worktreeId)
               await closeLocalWatcherForRemoval(worktreePath)
               await removeLocalWorktreePath(worktreePath, localWorktreeGitOptions)
               await cleanupUnusedWorktreePushTargetRemote(
@@ -1586,6 +1588,7 @@ export function registerWorktreeHandlers(
             // Why: a manually deleted worktree is already gone from Git and disk.
             // The sidebar delete action has persisted metadata proving this was
             // an Orca-known row, so no force confirmation is needed.
+            await verifyTerminalsStopped(args.worktreeId)
             if (repo.connectionId) {
               await cleanupUnusedWorktreePushTargetRemoteSsh(
                 provider!,

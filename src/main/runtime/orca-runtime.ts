@@ -142,7 +142,9 @@ import type {
 } from '../../shared/types'
 import { assertWorktreeUnlockedForRemoval } from '../../shared/worktree-removal'
 import {
+  LOCAL_EXECUTION_HOST_ID,
   getRepoExecutionHostId,
+  normalizeExecutionHostId,
   parseExecutionHostId,
   type ExecutionHostId
 } from '../../shared/execution-host'
@@ -12357,11 +12359,14 @@ export class OrcaRuntimeService {
     await this.stopTerminalsForWorktree(`id:${worktreeId}`, { allowUnavailableGraph: true })
   }
 
-  async removeProject(repoSelector: string): Promise<{ removed: true }> {
-    if (!this.store?.removeProject) {
+  private async removeProjectWithHostScope(
+    repo: Repo,
+    hostId: ExecutionHostId | null,
+    removePersistedProject: () => void
+  ): Promise<{ removed: true }> {
+    if (!this.store) {
       throw new Error('runtime_unavailable')
     }
-    const repo = await this.resolveRepoSelector(repoSelector)
     if (this.projectRemovalBlockedRepoIds.has(repo.id)) {
       throw new Error('project_removal_in_progress')
     }
@@ -12373,7 +12378,12 @@ export class OrcaRuntimeService {
       // creates and let earlier ones finish before enumerating owned worktrees.
       await this.drainWorktreeCreateAdmissions(repo.id)
       worktreeIds = (await this.listResolvedWorktrees())
-        .filter((worktree) => worktree.repoId === repo.id)
+        .filter(
+          (worktree) =>
+            worktree.repoId === repo.id &&
+            (hostId === null ||
+              (normalizeExecutionHostId(worktree.hostId) ?? LOCAL_EXECUTION_HOST_ID) === hostId)
+        )
         .map((worktree) => worktree.id)
       if (worktreeIds.some((id) => this.terminalAdmissionBlockedWorktreeIds.has(id))) {
         throw new Error('project_removal_in_progress')
@@ -12390,7 +12400,7 @@ export class OrcaRuntimeService {
       for (const id of worktreeIds) {
         await this.stopTerminalsForWorktree(`id:${id}`)
       }
-      this.store.removeProject(repo.id)
+      removePersistedProject()
       this.invalidateResolvedWorktreeCache()
       invalidateAuthorizedRootsCache()
       this.notifyReposChanged()
@@ -12401,6 +12411,32 @@ export class OrcaRuntimeService {
       }
       this.projectRemovalBlockedRepoIds.delete(repo.id)
     }
+  }
+
+  async removeProject(repoSelector: string): Promise<{ removed: true }> {
+    if (!this.store?.removeProject) {
+      throw new Error('runtime_unavailable')
+    }
+    const repo = await this.resolveRepoSelector(repoSelector)
+    return this.removeProjectWithHostScope(repo, null, () => this.store!.removeProject(repo.id))
+  }
+
+  async removeProjectForHost(
+    repoId: string,
+    hostId: ExecutionHostId
+  ): Promise<{ removed: true }> {
+    if (!this.store?.removeProjectForHost) {
+      throw new Error('runtime_unavailable')
+    }
+    const repo = this.store
+      .getRepos()
+      .find((candidate) => candidate.id === repoId && getRepoExecutionHostId(candidate) === hostId)
+    if (!repo) {
+      throw new Error('repo_not_found')
+    }
+    return this.removeProjectWithHostScope(repo, hostId, () =>
+      this.store!.removeProjectForHost(repo.id, hostId)
+    )
   }
 
   async inspectTerminalProcess(
@@ -17153,6 +17189,7 @@ export class OrcaRuntimeService {
           if (!force) {
             throw new Error(ORPHANED_WORKTREE_DIRECTORY_MESSAGE)
           }
+          await this.verifyTerminalsStoppedForRemoval(removalTarget.id)
           if (repo.connectionId) {
             await fsProvider!.deletePath(removalTarget.path, true)
             await cleanupUnusedWorktreePushTargetRemoteSsh(
@@ -17201,6 +17238,7 @@ export class OrcaRuntimeService {
             if (!force) {
               throw new Error(ORPHANED_WORKTREE_DIRECTORY_MESSAGE)
             }
+            await this.verifyTerminalsStoppedForRemoval(removalTarget.id)
             await closeLocalWatcherForWorktreePath(removalTarget.path).catch((err) => {
               console.warn(`[filesystem-watcher] failed to close ${removalTarget.path}:`, err)
             })
@@ -17230,6 +17268,7 @@ export class OrcaRuntimeService {
           // Why: a manually deleted worktree is already gone from Git and disk.
           // Finish runtime metadata cleanup without requiring force or touching
           // any unregistered path that still exists.
+          await this.verifyTerminalsStoppedForRemoval(removalTarget.id)
           await (repo.connectionId
             ? cleanupUnusedWorktreePushTargetRemoteSsh(
                 provider!,

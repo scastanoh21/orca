@@ -3005,7 +3005,7 @@ describe('registerPtyHandlers', () => {
         expect(store.markSshRemotePtyLease).toHaveBeenCalledWith('ssh-1', 'relay-pty', 'terminated')
       })
 
-      it('runtime controller kill tombstones app-scoped SSH ids when ownership and provider are absent', async () => {
+      it('runtime controller kill retains app-scoped SSH ids when the provider is absent', async () => {
         const localShutdown = vi.fn()
         setLocalPtyProvider({
           spawn: vi.fn(),
@@ -3047,14 +3047,14 @@ describe('registerPtyHandlers', () => {
           kill: (ptyId: string) => boolean
         }
 
-        expect(controller.kill('ssh:ssh-1@@relay-pty')).toBe(true)
+        expect(controller.kill('ssh:ssh-1@@relay-pty')).toBe(false)
 
         expect(localShutdown).not.toHaveBeenCalled()
-        expect(store.markSshRemotePtyLease).toHaveBeenCalledWith('ssh-1', 'relay-pty', 'terminated')
-        expect(runtime.onPtyExit).toHaveBeenCalledWith('ssh:ssh-1@@relay-pty', -1)
+        expect(store.markSshRemotePtyLease).not.toHaveBeenCalled()
+        expect(runtime.onPtyExit).not.toHaveBeenCalled()
       })
 
-      it('marks a detached SSH lease terminated when runtime controller kill has no provider', async () => {
+      it('retains a detached SSH lease when runtime controller kill has no provider', async () => {
         const store = {
           markSshRemotePtyLease: vi.fn()
         }
@@ -3076,14 +3076,32 @@ describe('registerPtyHandlers', () => {
           kill: (ptyId: string) => boolean
         }
 
-        expect(controller.kill('remote-pty')).toBe(true)
+        expect(controller.kill('remote-pty')).toBe(false)
 
-        expect(store.markSshRemotePtyLease).toHaveBeenCalledWith(
-          'ssh-1',
-          'remote-pty',
-          'terminated'
+        expect(store.markSshRemotePtyLease).not.toHaveBeenCalled()
+        expect(runtime.onPtyExit).not.toHaveBeenCalled()
+      })
+
+      it('retains a detached SSH lease when runtime controller stopAndWait has no provider', async () => {
+        const store = { markSshRemotePtyLease: vi.fn() }
+        const runtime = { setPtyController: vi.fn(), onPtyExit: vi.fn() }
+        setPtyOwnership('remote-pty', 'ssh-1')
+        handlers.clear()
+        registerPtyHandlers(
+          mainWindow as never,
+          runtime as never,
+          undefined,
+          undefined,
+          undefined,
+          store as never
         )
-        expect(runtime.onPtyExit).toHaveBeenCalledWith('remote-pty', -1)
+        const controller = runtime.setPtyController.mock.calls[0]?.[0] as {
+          stopAndWait: (ptyId: string) => Promise<boolean>
+        }
+
+        await expect(controller.stopAndWait('remote-pty')).resolves.toBe(false)
+        expect(store.markSshRemotePtyLease).not.toHaveBeenCalled()
+        expect(runtime.onPtyExit).not.toHaveBeenCalled()
       })
 
       it('preserves an SSH lease when runtime controller kill shutdown fails transiently', async () => {
@@ -4005,7 +4023,7 @@ describe('registerPtyHandlers', () => {
     expect(store.markSshRemotePtyLease).toHaveBeenCalledWith('ssh-1', 'relay-pty', 'terminated')
   })
 
-  it('tombstones app-scoped SSH PTY ids instead of falling back local when ownership and provider are absent', async () => {
+  it('rejects app-scoped SSH PTY kill without tombstoning when the provider is absent', async () => {
     const localShutdown = vi.fn()
     setLocalPtyProvider({
       spawn: vi.fn(),
@@ -4039,10 +4057,12 @@ describe('registerPtyHandlers', () => {
       store as never
     )
 
-    await handlers.get('pty:kill')!(null, { id: 'ssh:ssh-1@@relay-pty' })
+    await expect(
+      handlers.get('pty:kill')!(null, { id: 'ssh:ssh-1@@relay-pty' })
+    ).rejects.toThrow('SSH PTY provider unavailable')
 
     expect(localShutdown).not.toHaveBeenCalled()
-    expect(store.markSshRemotePtyLease).toHaveBeenCalledWith('ssh-1', 'relay-pty', 'terminated')
+    expect(store.markSshRemotePtyLease).not.toHaveBeenCalled()
   })
 
   it('ignores fire-and-forget IPC for detached SSH PTYs without a provider', async () => {
@@ -4108,8 +4128,10 @@ describe('registerPtyHandlers', () => {
       listenerFor('pty:signal')(null, { id: 'remote-pty', signal: 'SIGINT' })
     ).not.toThrow()
 
-    await expect(handlers.get('pty:kill')!(null, { id: 'remote-pty' })).resolves.toBeUndefined()
-    expect(store.markSshRemotePtyLease).toHaveBeenCalledWith('ssh-1', 'remote-pty', 'terminated')
+    await expect(handlers.get('pty:kill')!(null, { id: 'remote-pty' })).rejects.toThrow(
+      'SSH PTY provider unavailable'
+    )
+    expect(store.markSshRemotePtyLease).not.toHaveBeenCalled()
   })
 
   it('returns idle process inspection results for detached SSH PTYs without a provider', async () => {

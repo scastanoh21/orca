@@ -476,6 +476,28 @@ describe('launchAgentBackgroundSession', () => {
     expect(mockUpdateTabPtyId).not.toHaveBeenCalled()
   })
 
+  it('retains exact PTY retry ownership when cleanup after local spawn fails', async () => {
+    mockRegisterEagerPtyBuffer.mockImplementationOnce(() => {
+      throw new Error('subscription setup failed')
+    })
+    mockKill.mockRejectedValueOnce(new Error('provider unavailable')).mockResolvedValueOnce(undefined)
+    const { launchAgentBackgroundSession } = await import('./launch-agent-background-session')
+    const { retryRetainedPtyKills } = await import('./pty-kill-retry-ownership')
+
+    await expect(
+      launchAgentBackgroundSession({
+        agent: 'claude',
+        worktreeId: 'wt-1',
+        prompt: 'run the automation'
+      })
+    ).rejects.toThrow('subscription setup failed')
+
+    expect(mockKill).toHaveBeenCalledWith('pty-1', { expectedTabId: 'tab-1' })
+    retryRetainedPtyKills()
+    await vi.waitFor(() => expect(mockKill).toHaveBeenCalledTimes(2))
+    expect(mockCloseTab).toHaveBeenCalledWith('tab-1', { recordInteraction: false })
+  })
+
   it('submits prompts for stdin-after-start agents in background mode', async () => {
     const { launchAgentBackgroundSession } = await import('./launch-agent-background-session')
 

@@ -3311,14 +3311,9 @@ export function registerPtyHandlers(
         provider = connectionId ? getProvider(connectionId) : getProviderForPty(ptyId)
       } catch {
         if (connectionId) {
-          // Why: runtime/CLI close can target a detached SSH PTY after its
-          // provider was unregistered. Tombstone the lease so reconnect does
-          // not revive a terminal the user explicitly closed.
-          finishPtyShutdown(ptyId, connectionId, store)
-          runtime?.onPtyExit(ptyId, -1)
-          rememberSyntheticKillExit(ptyId)
-          sendPtyExitToRenderer({ id: ptyId, code: -1 })
-          return true
+          // Why: disconnect does not prove remote process death. Keep the lease
+          // attachable so reconnect can retry shutdown against the same relay PTY.
+          return false
         }
         return false
       }
@@ -3365,15 +3360,8 @@ export function registerPtyHandlers(
       try {
         provider = connectionId ? getProvider(connectionId) : getProviderForPty(ptyId)
       } catch {
-        if (connectionId) {
-          // Why: an absent SSH provider means there is no live target left to
-          // await, but the relay lease must still be tombstoned.
-          finishPtyShutdown(ptyId, connectionId, store)
-          runtime?.onPtyExit(ptyId, -1)
-          rememberSyntheticKillExit(ptyId)
-          sendPtyExitToRenderer({ id: ptyId, code: -1 })
-          return true
-        }
+        // Why: provider absence is not process-death proof for an SSH relay.
+        // Retain ownership and fail closed so reconnect can verify and retry.
         return false
       }
       let providerExitObserved = false
@@ -4972,14 +4960,9 @@ export function registerPtyHandlers(
       const connectionId = ownedConnectionId ?? parsedSshId?.connectionId
       const provider = connectionId ? sshProviders.get(connectionId) : tryGetProviderForPty(args.id)
       if (!provider && connectionId) {
-        // Why: detached SSH PTYs intentionally keep ownership after their
-        // provider is unregistered; hydrated app-scoped ids can also arrive
-        // before ownership is rebuilt. Tombstone instead of falling back local.
-        finishPtyShutdown(args.id, connectionId, store)
-        runtime?.onPtyExit(args.id, -1)
-        rememberSyntheticKillExit(args.id)
-        sendPtyExitToRenderer({ id: args.id, code: -1 })
-        return
+        // Why: a disconnected provider is not proof the relay process exited.
+        // Reject without tombstoning so reconnect can target the retained lease.
+        throw new Error('SSH PTY provider unavailable')
       }
       const shutdownProvider = provider ?? getProviderForPty(args.id)
       let providerExitObserved = false
