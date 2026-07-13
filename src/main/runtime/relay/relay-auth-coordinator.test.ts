@@ -91,4 +91,111 @@ describe('RelayAuthCoordinator', () => {
     coordinator.reconcile()
     await expect(refreshAccessToken!()).resolves.toBeNull()
   })
+
+  it('invalidates pending ownership immediately while broker opening is paused', async () => {
+    const firstOpen = deferred<{ closeNow(): void }>()
+    const firstClose = vi.fn()
+    let firstIsCurrent: (() => boolean) | null = null
+    const openBroker = vi
+      .fn()
+      .mockImplementationOnce((input) => {
+        firstIsCurrent = input.isCurrent
+        return firstOpen.promise
+      })
+      .mockResolvedValueOnce({ closeNow: vi.fn() })
+    const coordinator = new RelayAuthCoordinator({
+      readContext: async () => context,
+      openBroker,
+      onStatus: vi.fn()
+    })
+
+    coordinator.reconcile()
+    await vi.waitFor(() => expect(firstIsCurrent).not.toBeNull())
+    coordinator.reconcile()
+    expect(firstIsCurrent!()).toBe(false)
+    await vi.waitFor(() => expect(openBroker).toHaveBeenCalledTimes(2))
+    firstOpen.resolve({ closeNow: firstClose })
+    await vi.waitFor(() => expect(firstClose).toHaveBeenCalledOnce())
+  })
+
+  it('rejects a token refresh whose session read crosses an auth mutation', async () => {
+    const refreshRead = deferred<RelayAuthContext | null>()
+    let readCount = 0
+    let current = context
+    let refreshAccessToken: (() => Promise<string | null>) | null = null
+    const coordinator = new RelayAuthCoordinator({
+      readContext: () => {
+        readCount += 1
+        return readCount === 2 ? refreshRead.promise : Promise.resolve(current)
+      },
+      openBroker: async (input) => {
+        refreshAccessToken = input.refreshAccessToken
+        return { closeNow: vi.fn() }
+      },
+      onStatus: vi.fn()
+    })
+    coordinator.reconcile()
+    await vi.waitFor(() => expect(refreshAccessToken).not.toBeNull())
+    const refreshing = refreshAccessToken!()
+    current = { ...context, identity: { ...context.identity, organizationId: 'org-2' } }
+    coordinator.reconcile()
+    refreshRead.resolve(context)
+
+    await expect(refreshing).resolves.toBeNull()
+    await vi.waitFor(() => expect(readCount).toBeGreaterThanOrEqual(3))
+  })
+
+  it('reconnects automatically after a signed-in process restart or relaunch fence', async () => {
+    const firstBroker = { closeNow: vi.fn() }
+    const firstCoordinator = new RelayAuthCoordinator({
+      readContext: async () => context,
+      openBroker: async () => firstBroker,
+      onStatus: vi.fn()
+    })
+    firstCoordinator.reconcile()
+    await vi.waitFor(() => expect(firstCoordinator.getActiveBroker()).toBe(firstBroker))
+    firstCoordinator.fenceAndCloseNow()
+    expect(firstBroker.closeNow).toHaveBeenCalledOnce()
+
+    const reopenedBroker = { closeNow: vi.fn() }
+    const reopenedCoordinator = new RelayAuthCoordinator({
+      // Why: normal quit/relaunch preserves the session store, so a fresh
+      // process reads the same entitled identity and opens without new login.
+      readContext: async () => context,
+      openBroker: async () => reopenedBroker,
+      onStatus: vi.fn()
+    })
+    reopenedCoordinator.reconcile()
+    await vi.waitFor(() => expect(reopenedCoordinator.getActiveBroker()).toBe(reopenedBroker))
+  })
+
+  it('closes and reopens for valid profile and organization identity switches', async () => {
+    let current = context
+    const brokers = Array.from({ length: 3 }, () => ({ closeNow: vi.fn() }))
+    const openBroker = vi
+      .fn()
+      .mockResolvedValueOnce(brokers[0])
+      .mockResolvedValueOnce(brokers[1])
+      .mockResolvedValueOnce(brokers[2])
+    const coordinator = new RelayAuthCoordinator({
+      readContext: async () => current,
+      openBroker,
+      onStatus: vi.fn()
+    })
+    coordinator.reconcile()
+    await vi.waitFor(() => expect(coordinator.getActiveBroker()).toBe(brokers[0]))
+
+    current = { ...context, identity: { ...context.identity, profileId: 'profile-2' } }
+    coordinator.reconcile()
+    await vi.waitFor(() => expect(coordinator.getActiveBroker()).toBe(brokers[1]))
+    expect(brokers[0]!.closeNow).toHaveBeenCalledOnce()
+
+    current = {
+      ...context,
+      identity: { ...context.identity, profileId: 'profile-2', organizationId: 'org-2' }
+    }
+    coordinator.reconcile()
+    await vi.waitFor(() => expect(coordinator.getActiveBroker()).toBe(brokers[2]))
+    expect(brokers[1]!.closeNow).toHaveBeenCalledOnce()
+  })
 })
