@@ -978,6 +978,20 @@ describe('LocalPtyProvider', () => {
       expect(killSpy).toHaveBeenCalledWith('SIGKILL')
     })
 
+    it('retains the native PTY until an accepted kill produces exit proof', async () => {
+      mockProc.kill.mockImplementation(() => {})
+      const { id } = await provider.spawn({ cols: 80, rows: 24 })
+
+      await provider.shutdown(id, { immediate: true })
+
+      expect(provider.hasPty(id)).toBe(true)
+      expect(await provider.listProcesses()).toEqual(
+        expect.arrayContaining([expect.objectContaining({ id })])
+      )
+      exitCb?.({ exitCode: 137 })
+      expect(provider.hasPty(id)).toBe(false)
+    })
+
     it('invokes onExit callback via the node-pty exit handler', async () => {
       const onExit = vi.fn()
       provider.configure({ onExit })
@@ -988,7 +1002,7 @@ describe('LocalPtyProvider', () => {
 
     it('does not destroy after an intentional Windows shutdown kill', async () => {
       Object.defineProperty(process, 'platform', { configurable: true, value: 'win32' })
-      const killSpy = vi.fn()
+      const killSpy = vi.fn(() => exitCb?.({ exitCode: -1 }))
       const destroySpy = vi.fn(() => {
         killSpy()
       })
@@ -1007,9 +1021,12 @@ describe('LocalPtyProvider', () => {
 
     it('retains Windows ownership when native shutdown throws so retry can succeed', async () => {
       Object.defineProperty(process, 'platform', { configurable: true, value: 'win32' })
-      const kill = vi.fn().mockImplementationOnce(() => {
-        throw new Error('native close failed')
-      })
+      const kill = vi
+        .fn()
+        .mockImplementationOnce(() => {
+          throw new Error('native close failed')
+        })
+        .mockImplementationOnce(() => exitCb?.({ exitCode: -1 }))
       spawnMock.mockReturnValue({ ...mockProc, kill })
       const { id } = await provider.spawn({ cols: 80, rows: 24 })
 

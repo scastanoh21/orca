@@ -411,12 +411,16 @@ describe('registerPtyHandlers', () => {
             }
     )
     isPwshAvailableMock.mockReturnValue(false)
+    let defaultExitHandler: ((event: { exitCode: number }) => void) | null = null
     spawnMock.mockReturnValue({
       onData: vi.fn(() => makeDisposable()),
-      onExit: vi.fn(() => makeDisposable()),
+      onExit: vi.fn((handler: (event: { exitCode: number }) => void) => {
+        defaultExitHandler = handler
+        return makeDisposable()
+      }),
       write: vi.fn(),
       resize: vi.fn(),
-      kill: vi.fn(),
+      kill: vi.fn(() => defaultExitHandler?.({ exitCode: -1 })),
       process: 'zsh',
       pid: 12345
     })
@@ -3494,7 +3498,121 @@ describe('registerPtyHandlers', () => {
     })
     expect(store.removePendingLocalPtyShutdown).toHaveBeenCalledWith('local-pty')
     await vi.advanceTimersByTimeAsync(30_000)
+    await vi.advanceTimersByTimeAsync(30_000)
+    vi.useRealTimers()
+  })
+
+  it('keeps accepted local kills until provider readback proves physical exit', async () => {
+    vi.useFakeTimers()
+    const shutdown = vi.fn().mockResolvedValue(undefined)
+    const listProcesses = vi
+      .fn()
+      .mockResolvedValueOnce([{ id: 'local-pty', cwd: '', title: 'shell' }])
+      .mockResolvedValue([])
+    const removePendingLocalPtyShutdown = vi.fn()
+    setLocalPtyProvider({
+      requiresShutdownExitProof: true,
+      shutdown,
+      listProcesses,
+      onData: vi.fn(() => () => {}),
+      onReplay: vi.fn(() => () => {}),
+      onExit: vi.fn(() => () => {})
+    } as never)
+    handlers.clear()
+    registerPtyHandlers(mainWindow as never, undefined, undefined, undefined, undefined, {
+      getPendingLocalPtyShutdowns: () => [],
+      upsertPendingLocalPtyShutdown: vi.fn(),
+      removePendingLocalPtyShutdown
+    } as never)
+
+    await expect(handlers.get('pty:kill')!(null, { id: 'local-pty' })).rejects.toThrow(
+      'process exit is not yet confirmed'
+    )
+    expect(removePendingLocalPtyShutdown).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(250)
+
+    expect(shutdown).toHaveBeenCalledTimes(2)
+    expect(removePendingLocalPtyShutdown).toHaveBeenCalledWith('local-pty')
+    vi.useRealTimers()
+  })
+
+  it('does not let an old provider exit readback settle replacement retry ownership', async () => {
+    vi.useFakeTimers()
+    type ProcessInfo = { id: string; cwd: string; title: string }
+    let resolveOldReadback!: (processes: ProcessInfo[]) => void
+    const oldReadback = new Promise<ProcessInfo[]>((resolve) => {
+      resolveOldReadback = resolve
+    })
+    const oldListProcesses = vi.fn(() => oldReadback)
+    const newShutdown = vi.fn().mockResolvedValue(undefined)
+    const provider = (
+      shutdown: (id: string) => Promise<void>,
+      listProcesses: () => Promise<ProcessInfo[]>
+    ) =>
+      ({
+        requiresShutdownExitProof: true,
+        shutdown,
+        listProcesses,
+        onData: vi.fn(() => () => {}),
+        onReplay: vi.fn(() => () => {}),
+        onExit: vi.fn(() => () => {})
+      }) as never
+    setLocalPtyProvider(provider(vi.fn().mockResolvedValue(undefined), oldListProcesses))
+    handlers.clear()
+    registerPtyHandlers(mainWindow as never, undefined, undefined, undefined, undefined, {
+      getPendingLocalPtyShutdowns: () => [],
+      upsertPendingLocalPtyShutdown: vi.fn(),
+      removePendingLocalPtyShutdown: vi.fn()
+    } as never)
+
+    const kill = handlers.get('pty:kill')!(null, { id: 'local-pty' }) as Promise<void>
+    await vi.waitFor(() => expect(oldListProcesses).toHaveBeenCalledOnce())
+    setLocalPtyProvider(provider(newShutdown, vi.fn().mockResolvedValue([])))
+    resolveOldReadback([])
+
+    await expect(kill).resolves.toBeUndefined()
+    expect(newShutdown).toHaveBeenCalledOnce()
+    await vi.advanceTimersByTimeAsync(30_000)
     expect(vi.getTimerCount()).toBe(0)
+    vi.useRealTimers()
+  })
+
+  it('retires a persisted legacy-daemon shutdown that cannot recover pane identity', async () => {
+    vi.useFakeTimers()
+    const removePendingLocalPtyShutdown = vi.fn()
+    const onPtyExit = vi.fn()
+    setLocalPtyProvider({
+      shutdown: vi.fn().mockRejectedValue(new Error('Legacy PTY identity unavailable for "p"')),
+      onData: vi.fn(() => () => {}),
+      onReplay: vi.fn(() => () => {}),
+      onExit: vi.fn(() => () => {})
+    } as never)
+    handlers.clear()
+    registerPtyHandlers(
+      mainWindow as never,
+      { onPtyExit, setPtyController: vi.fn() } as never,
+      undefined,
+      undefined,
+      undefined,
+      {
+        getPendingLocalPtyShutdowns: () => [
+          {
+            ptyId: 'legacy-pty',
+            expectedPaneKey: 'tab-a:leaf-a',
+            expectedTabId: 'tab-a',
+            requestedAt: 1
+          }
+        ],
+        upsertPendingLocalPtyShutdown: vi.fn(),
+        removePendingLocalPtyShutdown
+      } as never
+    )
+
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(removePendingLocalPtyShutdown).toHaveBeenCalledWith('legacy-pty')
+    expect(onPtyExit).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(30_000)
     vi.useRealTimers()
   })
 
@@ -11331,10 +11449,14 @@ describe('registerPtyHandlers', () => {
     // in local-pty-provider reassigns proc.kill to a no-op to defuse the
     // SIGHUP-to-recycled-pid hazard (see docs/fix-pty-fd-leak.md). Reading
     // proc.kill.mock after that runs would yield a non-mock and crash.
-    const killSpy = vi.fn()
+    let exitCb: ((info: { exitCode: number }) => void) | null = null
+    const killSpy = vi.fn(() => exitCb?.({ exitCode: -1 }))
     const proc = {
       onData: vi.fn(() => onDataDisposable),
-      onExit: vi.fn(() => onExitDisposable),
+      onExit: vi.fn((cb: (info: { exitCode: number }) => void) => {
+        exitCb = cb
+        return onExitDisposable
+      }),
       write: vi.fn(),
       resize: vi.fn(),
       kill: killSpy,
@@ -11362,10 +11484,14 @@ describe('registerPtyHandlers', () => {
   it('keeps PTY listeners until runtime-controller native kill is accepted', async () => {
     const onDataDisposable = makeDisposable()
     const onExitDisposable = makeDisposable()
-    const killSpy = vi.fn()
+    let exitCb: ((info: { exitCode: number }) => void) | null = null
+    const killSpy = vi.fn(() => exitCb?.({ exitCode: -1 }))
     const proc = {
       onData: vi.fn(() => onDataDisposable),
-      onExit: vi.fn(() => onExitDisposable),
+      onExit: vi.fn((cb: (info: { exitCode: number }) => void) => {
+        exitCb = cb
+        return onExitDisposable
+      }),
       write: vi.fn(),
       resize: vi.fn(),
       kill: killSpy,

@@ -328,6 +328,7 @@ export type LocalPtyProviderOptions = {
 }
 
 export class LocalPtyProvider implements IPtyProvider {
+  readonly requiresShutdownExitProof = true
   private opts: LocalPtyProviderOptions
 
   constructor(opts: LocalPtyProviderOptions = {}) {
@@ -916,6 +917,7 @@ export class LocalPtyProvider implements IPtyProvider {
     // onExit an independent death proof without racing duplicate cleanup.
     ptyShutdownInProgress.add(id)
     let exitCode = -1
+    let exitObserved = false
     try {
       // Why: a renderer or paired/mobile close is destructive. POSIX's
       // default SIGHUP can be ignored; Windows node-pty requires no argument.
@@ -931,17 +933,20 @@ export class LocalPtyProvider implements IPtyProvider {
     } finally {
       ptyShutdownInProgress.delete(id)
       exitCode = ptyExitDuringShutdown.get(id) ?? -1
+      exitObserved = ptyExitDuringShutdown.has(id)
       ptyExitDuringShutdown.delete(id)
     }
-    // Timer/writer cleanup happens only after native shutdown was accepted;
-    // disposing first would suppress the natural exit path on a thrown kill.
+    // Why: kill returning is request acceptance, not process-death proof. Keep
+    // the native entry and listeners until onExit (possibly async) confirms it.
     runPtyCleanup(id)
-    disposePtyListeners(id)
-    destroyPtyProcess(proc, { alreadyKilled: true })
-    clearPtyState(id)
-    this.opts.onExit?.(id, exitCode)
-    for (const cb of exitListeners) {
-      cb({ id, code: exitCode })
+    if (exitObserved) {
+      disposePtyListeners(id)
+      destroyPtyProcess(proc, { alreadyKilled: true })
+      clearPtyState(id)
+      this.opts.onExit?.(id, exitCode)
+      for (const cb of exitListeners) {
+        cb({ id, code: exitCode })
+      }
     }
   }
 

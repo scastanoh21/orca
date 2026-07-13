@@ -133,6 +133,40 @@ describe('DaemonPtyAdapter (IPtyProvider)', () => {
       expect(typeof result.id).toBe('string')
     })
 
+    it('fails closed when a preserved legacy session has no observable pane identity', async () => {
+      const legacy = new DaemonPtyAdapter({ socketPath, tokenPath, protocolVersion: 21 })
+      const internals = legacy as unknown as {
+        client: {
+          ensureConnected: () => Promise<void>
+          request: () => Promise<unknown>
+        }
+      }
+      vi.spyOn(internals.client, 'ensureConnected').mockResolvedValue(undefined)
+      const request = vi.spyOn(internals.client, 'request').mockResolvedValue({
+        sessions: [
+          {
+            sessionId: 'legacy-session',
+            isAlive: true,
+            cwd: '/repo'
+          }
+        ]
+      })
+      try {
+        await legacy.listProcesses()
+        await expect(
+          legacy.spawn({
+            sessionId: 'legacy-session',
+            cols: 80,
+            rows: 24,
+            env: { ORCA_PANE_KEY: 'tab-b:leaf-b', ORCA_TAB_ID: 'tab-b' }
+          })
+        ).rejects.toThrow('Legacy PTY identity unavailable')
+        expect(request).toHaveBeenCalledOnce()
+      } finally {
+        legacy.dispose()
+      }
+    })
+
     it('uses worktreeId as session prefix when provided', async () => {
       const result = await adapter.spawn({ cols: 80, rows: 24, worktreeId: 'wt-1' })
       expect(result.id).toContain('wt-1')
@@ -377,6 +411,21 @@ describe('DaemonPtyAdapter (IPtyProvider)', () => {
   })
 
   describe('shutdown', () => {
+    it('retires identity-bearing shutdowns that cannot be proven on a restarted legacy adapter', async () => {
+      const legacy = new DaemonPtyAdapter({ socketPath, tokenPath, protocolVersion: 21 })
+      try {
+        await expect(
+          legacy.shutdown('legacy-session', {
+            immediate: true,
+            expectedPaneKey: 'tab-a:leaf-a',
+            expectedTabId: 'tab-a'
+          })
+        ).rejects.toThrow('Legacy PTY identity unavailable')
+      } finally {
+        legacy.dispose()
+      }
+    })
+
     it('carries pane identity through the daemon and rejects a stale kill', async () => {
       const { id } = await adapter.spawn({
         cols: 80,

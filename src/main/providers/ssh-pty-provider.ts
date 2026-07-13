@@ -39,6 +39,7 @@ export function isSshPtyIdentityMismatchError(err: unknown): boolean {
  * as LocalPtyProvider so the dispatch layer can route transparently.
  */
 export class SshPtyProvider implements IPtyProvider {
+  readonly requiresShutdownExitProof = true
   private mux: SshChannelMultiplexer
   private connectionId: string
   private dataListeners = new Set<DataCallback>()

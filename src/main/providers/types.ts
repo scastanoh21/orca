@@ -161,6 +161,9 @@ export type PtyProcessInfo = {
 }
 
 export type IPtyProvider = {
+  /** A returned kill request is only acceptance; retain ownership until an
+   * exit event or listProcesses readback proves the backing process is gone. */
+  readonly requiresShutdownExitProof?: boolean
   spawn(opts: PtySpawnOptions): Promise<PtySpawnResult>
   attach(id: string): Promise<void>
   hasPty?: (id: string) => boolean

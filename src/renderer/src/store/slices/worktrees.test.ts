@@ -3512,6 +3512,120 @@ describe('removeWorktree state cleanup', () => {
     expect(deleteProjectHostSetup).toHaveBeenCalledWith({ setupId: 'setup-runtime-ssh' })
   })
 
+  it('purges a destroyed runtime SSH project by host when its repo id also exists locally', async () => {
+    const store = createTestStore()
+    const wt = makeWorktree({
+      id: 'same-repo::/path/wt1',
+      repoId: 'same-repo',
+      path: '/path/wt1',
+      hostId: 'local'
+    })
+    const removeProject = vi.fn().mockResolvedValue(undefined)
+    store.setState({
+      repos: [
+        {
+          id: 'same-repo',
+          path: '/local/repo',
+          displayName: 'local',
+          badgeColor: '#000',
+          addedAt: 0,
+          executionHostId: 'local'
+        },
+        {
+          id: 'same-repo',
+          path: '/remote/repo',
+          displayName: 'remote',
+          badgeColor: '#111',
+          addedAt: 1,
+          connectionId: 'runtime-ssh-orca-1',
+          executionHostId: 'ssh:runtime-ssh-orca-1'
+        }
+      ],
+      worktreesByRepo: { 'same-repo': [wt] },
+      projectHostSetups: [],
+      removeProject
+    } as unknown as Partial<AppState>)
+    mockApi.ephemeralVm.listRuntimes.mockResolvedValueOnce([
+      {
+        id: 'runtime-1',
+        workspaceId: wt.id,
+        cleanupStatus: 'not_started',
+        sshTargetId: 'runtime-ssh-orca-1'
+      }
+    ])
+
+    const result = await store.getState().removeWorktree(wt.id)
+
+    expect(result).toEqual({ ok: true })
+    expect(mockApi.ephemeralVm.cleanup).toHaveBeenCalledWith({ runtimeId: 'runtime-1' })
+    expect(removeProject).toHaveBeenCalledWith('same-repo', {
+      hostId: 'ssh:runtime-ssh-orca-1'
+    })
+  })
+
+  it('tracks setup purges by host when destroyed runtime SSH repos share an id', async () => {
+    const store = createTestStore()
+    const wt = makeWorktree({
+      id: 'same-repo::/path/wt1',
+      repoId: 'same-repo',
+      hostId: 'local'
+    })
+    const runtimeRepo = (targetId: string) => ({
+      id: 'same-repo',
+      path: '/remote/repo',
+      displayName: targetId,
+      badgeColor: '#000',
+      addedAt: 0,
+      connectionId: targetId,
+      executionHostId: `ssh:${targetId}` as const
+    })
+    const firstRepo = runtimeRepo('runtime-ssh-orca-1')
+    const secondRepo = runtimeRepo('runtime-ssh-orca-2')
+    const localRepo = {
+      id: 'same-repo',
+      path: '/local/repo',
+      displayName: 'local',
+      badgeColor: '#000',
+      addedAt: 0,
+      executionHostId: 'local' as const
+    }
+    const removeProject = vi.fn().mockResolvedValue(undefined)
+    const deleteProjectHostSetup = vi.fn().mockResolvedValue({ repo: firstRepo })
+    store.setState({
+      repos: [localRepo, firstRepo, secondRepo],
+      worktreesByRepo: { 'same-repo': [wt] },
+      projectHostSetups: [
+        {
+          id: 'setup-runtime-ssh-1',
+          hostId: 'ssh:runtime-ssh-orca-1'
+        } as unknown as AppState['projectHostSetups'][number]
+      ],
+      removeProject,
+      deleteProjectHostSetup
+    } as unknown as Partial<AppState>)
+    mockApi.ephemeralVm.listRuntimes.mockResolvedValueOnce([
+      {
+        id: 'runtime-1',
+        workspaceId: wt.id,
+        cleanupStatus: 'not_started',
+        sshTargetId: 'runtime-ssh-orca-1'
+      },
+      {
+        id: 'runtime-2',
+        workspaceId: wt.id,
+        cleanupStatus: 'not_started',
+        sshTargetId: 'runtime-ssh-orca-2'
+      }
+    ])
+
+    await store.getState().removeWorktree(wt.id)
+
+    expect(deleteProjectHostSetup).toHaveBeenCalledWith({ setupId: 'setup-runtime-ssh-1' })
+    expect(removeProject).toHaveBeenCalledWith('same-repo', {
+      hostId: 'ssh:runtime-ssh-orca-2'
+    })
+  })
+
   it('cleans up editorDrafts for files in the removed worktree', async () => {
     const store = createTestStore()
     const wt = makeWorktree({ id: 'repo1::/path/wt1', repoId: 'repo1', path: '/path/wt1' })

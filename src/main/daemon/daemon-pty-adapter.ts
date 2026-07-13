@@ -202,6 +202,10 @@ export class DaemonPtyAdapter implements IPtyProvider {
           expectedPaneKey: requestedIdentity.paneKey ?? undefined,
           expectedTabId: requestedIdentity.tabId ?? undefined
         })
+      } else if (requestedIdentity.paneKey || requestedIdentity.tabId) {
+        // Why: preserved legacy daemons cannot report identity, so attaching a
+        // new pane by a reused ID could later authorize killing the old pane.
+        throw new Error(`Legacy PTY identity unavailable for "${sessionId}"`)
       }
     }
 
@@ -521,11 +525,11 @@ export class DaemonPtyAdapter implements IPtyProvider {
     ) {
       // Why: preserved pre-v22 daemons ignore kill identity fields. Fail
       // closed unless this main process observed the exact attached pane.
-      assertPtyPaneIdentity(
-        id,
-        this.paneIdentityBySessionId.get(id) ?? { paneKey: null, tabId: null },
-        opts
-      )
+      const knownIdentity = this.paneIdentityBySessionId.get(id)
+      if (!knownIdentity) {
+        throw new Error(`Legacy PTY identity unavailable for "${id}"`)
+      }
+      assertPtyPaneIdentity(id, knownIdentity, opts)
     }
     // Why: sleep/exact-stop kills the live PTY before the periodic checkpoint may run.
     // Force a final snapshot so wake can restore the pane users left.
@@ -796,6 +800,13 @@ export class DaemonPtyAdapter implements IPtyProvider {
     const result = await this.client.request<ListSessionsResult>('listSessions', undefined)
     for (const session of result.sessions) {
       this.rememberSessionIdentity(session)
+      if (session.isAlive) {
+        // Why: router startup discovers preserved legacy sessions through this
+        // method; spawn must know the ID is already live before createOrAttach.
+        this.activeSessionIds.add(session.sessionId)
+      } else {
+        this.activeSessionIds.delete(session.sessionId)
+      }
     }
     return result.sessions
       .filter((s) => s.isAlive)
