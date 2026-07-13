@@ -11,10 +11,37 @@ type PtyPrimaryHandlerAdmissionRegistry = {
 
 export type PtyPrimaryHandlerAdmissionSnapshot = {
   ptyId: string
+  owner?: PtyPrimaryHandlerOwner
   dataHandler?: (data: string, meta?: PtyDataMeta) => void
   replayHandler?: (data: string) => void
   exitHandler?: (code: number) => void
   teardownHandler?: () => void
+}
+
+export type PtyPrimaryHandlerOwner = {
+  active: boolean
+}
+
+const primaryHandlerOwners = new Map<string, PtyPrimaryHandlerOwner>()
+
+export function createPtyPrimaryHandlerOwner(): PtyPrimaryHandlerOwner {
+  return { active: true }
+}
+
+export function publishPtyPrimaryHandlerOwner(ptyId: string, owner: PtyPrimaryHandlerOwner): void {
+  const previousOwner = primaryHandlerOwners.get(ptyId)
+  if (previousOwner && previousOwner !== owner) {
+    previousOwner.active = false
+  }
+  owner.active = true
+  primaryHandlerOwners.set(ptyId, owner)
+}
+
+export function revokePtyPrimaryHandlerOwner(ptyId: string, owner: PtyPrimaryHandlerOwner): void {
+  owner.active = false
+  if (primaryHandlerOwners.get(ptyId) === owner) {
+    primaryHandlerOwners.delete(ptyId)
+  }
 }
 
 export function suspendPtyPrimaryHandlersForAdmission(
@@ -23,6 +50,7 @@ export function suspendPtyPrimaryHandlersForAdmission(
 ): PtyPrimaryHandlerAdmissionSnapshot {
   const snapshot: PtyPrimaryHandlerAdmissionSnapshot = {
     ptyId,
+    owner: primaryHandlerOwners.get(ptyId),
     dataHandler: registry.dataHandlers.get(ptyId),
     replayHandler: registry.replayHandlers.get(ptyId),
     exitHandler: registry.exitHandlers.get(ptyId),
@@ -32,6 +60,7 @@ export function suspendPtyPrimaryHandlersForAdmission(
   registry.replayHandlers.delete(ptyId)
   registry.exitHandlers.delete(ptyId)
   registry.teardownHandlers.delete(ptyId)
+  primaryHandlerOwners.delete(ptyId)
   return snapshot
 }
 
@@ -39,6 +68,10 @@ export function restorePtyPrimaryHandlersAfterFailedAdmission(
   registry: PtyPrimaryHandlerAdmissionRegistry,
   snapshot: PtyPrimaryHandlerAdmissionSnapshot
 ): void {
+  const currentOwner = primaryHandlerOwners.get(snapshot.ptyId)
+  if (!snapshot.owner?.active || (currentOwner && currentOwner !== snapshot.owner)) {
+    return
+  }
   let restoredDataHandler: PtyPrimaryHandlerAdmissionSnapshot['dataHandler']
   let restoredExitHandler: PtyPrimaryHandlerAdmissionSnapshot['exitHandler']
   if (snapshot.dataHandler && !registry.dataHandlers.has(snapshot.ptyId)) {
@@ -55,6 +88,7 @@ export function restorePtyPrimaryHandlersAfterFailedAdmission(
   if (snapshot.teardownHandler && !registry.teardownHandlers.has(snapshot.ptyId)) {
     registry.teardownHandlers.set(snapshot.ptyId, snapshot.teardownHandler)
   }
+  primaryHandlerOwners.set(snapshot.ptyId, snapshot.owner)
   // Why: events emitted while admission owned no primary handler still belong
   // to the restored generation when the replacement request itself failed.
   if (restoredDataHandler) {

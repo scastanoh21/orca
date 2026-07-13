@@ -284,6 +284,95 @@ describe('createIpcPtyTransport', () => {
     oldTransport.disconnect()
   })
 
+  it('keeps events buffered when the old pane detaches during a failed replacement admission', async () => {
+    const { createIpcPtyTransport } = await import('./pty-transport')
+    const spawn = window.api.pty.spawn as unknown as ReturnType<typeof vi.fn>
+    let rejectReplacementSpawn: ((error: Error) => void) | undefined
+    spawn.mockImplementationOnce(
+      () =>
+        new Promise((_resolve, reject) => {
+          rejectReplacementSpawn = reject
+        })
+    )
+    const oldData = vi.fn()
+    const oldExit = vi.fn()
+    const oldTransport = createIpcPtyTransport()
+    const replacementTransport = createIpcPtyTransport()
+    oldTransport.attach({
+      existingPtyId: 'same-id',
+      callbacks: { onData: oldData, onExit: oldExit }
+    })
+
+    const replacementConnect = replacementTransport.connect({
+      url: '',
+      sessionId: 'same-id',
+      callbacks: {}
+    })
+    await vi.waitFor(() => expect(rejectReplacementSpawn).toBeTypeOf('function'))
+    onData?.({ id: 'same-id', data: 'during failed admission' })
+    oldTransport.detach?.()
+    rejectReplacementSpawn?.(new Error('daemon temporarily unavailable'))
+    await replacementConnect
+    onData?.({ id: 'same-id', data: 'after failed admission' })
+    onExit?.({ id: 'same-id', code: 19 })
+    await flushPtySideEffects()
+
+    expect(oldData).not.toHaveBeenCalled()
+    expect(oldExit).not.toHaveBeenCalled()
+    const replacementData = vi.fn()
+    const replacementExit = vi.fn()
+    const remountedTransport = createIpcPtyTransport()
+    remountedTransport.attach({
+      existingPtyId: 'same-id',
+      callbacks: { onData: replacementData, onExit: replacementExit }
+    })
+
+    expect(replacementData).toHaveBeenCalledWith('during failed admission')
+    expect(replacementData).toHaveBeenCalledWith('after failed admission')
+    expect(replacementExit).toHaveBeenCalledWith(19)
+    expect(remountedTransport.isConnected()).toBe(false)
+  })
+
+  it('does not revive a same-transport owner destroyed during failed admission', async () => {
+    const { createIpcPtyTransport } = await import('./pty-transport')
+    const spawn = window.api.pty.spawn as unknown as ReturnType<typeof vi.fn>
+    let rejectReplacementSpawn: ((error: Error) => void) | undefined
+    spawn.mockImplementationOnce(
+      () =>
+        new Promise((_resolve, reject) => {
+          rejectReplacementSpawn = reject
+        })
+    )
+    const staleData = vi.fn()
+    const transport = createIpcPtyTransport()
+    transport.attach({ existingPtyId: 'same-id', callbacks: { onData: staleData } })
+
+    const replacementConnect = transport.connect({
+      url: '',
+      sessionId: 'same-id',
+      callbacks: { onData: staleData }
+    })
+    await vi.waitFor(() => expect(rejectReplacementSpawn).toBeTypeOf('function'))
+    onData?.({ id: 'same-id', data: 'buffered before destroy' })
+    transport.destroy?.()
+    rejectReplacementSpawn?.(new Error('daemon temporarily unavailable'))
+    await replacementConnect
+    onData?.({ id: 'same-id', data: 'buffered after failure' })
+    await flushPtySideEffects()
+
+    expect(staleData).not.toHaveBeenCalled()
+    const replacementData = vi.fn()
+    const remountedTransport = createIpcPtyTransport()
+    remountedTransport.attach({
+      existingPtyId: 'same-id',
+      callbacks: { onData: replacementData }
+    })
+
+    expect(replacementData).toHaveBeenCalledWith('buffered before destroy')
+    expect(replacementData).toHaveBeenCalledWith('buffered after failure')
+    remountedTransport.detach?.()
+  })
+
   it('ignores a stale exit for a previous PTY after reconnecting the same transport', async () => {
     const { createIpcPtyTransport } = await import('./pty-transport')
     const spawn = window.api.pty.spawn as unknown as ReturnType<typeof vi.fn>

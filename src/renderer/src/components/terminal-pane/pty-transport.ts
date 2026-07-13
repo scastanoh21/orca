@@ -31,9 +31,13 @@ import {
 import { createPtyInputWriteQueue } from './pty-input-write-queue'
 import { acquirePtySessionConnectAdmission } from './pty-session-connect-admission'
 import {
+  createPtyPrimaryHandlerOwner,
+  publishPtyPrimaryHandlerOwner,
   restorePtyPrimaryHandlersAfterFailedAdmission,
+  revokePtyPrimaryHandlerOwner,
   suspendPtyPrimaryHandlersForAdmission
 } from './pty-primary-handler-admission'
+import type { PtyPrimaryHandlerOwner } from './pty-primary-handler-admission'
 import type { PtyDataMeta } from './pty-dispatcher'
 import type { IpcPtyTransportOptions, PtyConnectResult, PtyTransport } from './pty-transport-types'
 import { createBellDetector } from '../../../../shared/terminal-bell-detector'
@@ -578,7 +582,11 @@ export function createIpcPtyTransport(opts: IpcPtyTransportOptions = {}): PtyTra
   // pre-handler buffer forever).
   const ownedDataAndReplayHandlers = new Map<
     string,
-    { data: (data: string, meta?: PtyDataMeta) => void; replay: (data: string) => void }
+    {
+      data: (data: string, meta?: PtyDataMeta) => void
+      replay: (data: string) => void
+      owner: PtyPrimaryHandlerOwner
+    }
   >()
   const ownedExitHandlers = new Map<string, (code: number) => void>()
 
@@ -603,6 +611,9 @@ export function createIpcPtyTransport(opts: IpcPtyTransportOptions = {}): PtyTra
       if (ptyReplayHandlers.get(id) === owned.replay) {
         ptyReplayHandlers.delete(id)
       }
+      // Why: an admission may have temporarily removed the global handlers;
+      // revoking the local owner still prevents failed admission from reviving them.
+      revokePtyPrimaryHandlerOwner(id, owned.owner)
     }
     ownedDataAndReplayHandlers.delete(id)
   }
@@ -637,8 +648,10 @@ export function createIpcPtyTransport(opts: IpcPtyTransportOptions = {}): PtyTra
         meta
       )
     }
+    const owner = createPtyPrimaryHandlerOwner()
     ptyDataHandlers.set(id, dataHandler)
-    ownedDataAndReplayHandlers.set(id, { data: dataHandler, replay: replayHandler })
+    ownedDataAndReplayHandlers.set(id, { data: dataHandler, replay: replayHandler, owner })
+    publishPtyPrimaryHandlerOwner(id, owner)
     drainPreHandlerPtyData(id, dataHandler)
   }
 
