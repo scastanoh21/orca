@@ -68,6 +68,52 @@ describe('matchingWorktreeBaseRepoIds (git-common)', () => {
     ).toEqual({ structureRepoIds: [], gitStatusRepoIds: [] })
   })
 
+  it('classifies HEAD reflog appends as status-only for linked and primary checkouts', () => {
+    const target = makeGitCommonTarget()
+    // commit --amend / reset --soft move HEAD without touching index or HEAD.
+    expect(
+      classifyWorktreeBaseChange(target, {
+        type: 'update',
+        path: join(COMMON_DIR, 'worktrees', 'wt-a', 'logs', 'HEAD')
+      })
+    ).toEqual({ structureRepoIds: [], gitStatusRepoIds: ['repo-1'] })
+    expect(
+      classifyWorktreeBaseChange(target, {
+        type: 'update',
+        path: join(COMMON_DIR, 'logs', 'HEAD')
+      })
+    ).toEqual({ structureRepoIds: [], gitStatusRepoIds: ['repo-1'] })
+    // Per-ref reflogs churn on fetches and stay ignored.
+    expect(
+      classifyWorktreeBaseChange(target, {
+        type: 'update',
+        path: join(COMMON_DIR, 'logs', 'refs', 'heads', 'main')
+      })
+    ).toEqual({ structureRepoIds: [], gitStatusRepoIds: [] })
+    expect(
+      classifyWorktreeBaseChange(target, {
+        type: 'update',
+        path: join(COMMON_DIR, 'worktrees', 'wt-a', 'logs', 'refs', 'heads', 'main')
+      })
+    ).toEqual({ structureRepoIds: [], gitStatusRepoIds: [] })
+  })
+
+  it('classifies worktree-scoped config as structural for sparse-flag freshness', () => {
+    const target = makeGitCommonTarget()
+    expect(
+      classifyWorktreeBaseChange(target, {
+        type: 'update',
+        path: join(COMMON_DIR, 'worktrees', 'wt-a', 'config.worktree')
+      })
+    ).toEqual({ structureRepoIds: ['repo-1'], gitStatusRepoIds: [] })
+    expect(
+      classifyWorktreeBaseChange(target, {
+        type: 'create',
+        path: join(COMMON_DIR, 'config.worktree')
+      })
+    ).toEqual({ structureRepoIds: ['repo-1'], gitStatusRepoIds: [] })
+  })
+
   it('classifies Windows-shaped linked metadata paths', () => {
     const commonDir = win32.join('C:\\', 'repos', 'project', '.git')
     const target: WorktreeBaseWatchTarget = {

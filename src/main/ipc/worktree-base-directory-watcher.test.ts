@@ -15,6 +15,7 @@ vi.mock('./worktree-base-directory-poller', () => ({
 
 vi.mock('./worktree-remote', () => ({
   notifyWorktreeGitStatusMetadataChanged: vi.fn(),
+  notifyWorktreeHeadIdentitiesChanged: vi.fn(),
   notifyWorktreesChanged: vi.fn()
 }))
 
@@ -22,8 +23,17 @@ vi.mock('../providers/ssh-filesystem-dispatch', () => ({
   getSshFilesystemProvider: vi.fn()
 }))
 
+vi.mock('./worktree-head-identity-reader', () => ({
+  readGitCommonHeadIdentities: vi.fn(async () => [])
+}))
+
 import { getSshFilesystemProvider } from '../providers/ssh-filesystem-dispatch'
-import { notifyWorktreeGitStatusMetadataChanged, notifyWorktreesChanged } from './worktree-remote'
+import {
+  notifyWorktreeGitStatusMetadataChanged,
+  notifyWorktreeHeadIdentitiesChanged,
+  notifyWorktreesChanged
+} from './worktree-remote'
+import { readGitCommonHeadIdentities } from './worktree-head-identity-reader'
 import { startWorktreeBaseDirectoryPoller } from './worktree-base-directory-poller'
 import {
   disposeWorktreeBaseDirectoryWatchers,
@@ -84,6 +94,7 @@ describe('worktree base directory watcher', () => {
     watcherCallbacks.clear()
     unsubscribeMocks.clear()
     vi.mocked(getSshFilesystemProvider).mockReturnValue(undefined)
+    vi.mocked(readGitCommonHeadIdentities).mockResolvedValue([])
     vi.mocked(startWorktreeBaseDirectoryPoller).mockImplementation(
       async (target, _getRepos, onEvents) => {
         const unsubscribe = vi.fn(async () => {})
@@ -179,6 +190,111 @@ describe('worktree base directory watcher', () => {
     expect(notifyWorktreesChanged).toHaveBeenCalledTimes(1)
     expect(notifyWorktreesChanged).toHaveBeenCalledWith(expect.anything(), 'repo-1')
     expect(notifyWorktreeGitStatusMetadataChanged).not.toHaveBeenCalled()
+  })
+
+  it('emits head identities for status-only head moves without structural fanout', async () => {
+    const linkedWorktree = absolutePath('workspace', 'worktrees', 'project', 'external-5104')
+    vi.mocked(readGitCommonHeadIdentities).mockResolvedValue([
+      { worktreePath: linkedWorktree, head: 'aaa111', branch: 'refs/heads/feature' }
+    ])
+    await syncWorktreeBaseDirectoryWatchers(makeStore([makeRepo()]) as never, makeWindow() as never)
+    await vi.advanceTimersByTimeAsync(0)
+
+    // External commit --amend: only logs/HEAD moves, no index write.
+    vi.mocked(readGitCommonHeadIdentities).mockResolvedValue([
+      { worktreePath: linkedWorktree, head: 'bbb222', branch: 'refs/heads/feature' }
+    ])
+    emit(PROJECT_GIT_COMMON_DIR, [
+      {
+        type: 'update',
+        path: join(PROJECT_GIT_COMMON_DIR, 'worktrees', 'external-5104', 'logs', 'HEAD')
+      }
+    ])
+    await vi.advanceTimersByTimeAsync(300)
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(notifyWorktreesChanged).not.toHaveBeenCalled()
+    expect(notifyWorktreeGitStatusMetadataChanged).toHaveBeenCalledTimes(1)
+    expect(notifyWorktreeHeadIdentitiesChanged).toHaveBeenCalledTimes(1)
+    expect(notifyWorktreeHeadIdentitiesChanged).toHaveBeenCalledWith(expect.anything(), 'repo-1', [
+      { worktreePath: linkedWorktree, head: 'bbb222', branch: 'refs/heads/feature' }
+    ])
+  })
+
+  it('does not emit head identities when a status-only burst leaves heads unchanged', async () => {
+    const linkedWorktree = absolutePath('workspace', 'worktrees', 'project', 'external-5104')
+    vi.mocked(readGitCommonHeadIdentities).mockResolvedValue([
+      { worktreePath: linkedWorktree, head: 'aaa111', branch: 'refs/heads/feature' }
+    ])
+    await syncWorktreeBaseDirectoryWatchers(makeStore([makeRepo()]) as never, makeWindow() as never)
+    await vi.advanceTimersByTimeAsync(0)
+
+    emit(PROJECT_GIT_COMMON_DIR, [
+      { type: 'update', path: join(PROJECT_GIT_COMMON_DIR, 'worktrees', 'external-5104', 'index') }
+    ])
+    await vi.advanceTimersByTimeAsync(300)
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(notifyWorktreeGitStatusMetadataChanged).toHaveBeenCalledTimes(1)
+    expect(notifyWorktreeHeadIdentitiesChanged).not.toHaveBeenCalled()
+  })
+
+  it('re-baselines head identities silently on structural notifications', async () => {
+    const linkedWorktree = absolutePath('workspace', 'worktrees', 'project', 'external-5104')
+    vi.mocked(readGitCommonHeadIdentities).mockResolvedValue([
+      { worktreePath: linkedWorktree, head: 'aaa111', branch: 'refs/heads/feature' }
+    ])
+    await syncWorktreeBaseDirectoryWatchers(makeStore([makeRepo()]) as never, makeWindow() as never)
+    await vi.advanceTimersByTimeAsync(0)
+
+    // Branch switch: structural path owns the refresh via the full listing.
+    vi.mocked(readGitCommonHeadIdentities).mockResolvedValue([
+      { worktreePath: linkedWorktree, head: 'ccc333', branch: 'refs/heads/other' }
+    ])
+    emit(PROJECT_GIT_COMMON_DIR, [
+      { type: 'update', path: join(PROJECT_GIT_COMMON_DIR, 'worktrees', 'external-5104', 'HEAD') }
+    ])
+    await vi.advanceTimersByTimeAsync(300)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(notifyWorktreeHeadIdentitiesChanged).not.toHaveBeenCalled()
+
+    // A later status-only event diffs against the re-baselined heads.
+    emit(PROJECT_GIT_COMMON_DIR, [
+      { type: 'update', path: join(PROJECT_GIT_COMMON_DIR, 'worktrees', 'external-5104', 'index') }
+    ])
+    await vi.advanceTimersByTimeAsync(300)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(notifyWorktreeHeadIdentitiesChanged).not.toHaveBeenCalled()
+  })
+
+  it('never reads head identities for SSH watches', async () => {
+    const remoteCallbacks = new Map<string, (events: never[]) => void>()
+    const remoteWatch = vi.fn(async (root: string, callback: (events: never[]) => void) => {
+      remoteCallbacks.set(root, callback)
+      return vi.fn()
+    })
+    vi.mocked(getSshFilesystemProvider).mockReturnValue({
+      stat: vi.fn(async () => ({ type: 'directory', size: 0, mtime: 0 })),
+      realpath: vi.fn(async (path: string) => path),
+      readFile: vi.fn(async () => ({ content: '', isBinary: false })),
+      watch: remoteWatch
+    } as never)
+
+    await syncWorktreeBaseDirectoryWatchers(
+      makeStore([makeRepo({ connectionId: 'ssh-1', path: '/home/alice/project' })]) as never,
+      makeWindow() as never
+    )
+    remoteCallbacks.get('/home/alice/project/.git')?.([
+      {
+        kind: 'update',
+        absolutePath: '/home/alice/project/.git/worktrees/wt/logs/HEAD'
+      }
+    ] as never[])
+    await vi.advanceTimersByTimeAsync(300)
+
+    expect(notifyWorktreeGitStatusMetadataChanged).toHaveBeenCalledTimes(1)
+    expect(readGitCommonHeadIdentities).not.toHaveBeenCalled()
+    expect(notifyWorktreeHeadIdentitiesChanged).not.toHaveBeenCalled()
   })
 
   it('does not install local desktop watchers for runtime or folder repos', async () => {

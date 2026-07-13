@@ -234,6 +234,80 @@ describe('worktree base directory poller', () => {
     )
   })
 
+  it('reports linked HEAD reflog appends that bump no watched leaf or entry dir', async () => {
+    const commonDir = await makeRoot()
+    const entry = join(commonDir, 'worktrees', 'external-amend')
+    await mkdir(join(entry, 'logs'), { recursive: true })
+    await writeFile(join(entry, 'logs', 'HEAD'), 'baseline\n')
+
+    const received: WorktreeBasePollEvent[][] = []
+    const target = makeTarget('git-common', commonDir)
+    const poller = await startWorktreeBaseDirectoryPoller(
+      target,
+      () => target.repos,
+      (events) => received.push(events),
+      { pollIntervalMs: POLL_MS, platform: 'linux' }
+    )
+    cleanups.push(() => poller.unsubscribe())
+
+    // commit --amend appends to the reflog inside logs/ — the entry dir mtime
+    // never moves, so the leaf must be stat'd directly.
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    await writeFile(join(entry, 'logs', 'HEAD'), 'baseline\namended\n')
+    await waitForEvents(received, (flat) =>
+      flat.some((event) => event.type === 'update' && event.path === join(entry, 'logs', 'HEAD'))
+    )
+  })
+
+  it('surfaces in-place index rewrites through the backstop re-stat', async () => {
+    const commonDir = await makeRoot()
+    const entry = join(commonDir, 'worktrees', 'external-inplace')
+    await mkdir(entry, { recursive: true })
+    await writeFile(join(entry, 'index'), 'index-v1')
+
+    const received: WorktreeBasePollEvent[][] = []
+    const target = makeTarget('git-common', commonDir)
+    const poller = await startWorktreeBaseDirectoryPoller(
+      target,
+      () => target.repos,
+      (events) => received.push(events),
+      { pollIntervalMs: POLL_MS, platform: 'linux' }
+    )
+    cleanups.push(() => poller.unsubscribe())
+
+    // An in-place rewrite leaves the entry-dir signature untouched, so only
+    // the periodic ungated re-stat can observe it.
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    await writeFile(join(entry, 'index'), 'index-v2-longer')
+    await waitForEvents(received, (flat) =>
+      flat.some((event) => event.type === 'update' && event.path === join(entry, 'index'))
+    )
+  })
+
+  it('reports primary-checkout HEAD reflog appends via polling', async () => {
+    const commonDir = await makeRoot()
+    await mkdir(join(commonDir, 'logs'), { recursive: true })
+    await writeFile(join(commonDir, 'logs', 'HEAD'), 'baseline\n')
+
+    const received: WorktreeBasePollEvent[][] = []
+    const target = makeTarget('git-common', commonDir)
+    const poller = await startWorktreeBaseDirectoryPoller(
+      target,
+      () => target.repos,
+      (events) => received.push(events),
+      { pollIntervalMs: POLL_MS, platform: 'linux' }
+    )
+    cleanups.push(() => poller.unsubscribe())
+
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    await writeFile(join(commonDir, 'logs', 'HEAD'), 'baseline\namended\n')
+    await waitForEvents(received, (flat) =>
+      flat.some(
+        (event) => event.type === 'update' && event.path === join(commonDir, 'logs', 'HEAD')
+      )
+    )
+  })
+
   it('reports primary-checkout HEAD changes via polling', async () => {
     const commonDir = await makeRoot()
     const received: WorktreeBasePollEvent[][] = []

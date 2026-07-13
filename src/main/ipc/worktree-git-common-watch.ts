@@ -5,7 +5,10 @@ import type {
   WorktreeBasePollEvent,
   WorktreeBaseSubscription
 } from './worktree-base-directory-poller'
-import { startGitCommonPolling } from './worktree-git-common-polling'
+import {
+  PRIMARY_CHECKOUT_METADATA_FILES,
+  startGitCommonPolling
+} from './worktree-git-common-polling'
 
 // Watches a repo's `<common>/.git/worktrees` metadata plus the primary
 // checkout's shallow branch/index files — the only paths the git-common event
@@ -21,8 +24,6 @@ import { startGitCommonPolling } from './worktree-git-common-polling'
 // Why: branch switches and commits made in the primary checkout rewrite these
 // top-level files (linked-worktree equivalents live under `worktrees/`).
 // Deliberately excludes FETCH_HEAD-style churn that carries no status change.
-const PRIMARY_CHECKOUT_METADATA_FILES = ['HEAD', 'packed-refs', 'index']
-
 async function snapshotPrimaryCheckoutMetadata(
   commonDirPath: string
 ): Promise<Map<string, number>> {

@@ -1462,6 +1462,7 @@ function createWorktreesApi(): NonNullable<Partial<PreloadApi>['worktrees']> {
     getBranchRenameFailureOutput: async () => null,
     onChanged: () => noopUnsubscribe,
     onGitStatusMetadataChanged: () => noopUnsubscribe,
+    onHeadIdentitiesChanged: () => noopUnsubscribe,
     onBaseStatus: () => noopUnsubscribe,
     onRemoteBranchConflict: () => noopUnsubscribe
   }

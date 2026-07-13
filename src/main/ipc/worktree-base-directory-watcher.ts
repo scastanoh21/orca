@@ -3,6 +3,11 @@ import type { Store } from '../persistence'
 import { notifyWorktreeGitStatusMetadataChanged, notifyWorktreesChanged } from './worktree-remote'
 import { getSshFilesystemProvider } from '../providers/ssh-filesystem-dispatch'
 import {
+  createWorktreeHeadIdentityRefreshState,
+  refreshWorktreeHeadIdentities,
+  type WorktreeHeadIdentityRefreshState
+} from './worktree-head-identity-refresh'
+import {
   collectLocalWorktreeBaseChanges,
   collectRemoteWorktreeBaseChanges,
   type WorktreeBaseCollectedChanges
@@ -20,6 +25,7 @@ type ActiveWatch = WorktreeBaseWatchTarget & {
   notifyTimer: ReturnType<typeof setTimeout> | null
   pendingStructureRepoIds: Set<string>
   pendingGitStatusRepoIds: Set<string>
+  headIdentityRefresh: WorktreeHeadIdentityRefreshState
   disposed: boolean
 }
 
@@ -66,7 +72,23 @@ function scheduleNotification(
     for (const repoId of pendingGitStatus) {
       notifyWorktreeGitStatusMetadataChanged(watch.mainWindow, repoId)
     }
+    if (supportsHeadIdentityRefresh(watch)) {
+      // Emit only when no structural notification fired this tick: structural
+      // paths already run the authoritative worktree listing; the silent pass
+      // just re-baselines so later status-only diffs stay accurate.
+      void refreshWorktreeHeadIdentities(
+        watch,
+        watch.headIdentityRefresh,
+        pendingStructure.length === 0
+      )
+    }
   }, WATCH_DEBOUNCE_MS)
+}
+
+// Why: SSH common dirs would need per-signal network reads to diff heads;
+// remote background freshness stays on the structural path for now.
+function supportsHeadIdentityRefresh(watch: ActiveWatch): boolean {
+  return watch.kind === 'git-common' && !watch.connectionId
 }
 
 function hasCollectedChanges(changes: WorktreeBaseCollectedChanges): boolean {
@@ -133,6 +155,7 @@ async function subscribeTarget(
       notifyTimer: null,
       pendingStructureRepoIds: new Set(),
       pendingGitStatusRepoIds: new Set(),
+      headIdentityRefresh: createWorktreeHeadIdentityRefreshState(),
       disposed: false
     }
     return activeWatch
@@ -160,7 +183,14 @@ async function subscribeTarget(
     notifyTimer: null,
     pendingStructureRepoIds: new Set(),
     pendingGitStatusRepoIds: new Set(),
+    headIdentityRefresh: createWorktreeHeadIdentityRefreshState(),
     disposed: false
+  }
+  if (supportsHeadIdentityRefresh(activeWatch)) {
+    // Baseline eagerly so the first status-only signal — possibly hours after
+    // subscribe — diffs against subscribe-time heads instead of silently
+    // re-baselining past an external commit.
+    void refreshWorktreeHeadIdentities(activeWatch, activeWatch.headIdentityRefresh, false)
   }
   return activeWatch
 }

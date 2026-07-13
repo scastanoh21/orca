@@ -947,6 +947,7 @@ describe('useIpcEvents browser tab create routing', () => {
         worktrees: {
           onChanged: () => () => {},
           onGitStatusMetadataChanged: () => () => {},
+          onHeadIdentitiesChanged: () => () => {},
           onBaseStatus: () => () => {},
           onRemoteBranchConflict: () => () => {}
         },

@@ -90,10 +90,20 @@ function matchingBaseRepoIds(
 // Why: branch switches and commits in the primary checkout rewrite these
 // top-level common-dir files; matching them keeps root-checkout branch/status
 // as fresh as linked worktrees. Deeper churn (objects, refs, logs) is ignored.
-const GIT_COMMON_PRIMARY_STRUCTURAL_FILES = new Set(['HEAD', 'packed-refs'])
+// `config.worktree` is structural because it is the only file whose write
+// flips `git worktree list`'s sparse flag, and no status/commit path touches
+// it — so it cannot re-open the index-churn fanout this classifier closes.
+const GIT_COMMON_PRIMARY_STRUCTURAL_FILES = new Set(['HEAD', 'packed-refs', 'config.worktree'])
 const GIT_COMMON_PRIMARY_STATUS_FILES = new Set(['index'])
-const GIT_COMMON_LINKED_STRUCTURAL_FILES = new Set(['HEAD', 'gitdir', 'locked'])
+const GIT_COMMON_LINKED_STRUCTURAL_FILES = new Set(['HEAD', 'gitdir', 'locked', 'config.worktree'])
 const GIT_COMMON_LINKED_STATUS_FILES = new Set(['index'])
+
+// `logs/HEAD` is the status-only trigger for head moves that rewrite no
+// watched leaf (commit --amend, reset --soft): every ref update through a
+// checkout appends there, while `git status` churn never touches it.
+function isHeadLogParts(parts: string[], offset: number): boolean {
+  return parts.length === offset + 2 && parts[offset] === 'logs' && parts[offset + 1] === 'HEAD'
+}
 
 function allRepoIds(target: WorktreeBaseWatchTarget): string[] {
   return [...target.repos.keys()]
@@ -123,6 +133,9 @@ function classifyGitCommonEvent(
     return { structureRepoIds: [], gitStatusRepoIds: [] }
   }
   if (parts[0] !== 'worktrees') {
+    if (isHeadLogParts(parts, 0)) {
+      return { structureRepoIds: [], gitStatusRepoIds: repoIds }
+    }
     return { structureRepoIds: [], gitStatusRepoIds: [] }
   }
   if (parts.length === 2) {
@@ -137,6 +150,9 @@ function classifyGitCommonEvent(
     if (GIT_COMMON_LINKED_STATUS_FILES.has(parts[2])) {
       return { structureRepoIds: [], gitStatusRepoIds: repoIds }
     }
+  }
+  if (isHeadLogParts(parts, 2)) {
+    return { structureRepoIds: [], gitStatusRepoIds: repoIds }
   }
   return { structureRepoIds: [], gitStatusRepoIds: [] }
 }

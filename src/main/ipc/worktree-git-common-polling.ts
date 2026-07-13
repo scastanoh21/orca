@@ -5,9 +5,24 @@ import type {
   WorktreeBaseSubscription
 } from './worktree-base-directory-poller'
 
-const PRIMARY_CHECKOUT_METADATA_FILES = ['HEAD', 'packed-refs', 'index']
-const LINKED_WORKTREE_STRUCTURAL_METADATA_FILES = ['HEAD', 'gitdir', 'locked']
+// Shared with the darwin primary-metadata poll so the platforms cannot drift
+// on which shallow leaves count as watchable metadata. `logs/HEAD` catches
+// head moves that rewrite no other watched leaf (commit --amend, reset
+// --soft); `config.worktree` carries the sparse flag.
+export const PRIMARY_CHECKOUT_METADATA_FILES = [
+  'HEAD',
+  'packed-refs',
+  'index',
+  'config.worktree',
+  'logs/HEAD'
+]
+const LINKED_WORKTREE_STRUCTURAL_METADATA_FILES = ['HEAD', 'gitdir', 'locked', 'config.worktree']
 const LINKED_WORKTREE_INDEX_FILE = 'index'
+const LINKED_WORKTREE_HEAD_LOG_FILE = join('logs', 'HEAD')
+// Why: the entry-dir signature gate can miss same-granule index rewrites on
+// coarse-mtime filesystems; a periodic ungated re-stat bounds that miss the
+// same way the base poller's backstop rescan does.
+const INDEX_BACKSTOP_TICKS = 15
 
 function statSignature(s: { mtimeMs: number; ctimeMs: number; ino: number; size: number }): string {
   return `${s.mtimeMs}:${s.ctimeMs}:${s.ino}:${s.size}`
@@ -25,8 +40,10 @@ async function fileSignature(path: string): Promise<string | null> {
 async function pathSignature(path: string): Promise<string | null> {
   try {
     const s = await stat(path)
-    // Why: this directory signature is only an index-read optimization; ctime
-    // changes from unrelated metadata must not make the HEAD regression test vacuous.
+    // Why: omitting ctime keeps unrelated metadata churn from re-opening the
+    // index gate, which would make the HEAD regression test vacuous. The gate
+    // is load-bearing for index-event emission between backstop ticks; the
+    // renderer's status poll is the ultimate freshness net.
     return `${s.mtimeMs}:${s.ino}:${s.size}`
   } catch {
     return null
@@ -37,6 +54,7 @@ type GitCommonEntrySnapshot = {
   dirSignature: string | null
   structuralSignatures: Map<string, string>
   indexSignature: string | null
+  headLogSignature: string | null
 }
 
 type GitCommonSnapshot = {
@@ -47,7 +65,8 @@ type GitCommonSnapshot = {
 
 async function snapshotGitCommonEntry(
   entryPath: string,
-  previous?: GitCommonEntrySnapshot
+  previous: GitCommonEntrySnapshot | undefined,
+  forceIndexRead: boolean
 ): Promise<GitCommonEntrySnapshot> {
   const dirSignature = await pathSignature(entryPath)
   const structuralSignatures = new Map<string, string>()
@@ -59,11 +78,14 @@ async function snapshotGitCommonEntry(
       }
     })
   )
-  const shouldReadIndex = !previous || previous.dirSignature !== dirSignature
+  // `logs/HEAD` lives in a subdirectory, so appends never bump the entry-dir
+  // mtime — it must be stat'd every tick rather than gated like `index`.
+  const headLogSignature = await fileSignature(join(entryPath, LINKED_WORKTREE_HEAD_LOG_FILE))
+  const shouldReadIndex = forceIndexRead || !previous || previous.dirSignature !== dirSignature
   const indexSignature = shouldReadIndex
     ? await fileSignature(join(entryPath, LINKED_WORKTREE_INDEX_FILE))
     : previous.indexSignature
-  return { dirSignature, structuralSignatures, indexSignature }
+  return { dirSignature, structuralSignatures, indexSignature, headLogSignature }
 }
 
 async function snapshotPrimaryCheckoutSignatures(
@@ -84,7 +106,8 @@ async function snapshotPrimaryCheckoutSignatures(
 async function snapshotGitCommon(
   commonDirPath: string,
   previous?: GitCommonSnapshot,
-  includePrimary = true
+  includePrimary = true,
+  forceIndexRead = false
 ): Promise<GitCommonSnapshot> {
   const entriesByPath = new Map<string, GitCommonEntrySnapshot>()
   const worktreesDir = join(commonDirPath, 'worktrees')
@@ -111,7 +134,7 @@ async function snapshotGitCommon(
       const entryPath = join(worktreesDir, entry.name)
       entriesByPath.set(
         entryPath,
-        await snapshotGitCommonEntry(entryPath, previous?.entries.get(entryPath))
+        await snapshotGitCommonEntry(entryPath, previous?.entries.get(entryPath), forceIndexRead)
       )
     })
   )
@@ -183,6 +206,10 @@ function diffGitCommon(
     if (indexDiff) {
       events.push({ type: indexDiff, path: join(entryPath, LINKED_WORKTREE_INDEX_FILE) })
     }
+    const headLogDiff = classifySignatureDiff(prevEntry.headLogSignature, entry.headLogSignature)
+    if (headLogDiff) {
+      events.push({ type: headLogDiff, path: join(entryPath, LINKED_WORKTREE_HEAD_LOG_FILE) })
+    }
   }
   for (const entryPath of prev.entries.keys()) {
     if (!next.entries.has(entryPath)) {
@@ -206,6 +233,7 @@ export async function startGitCommonPolling(
 ): Promise<WorktreeBaseSubscription> {
   let disposed = false
   let ticking = false
+  let tickCount = 0
   let snapshot = await snapshotGitCommon(commonDirPath, undefined, includePrimary)
 
   const timer = setInterval(() => {
@@ -213,8 +241,10 @@ export async function startGitCommonPolling(
       return
     }
     ticking = true
+    tickCount++
+    const forceIndexRead = tickCount % INDEX_BACKSTOP_TICKS === 0
     onFullScan?.()
-    void snapshotGitCommon(commonDirPath, snapshot, includePrimary)
+    void snapshotGitCommon(commonDirPath, snapshot, includePrimary, forceIndexRead)
       .then((next) => {
         if (disposed) {
           return
