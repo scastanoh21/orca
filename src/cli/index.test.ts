@@ -223,7 +223,7 @@ describe('command aliases dispatch to the canonical handler', () => {
   })
 })
 
-describe('unknown command surfaces a suggestion', () => {
+describe('unknown command recovery', () => {
   let errorSpy: ReturnType<typeof vi.spyOn>
 
   beforeEach(() => {
@@ -236,37 +236,26 @@ describe('unknown command surfaces a suggestion', () => {
     process.exitCode = 0
   })
 
-  it('prints did-you-mean for a near-miss command and exits non-zero', async () => {
+  it('directs a near-miss command to read-only discovery', async () => {
     await main(['worktree', 'lst'], '/tmp/repo')
 
     expect(process.exitCode).toBe(1)
     const stderr = errorSpy.mock.calls.map((call) => String(call[0])).join('\n')
     expect(stderr).toContain('Unknown command: worktree lst')
-    expect(stderr).toContain('orca worktree list')
-  })
-
-  it('does not print did-you-mean for a destructive near-miss', async () => {
-    await main(['worktree', 'remov'], '/tmp/repo')
-
-    expect(process.exitCode).toBe(1)
-    const stderr = errorSpy.mock.calls.map((call) => String(call[0])).join('\n')
-    expect(stderr).toContain('Unknown command: worktree remov')
     expect(stderr).not.toContain('Did you mean')
+    expect(stderr).toContain('Next step: Run `orca help`')
   })
 
-  it('keeps guessed commands out of JSON recovery', async () => {
+  it('keeps command recovery instructions out of JSON', async () => {
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
 
     await main(['worktree', 'lst', '--json'], '/tmp/repo')
 
     expect(process.exitCode).toBe(1)
     const response = JSON.parse(logSpy.mock.calls.flat().join('\n')) as {
-      error: { data?: { suggestions?: string[]; nextSteps?: string[] } }
+      error: { data?: unknown }
     }
-    expect(response.error.data?.suggestions).toBeUndefined()
-    expect(response.error.data?.nextSteps).toEqual([
-      'Run `orca help` or `orca agent-context --json` to inspect available commands before retrying.'
-    ])
+    expect(response.error.data).toBeUndefined()
     logSpy.mockRestore()
   })
 
@@ -276,7 +265,8 @@ describe('unknown command surfaces a suggestion', () => {
     expect(process.exitCode).toBe(1)
     const stderr = errorSpy.mock.calls.map((call) => String(call[0])).join('\n')
     expect(stderr).toContain('Unknown flag --jso for command: worktree list')
-    expect(stderr).toContain('--json')
+    expect(stderr).toContain('Next step: Run `orca help worktree list`')
+    expect(stderr).not.toContain('Did you mean')
   })
 
   it('reports a pre-command flag that belongs to another command', async () => {
@@ -287,7 +277,7 @@ describe('unknown command surfaces a suggestion', () => {
     expect(stderr).toContain('Unknown flag --workspace for command: worktree list')
   })
 
-  it('keeps guessed flags out of JSON recovery', async () => {
+  it('keeps flag recovery instructions out of JSON', async () => {
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
 
     await main(['worktree', 'list', '--jso', '--json'], '/tmp/repo')
@@ -295,14 +285,11 @@ describe('unknown command surfaces a suggestion', () => {
     expect(process.exitCode).toBe(1)
     const response = JSON.parse(logSpy.mock.calls.flat().join('\n')) as {
       error: {
-        data?: { suggestions?: string[]; validFlags?: string[]; nextSteps?: string[] }
+        data?: { validFlags?: string[]; nextSteps?: string[] }
       }
     }
-    expect(response.error.data?.suggestions).toBeUndefined()
     expect(response.error.data?.validFlags).toContain('json')
-    expect(response.error.data?.nextSteps).toEqual([
-      'Run `orca help worktree list` to inspect supported flags before retrying.'
-    ])
+    expect(response.error.data?.nextSteps).toBeUndefined()
     logSpy.mockRestore()
   })
 
@@ -335,17 +322,20 @@ describe('unknown command surfaces a suggestion', () => {
   )
 })
 
-describe('unknown help command surfaces a suggestion', () => {
+describe('unknown help command', () => {
   it.each([
     ['help prefix', ['help', 'worktree', 'lst']],
     ['help flag', ['worktree', 'lst', '--help']]
-  ])('prints did-you-mean for the %s form', async (_label, argv) => {
+  ])('prints root help without a guess for the %s form', async (_label, argv) => {
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
 
     await main(argv, '/tmp/repo')
 
     expect(process.exitCode).toBe(1)
-    expect(logSpy.mock.calls.flat().join('\n')).toContain('Did you mean: orca worktree list')
+    const output = logSpy.mock.calls.flat().join('\n')
+    expect(output).toContain('Unknown command: worktree lst')
+    expect(output).toContain('Usage: orca <command> [options]')
+    expect(output).not.toContain('Did you mean')
     logSpy.mockRestore()
     process.exitCode = 0
   })
@@ -1976,7 +1966,8 @@ describe('orca cli worktree awareness', () => {
     })
     expect(output).toContain('"ok": false')
     expect(output).toContain('Parent selector was not found.')
-    expect(output).toContain('--parent-worktree selector')
+    expect(output).not.toContain('nextSteps')
+    expect(output).not.toContain('--parent-worktree selector')
     expect(output).not.toContain('--parent-workspace')
     expect(errSpy).not.toHaveBeenCalled()
     expect(process.exitCode).toBe(1)

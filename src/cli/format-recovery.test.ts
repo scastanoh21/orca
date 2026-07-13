@@ -4,45 +4,66 @@ import { formatCliError, reportCliError } from './format'
 import { RuntimeClientError, RuntimeRpcFailureError } from './runtime-client'
 
 describe('CLI error recovery', () => {
-  it('renders human command suggestions separately from safe next steps', () => {
+  it('renders explicit local recovery in human output', () => {
     const error = new RuntimeClientError('invalid_argument', 'Unknown command: worktree lst', {
-      suggestions: ['worktree list'],
       nextSteps: ['Run `orca help` to inspect available commands.']
     })
 
     const output = formatCliError(error)
 
     expect(output).toContain('Unknown command: worktree lst')
-    expect(output).toContain('Did you mean: orca worktree list')
     expect(output).toContain('Next step: Run `orca help`')
   })
 
-  it('renders human flag suggestions separately from safe next steps', () => {
+  it('prefers explicit local recovery over generic computer hints', () => {
     const error = new RuntimeClientError('invalid_argument', 'Unknown flag --forcce', {
       validFlags: ['force', 'json'],
-      suggestions: ['force'],
       nextSteps: ['Run `orca help computer click` to inspect supported flags.']
     })
 
     const output = formatCliError(error, { commandPath: ['computer', 'click'] })
 
-    expect(output).toContain('Did you mean: --force')
     expect(output).toContain('Next step: Run `orca help computer click`')
     expect(output).not.toContain('Fix the command flags or RPC params')
   })
 
-  it('strips human-only guesses from local JSON errors', () => {
+  it('strips local next steps from JSON errors', () => {
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
     const error = new RuntimeClientError('invalid_argument', 'Unknown command: worktree lst', {
-      suggestions: ['worktree list'],
       nextSteps: ['Run `orca help` to inspect available commands.']
     })
 
     reportCliError(error, true)
 
     const output = logSpy.mock.calls.flat().join('\n')
-    expect(output).not.toContain('worktree list')
-    expect(output).toContain('Run `orca help`')
+    expect(output).not.toContain('nextSteps')
+    expect(output).not.toContain('Run `orca help`')
+    logSpy.mockRestore()
+  })
+
+  it('strips runtime next steps from JSON errors', () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    const error = new RuntimeRpcFailureError({
+      id: 'req_rpc_json',
+      ok: false,
+      error: {
+        code: 'invalid_argument',
+        message: 'Unknown runtime argument',
+        data: {
+          detail: 'invalid selector',
+          nestedRecovery: { nextSteps: ['Retry with --force'] },
+          nextSteps: ['Retry with --force']
+        }
+      },
+      _meta: { runtimeId: 'runtime_local' }
+    })
+
+    reportCliError(error, true)
+
+    const output = logSpy.mock.calls.flat().join('\n')
+    expect(output).toContain('invalid selector')
+    expect(output).not.toContain('nextSteps')
+    expect(output).not.toContain('--force')
     logSpy.mockRestore()
   })
 

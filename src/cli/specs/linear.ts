@@ -103,7 +103,6 @@ export const LINEAR_COMMAND_SPECS: CommandSpec[] = [
   },
   {
     path: ['linear', 'assignee', 'clear'],
-    destructive: true,
     summary: 'Clear a Linear issue assignee',
     usage: 'orca linear assignee clear [<id>] [--current] [--workspace <id>] [--json]',
     allowedFlags: [...GLOBAL_FLAGS, 'current', 'workspace', 'id'],
@@ -121,7 +120,6 @@ export const LINEAR_COMMAND_SPECS: CommandSpec[] = [
   },
   {
     path: ['linear', 'priority', 'clear'],
-    destructive: true,
     summary: 'Clear a Linear issue priority',
     usage: 'orca linear priority clear [<id>] [--current] [--workspace <id>] [--json]',
     allowedFlags: [...GLOBAL_FLAGS, 'current', 'workspace', 'id'],
@@ -138,7 +136,6 @@ export const LINEAR_COMMAND_SPECS: CommandSpec[] = [
   },
   {
     path: ['linear', 'estimate', 'clear'],
-    destructive: true,
     summary: 'Clear a Linear issue estimate',
     usage: 'orca linear estimate clear [<id>] [--current] [--workspace <id>] [--json]',
     allowedFlags: [...GLOBAL_FLAGS, 'current', 'workspace', 'id'],
@@ -156,7 +153,6 @@ export const LINEAR_COMMAND_SPECS: CommandSpec[] = [
   },
   {
     path: ['linear', 'due-date', 'clear'],
-    destructive: true,
     summary: 'Clear a Linear issue due date',
     usage: 'orca linear due-date clear [<id>] [--current] [--workspace <id>] [--json]',
     allowedFlags: [...GLOBAL_FLAGS, 'current', 'workspace', 'id'],
@@ -174,7 +170,6 @@ export const LINEAR_COMMAND_SPECS: CommandSpec[] = [
   },
   {
     path: ['linear', 'label', 'remove'],
-    destructive: true,
     summary: 'Remove labels from a Linear issue',
     usage:
       'orca linear label remove [<id>] [--current] --label <labelId-or-exact-name>... [--workspace <id>] [--json]',

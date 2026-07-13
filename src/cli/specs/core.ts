@@ -164,7 +164,6 @@ export const CORE_COMMAND_SPECS: CommandSpec[] = [
       ['worktree', 'remove'],
       ['worktree', 'delete']
     ],
-    destructive: true,
     summary: 'Remove a worktree from Orca and git',
     usage: 'orca worktree rm --worktree <selector> [--force] [--run-hooks] [--json]',
     allowedFlags: [...GLOBAL_FLAGS, 'worktree', 'force', 'run-hooks'],
@@ -220,7 +219,6 @@ export const CORE_COMMAND_SPECS: CommandSpec[] = [
   },
   {
     path: ['terminal', 'stop'],
-    destructive: true,
     summary: 'Stop terminals for a worktree',
     usage: 'orca terminal stop --worktree <selector> [--json]',
     allowedFlags: [...GLOBAL_FLAGS, 'worktree']
@@ -254,7 +252,6 @@ export const CORE_COMMAND_SPECS: CommandSpec[] = [
   },
   {
     path: ['terminal', 'close'],
-    destructive: true,
     summary: 'Close a terminal tab (kills PTY if running)',
     usage: 'orca terminal close [--terminal <handle>] [--json]',
     allowedFlags: [...GLOBAL_FLAGS, 'terminal'],

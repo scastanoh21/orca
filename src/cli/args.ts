@@ -1,5 +1,5 @@
 import { RuntimeClientError } from './runtime-client'
-import { unknownCommandData, unknownFlagData } from './command-suggestion'
+import { unknownCommandData, unknownFlagData } from './command-error-recovery'
 
 export type ParsedArgs = {
   commandPath: string[]
@@ -13,9 +13,6 @@ export type CommandSpec = {
   // or handler registrations.
   aliases?: string[][]
   argumentMode?: 'parsed' | 'passthrough'
-  // Why: commands that remove user state/configuration or terminate a workload
-  // must never be emitted through agent-facing typo recovery. #6303
-  destructive?: boolean
   summary: string
   usage: string
   allowedFlags: string[]
@@ -293,7 +290,7 @@ export function validateCommandAndFlags(specs: CommandSpec[], parsed: ParsedArgs
     throw new RuntimeClientError(
       'invalid_argument',
       `Unknown command: ${parsed.commandPath.join(' ')}`,
-      unknownCommandData(specs, parsed.commandPath)
+      unknownCommandData()
     )
   }
 
@@ -316,7 +313,7 @@ export function validateCommandAndFlags(specs: CommandSpec[], parsed: ParsedArgs
       throw new RuntimeClientError(
         'invalid_argument',
         `Unknown flag --${flag} for command: ${spec.path.join(' ')}`,
-        unknownFlagData(flag, effectiveAllowedFlags(spec), spec.path)
+        unknownFlagData(effectiveAllowedFlags(spec), spec.path)
       )
     }
   }

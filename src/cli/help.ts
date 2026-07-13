@@ -1,7 +1,6 @@
 /* eslint-disable max-lines -- Why: root and generated command help text live together so CLI discovery stays greppable. */
 import type { CommandSpec } from './args'
 import { findCommandSpec, isCommandGroup, supportsBrowserPageFlag } from './args'
-import { unknownCommandData } from './command-suggestion'
 
 const ROOT_HELP_TEXT = `orca
 
@@ -344,11 +343,7 @@ export function printHelp(specs: CommandSpec[], commandPath: string[] = []): voi
   }
 
   if (commandPath.length > 0) {
-    const { suggestions } = unknownCommandData(specs, commandPath)
-    const recovery = suggestions.length
-      ? `Did you mean: ${suggestions.map((path) => `orca ${path}`).join(', ')}`
-      : ''
-    console.log(`Unknown command: ${commandPath.join(' ')}${recovery ? `\n${recovery}` : ''}\n`)
+    console.log(`Unknown command: ${commandPath.join(' ')}\n`)
   }
 
   console.log(ROOT_HELP_TEXT)

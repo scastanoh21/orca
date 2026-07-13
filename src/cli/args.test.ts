@@ -277,7 +277,7 @@ describe('validateCommandAndFlags', () => {
     )
   })
 
-  it('enumerates valid flags without guessing one in machine recovery', () => {
+  it('enumerates valid flags with command-specific help recovery', () => {
     const flagSpecs: CommandSpec[] = [
       {
         path: ['worktree', 'rm'],
@@ -292,22 +292,16 @@ describe('validateCommandAndFlags', () => {
       validateCommandAndFlags(flagSpecs, parsed)
       throw new Error('expected validateCommandAndFlags to throw')
     } catch (error) {
-      const data = (
-        error as {
-          data?: { validFlags: string[]; suggestions: string[]; nextSteps: string[] }
-        }
-      ).data
+      const data = (error as { data?: { validFlags: string[]; nextSteps: string[] } }).data
       expect(data?.validFlags).toContain('force')
       expect(data?.validFlags).toContain('json')
-      expect(data?.suggestions).toContain('force')
       expect(data?.nextSteps).toEqual([
         'Run `orca help worktree rm` to inspect supported flags before retrying.'
       ])
-      expect(data?.nextSteps.join('\n')).not.toContain('--force')
     }
   })
 
-  it('keeps command guesses out of machine recovery instructions', () => {
+  it('attaches read-only discovery to unknown-command errors', () => {
     const suggestSpecs: CommandSpec[] = [
       {
         path: ['worktree', 'list'],
@@ -322,10 +316,8 @@ describe('validateCommandAndFlags', () => {
       validateCommandAndFlags(suggestSpecs, parsed)
       throw new Error('expected validateCommandAndFlags to throw')
     } catch (error) {
-      const data = (error as { data?: { suggestions: string[]; nextSteps: string[] } }).data
-      expect(data?.suggestions).toContain('worktree list')
+      const data = (error as { data?: { nextSteps: string[] } }).data
       expect(data?.nextSteps[0]).toContain('orca agent-context --json')
-      expect(data?.nextSteps.join(' ')).not.toContain('worktree list')
     }
   })
 })

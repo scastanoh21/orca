@@ -98,9 +98,7 @@ describe('orca computer action CLI validation', () => {
       code: 'invalid_argument',
       message: expect.stringContaining('Hotkey requires a modifier and one key')
     })
-    expect(output.error.data.nextSteps).toEqual(
-      expect.arrayContaining([expect.stringContaining('Do not retry the same command unchanged')])
-    )
+    expect(output.error.data).toBeUndefined()
     expect(process.exitCode).toBe(1)
   })
 
@@ -116,9 +114,7 @@ describe('orca computer action CLI validation', () => {
       code: 'invalid_argument',
       message: expect.stringContaining('Press-key accepts one key only')
     })
-    expect(output.error.data.nextSteps).toEqual(
-      expect.arrayContaining([expect.stringContaining('Do not retry the same command unchanged')])
-    )
+    expect(output.error.data).toBeUndefined()
     expect(process.exitCode).toBe(1)
   })
 
@@ -276,10 +272,7 @@ describe('orca computer action CLI validation', () => {
     }
     expect(output.error.code).toBe('invalid_argument')
     expect(output.error.message).toContain('Invalid positive integer for --click-count')
-    expect(output.error.data?.nextSteps).toEqual([
-      expect.stringContaining('Fix the command flags'),
-      expect.stringContaining('Do not retry')
-    ])
+    expect(output.error.data?.nextSteps).toBeUndefined()
     expect(process.exitCode).toBe(1)
   })
 

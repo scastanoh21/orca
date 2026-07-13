@@ -11,7 +11,6 @@ export const AGENT_HOOK_COMMAND_SPECS: CommandSpec[] = [
   },
   {
     path: ['agent', 'hooks', 'off'],
-    destructive: true,
     summary: 'Disable Orca-managed agent status hooks and remove local hook entries',
     usage: 'orca agent hooks off [--json]',
     allowedFlags: [...GLOBAL_FLAGS],
