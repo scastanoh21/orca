@@ -480,7 +480,9 @@ describe('launchAgentBackgroundSession', () => {
     mockRegisterEagerPtyBuffer.mockImplementationOnce(() => {
       throw new Error('subscription setup failed')
     })
-    mockKill.mockRejectedValueOnce(new Error('provider unavailable')).mockResolvedValueOnce(undefined)
+    mockKill
+      .mockRejectedValueOnce(new Error('provider unavailable'))
+      .mockResolvedValueOnce(undefined)
     const { launchAgentBackgroundSession } = await import('./launch-agent-background-session')
     const { retryRetainedPtyKills } = await import('./pty-kill-retry-ownership')
 

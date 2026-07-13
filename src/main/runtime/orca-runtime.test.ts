@@ -22282,7 +22282,10 @@ describe('OrcaRuntimeService', () => {
     const create = deferred<void>()
     vi.mocked(listWorktrees).mockResolvedValue([])
 
-    const admittedCreate = runtime.runWithWorktreeCreateAdmission(TEST_REPO_ID, () => create.promise)
+    const admittedCreate = runtime.runWithWorktreeCreateAdmission(
+      TEST_REPO_ID,
+      () => create.promise
+    )
     const removal = runtime.removeProjectForHost(TEST_REPO_ID, 'local')
     await Promise.resolve()
     expect(removeProjectForHost).not.toHaveBeenCalled()

@@ -806,6 +806,7 @@ type RuntimeStore = {
   updateFolderWorkspace?: Store['updateFolderWorkspace']
   removeFolderWorkspace?: Store['removeFolderWorkspace']
   removeProject?: Store['removeProject']
+  removeProjectForHost?: Store['removeProjectForHost']
   reorderRepos?: Store['reorderRepos']
   getAllWorktreeMeta: Store['getAllWorktreeMeta']
   getWorktreeMeta: Store['getWorktreeMeta']
@@ -12414,28 +12415,27 @@ export class OrcaRuntimeService {
   }
 
   async removeProject(repoSelector: string): Promise<{ removed: true }> {
-    if (!this.store?.removeProject) {
+    const store = this.store
+    if (!store?.removeProject) {
       throw new Error('runtime_unavailable')
     }
     const repo = await this.resolveRepoSelector(repoSelector)
-    return this.removeProjectWithHostScope(repo, null, () => this.store!.removeProject(repo.id))
+    return this.removeProjectWithHostScope(repo, null, () => store.removeProject!(repo.id))
   }
 
-  async removeProjectForHost(
-    repoId: string,
-    hostId: ExecutionHostId
-  ): Promise<{ removed: true }> {
-    if (!this.store?.removeProjectForHost) {
+  async removeProjectForHost(repoId: string, hostId: ExecutionHostId): Promise<{ removed: true }> {
+    const store = this.store
+    if (!store?.removeProjectForHost) {
       throw new Error('runtime_unavailable')
     }
-    const repo = this.store
+    const repo = store
       .getRepos()
       .find((candidate) => candidate.id === repoId && getRepoExecutionHostId(candidate) === hostId)
     if (!repo) {
       throw new Error('repo_not_found')
     }
     return this.removeProjectWithHostScope(repo, hostId, () =>
-      this.store!.removeProjectForHost(repo.id, hostId)
+      store.removeProjectForHost!(repo.id, hostId)
     )
   }
 
