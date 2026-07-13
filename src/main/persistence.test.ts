@@ -153,6 +153,10 @@ function dataFile(): string {
   return join(testState.dir, 'orca-data.json')
 }
 
+function terminalTeardownIntentFile(): string {
+  return join(testState.dir, 'orca-terminal-teardown-intents.json')
+}
+
 function writeDataFile(data: unknown): void {
   mkdirSync(testState.dir, { recursive: true })
   writeFileSync(dataFile(), JSON.stringify(data, null, 2), 'utf-8')
@@ -8876,6 +8880,78 @@ describe('Store', () => {
     ])
   })
 
+  it('keeps 65 teardown owners crash-durable without synchronous full-store flushes', async () => {
+    const store = await createStore()
+    const flushSpy = vi.spyOn(store, 'flush')
+    for (let index = 0; index < 65; index += 1) {
+      store.upsertPendingLocalPtyShutdown({
+        ptyId: `local-${index}`,
+        expectedPaneKey: `tab-${index}:leaf-${index}`,
+        expectedTabId: `tab-${index}`,
+        requestedAt: index
+      })
+      store.upsertPendingRuntimeTerminalClose({
+        environmentId: `environment-${index}`,
+        handle: `terminal-${index}`,
+        runtimeId: `runtime-${index}`,
+        requestedAt: index
+      })
+    }
+
+    const reloaded = await createStore()
+    expect(reloaded.getPendingLocalPtyShutdowns()).toHaveLength(65)
+    expect(reloaded.getPendingRuntimeTerminalCloses()).toHaveLength(65)
+    expect(JSON.parse(readFileSync(terminalTeardownIntentFile(), 'utf-8'))).toEqual(
+      expect.objectContaining({
+        revision: 130,
+        pendingLocalPtyShutdowns: expect.arrayContaining([
+          expect.objectContaining({ ptyId: 'local-64' })
+        ]),
+        pendingRuntimeTerminalCloses: expect.arrayContaining([
+          expect.objectContaining({ handle: 'terminal-64' })
+        ])
+      })
+    )
+    for (let index = 0; index < 65; index += 1) {
+      store.removePendingLocalPtyShutdown(`local-${index}`)
+      store.removePendingRuntimeTerminalClose(`environment-${index}`, `terminal-${index}`)
+    }
+    const cleared = await createStore()
+
+    expect(cleared.getPendingLocalPtyShutdowns()).toEqual([])
+    expect(cleared.getPendingRuntimeTerminalCloses()).toEqual([])
+    expect(JSON.parse(readFileSync(terminalTeardownIntentFile(), 'utf-8'))).toEqual(
+      expect.objectContaining({
+        revision: 260,
+        pendingLocalPtyShutdowns: [],
+        pendingRuntimeTerminalCloses: []
+      })
+    )
+    expect(flushSpy).not.toHaveBeenCalled()
+    flushSpy.mockRestore()
+    store.flush()
+    reloaded.flush()
+    cleared.flush()
+  })
+
+  it('ignores an older sidecar after the full-store fallback persisted a newer revision', async () => {
+    const store = await createStore()
+    store.upsertPendingLocalPtyShutdown({
+      ptyId: 'local-stale',
+      requestedAt: 1
+    })
+    const staleSidecar = readFileSync(terminalTeardownIntentFile(), 'utf-8')
+
+    store.removePendingLocalPtyShutdown('local-stale')
+    store.flush()
+    writeFileSync(terminalTeardownIntentFile(), staleSidecar, 'utf-8')
+
+    const reloaded = await createStore()
+    expect(reloaded.getPendingLocalPtyShutdowns()).toEqual([])
+    store.flush()
+    reloaded.flush()
+  })
+
   it('rejects mismatched scoped SSH remote PTY lease ids on write paths', async () => {
     const store = await createStore()
 
@@ -8922,6 +8998,41 @@ describe('Store', () => {
         shutdownRequestedAt: expect.any(Number)
       })
     )
+    const reloaded = await createStore()
+    expect(reloaded.getSshRemotePtyLeases('ssh-1')[0]).toEqual(
+      expect.objectContaining({
+        ptyId: 'remote-pty',
+        shutdownRequestedAt: expect.any(Number)
+      })
+    )
+    store.flush()
+    reloaded.flush()
+  })
+
+  it('does not let generationless SSH ids mutate a generation-qualified replacement lease', async () => {
+    const store = await createStore()
+    store.upsertSshRemotePtyLease({
+      targetId: 'ssh-1',
+      ptyId: 'ssh:ssh-1@@boot-b@@remote-pty',
+      state: 'attached'
+    })
+
+    expect(
+      store.markSshRemotePtyShutdownRequested('ssh-1', 'ssh:ssh-1@@remote-pty')
+    ).toBe(false)
+    expect(store.markSshRemotePtyLease('ssh-1', 'ssh:ssh-1@@remote-pty', 'terminated')).toBe(
+      false
+    )
+
+    expect(store.getSshRemotePtyLeases('ssh-1')).toEqual([
+      expect.objectContaining({
+        ptyId: 'remote-pty',
+        relayInstanceId: 'boot-b',
+        state: 'attached'
+      })
+    ])
+    expect(store.getSshRemotePtyLeases('ssh-1')[0]).not.toHaveProperty('shutdownRequestedAt')
+    store.flush()
   })
 
   it('clears workspace bindings when marking an SSH remote PTY lease expired', async () => {

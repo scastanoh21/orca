@@ -3620,6 +3620,8 @@ export type PersistedState = {
   pendingLocalPtyShutdowns?: PersistedLocalPtyShutdown[]
   /** Remote runtime close intents survive renderer and app restarts. */
   pendingRuntimeTerminalCloses?: PersistedRuntimeTerminalClose[]
+  /** Orders the compact teardown-intent sidecar against the full store. */
+  terminalTeardownIntentRevision?: number
   /** Daemon session ids of live local Claude launches. Seeds the Claude
    *  live-PTY gate on startup so an early OAuth refresh cannot rotate the
    *  single-use refresh token out from under a still-running daemon CLI. */

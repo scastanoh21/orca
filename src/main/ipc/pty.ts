@@ -500,7 +500,10 @@ function normalizeNodePtySpawnError(err: unknown): Error {
 
 function isPtyAlreadyGoneError(err: unknown): boolean {
   const message = err instanceof Error ? err.message : String(err)
-  return isSshPtyNotFoundError(err) || /Session not found/i.test(message)
+  // Why: relay generation/identity mismatch proves this caller is stale, not
+  // that the replacement PTY is gone. Destructive cleanup must not cross it.
+  const identityMismatch = /identity mismatch|relay generation mismatch/i.test(message)
+  return (!identityMismatch && isSshPtyNotFoundError(err)) || /Session not found/i.test(message)
 }
 
 function delay(ms: number): Promise<void> {
@@ -675,6 +678,44 @@ function attemptRetainedPtyShutdown(retained: RetainedPtyShutdown): Promise<void
   return attempt
 }
 
+async function attemptRetainedPtyShutdownForCaller(retained: RetainedPtyShutdown): Promise<void> {
+  const ownerMap = retained.connectionId ? pendingSshShutdownRetries : pendingLocalShutdownRetries
+  while (ownerMap.get(retained.id) === retained) {
+    await attemptRetainedPtyShutdown(retained)
+    if (ownerMap.get(retained.id) !== retained) {
+      return
+    }
+    if (retained.lastError) {
+      throw retained.lastError
+    }
+    const currentProvider = retained.connectionId
+      ? sshProviders.get(retained.connectionId)
+      : localProvider
+    // Why: an old provider can settle after its replacement is installed.
+    // Re-drive that immediately available owner before settling this caller.
+    if (currentProvider && retained.nextRetryAt <= Date.now()) {
+      continue
+    }
+    throw new Error('PTY shutdown still pending')
+  }
+}
+
+function mergePtyShutdownOptions(
+  current: PtyShutdownOptions,
+  incoming: PtyShutdownOptions
+): PtyShutdownOptions {
+  return {
+    immediate: current.immediate === true || incoming.immediate === true,
+    keepHistory: current.keepHistory === true || incoming.keepHistory === true,
+    ...(current.expectedPaneKey ?? incoming.expectedPaneKey
+      ? { expectedPaneKey: current.expectedPaneKey ?? incoming.expectedPaneKey }
+      : {}),
+    ...(current.expectedTabId ?? incoming.expectedTabId
+      ? { expectedTabId: current.expectedTabId ?? incoming.expectedTabId }
+      : {})
+  }
+}
+
 function retainLocalPtyShutdown(
   id: string,
   options: PtyShutdownOptions,
@@ -699,12 +740,16 @@ function retainLocalPtyShutdown(
       lastError: null
     }
     pendingLocalShutdownRetries.set(id, retained)
+  } else {
+    retained.options = mergePtyShutdownOptions(retained.options, options)
   }
   if (typeof activePtyStore?.upsertPendingLocalPtyShutdown === 'function') {
     activePtyStore.upsertPendingLocalPtyShutdown({
       ptyId: id,
-      ...(options.expectedPaneKey ? { expectedPaneKey: options.expectedPaneKey } : {}),
-      ...(options.expectedTabId ? { expectedTabId: options.expectedTabId } : {}),
+      ...(retained.options.expectedPaneKey
+        ? { expectedPaneKey: retained.options.expectedPaneKey }
+        : {}),
+      ...(retained.options.expectedTabId ? { expectedTabId: retained.options.expectedTabId } : {}),
       requestedAt: Date.now()
     })
   }
@@ -715,10 +760,13 @@ function retainLocalPtyShutdown(
 function retainSshPtyShutdown(
   id: string,
   connectionId: string,
-  provider: IPtyProvider,
+  provider: IPtyProvider | null,
   options: PtyShutdownOptions
-): RetainedPtyShutdown {
-  activePtyStore?.markSshRemotePtyShutdownRequested?.(connectionId, id)
+): RetainedPtyShutdown | null {
+  const persisted = activePtyStore?.markSshRemotePtyShutdownRequested?.(connectionId, id) === true
+  if (!provider && !persisted) {
+    return null
+  }
   let retained = pendingSshShutdownRetries.get(id)
   if (!retained) {
     retained = {
@@ -728,15 +776,17 @@ function retainSshPtyShutdown(
       provider,
       store: activePtyStore,
       attempts: 0,
-      nextRetryAt: 0,
+      nextRetryAt: provider ? 0 : Number.POSITIVE_INFINITY,
       inFlight: null,
       lastError: null
     }
     pendingSshShutdownRetries.set(id, retained)
-  } else if (retained.provider !== provider) {
-    retained.provider = provider
-    retained.options = options
-    retained.nextRetryAt = 0
+  } else {
+    retained.options = mergePtyShutdownOptions(retained.options, options)
+    if (retained.provider !== provider) {
+      retained.provider = provider
+      retained.nextRetryAt = provider ? 0 : Number.POSITIVE_INFINITY
+    }
   }
   scheduleRetainedShutdownRetries()
   return retained
@@ -1327,11 +1377,13 @@ function retryPersistedSshShutdowns(connectionId: string, provider: IPtyProvider
         options
       }
       pendingSshShutdownRetries.set(id, retained)
-    } else if (retained.provider !== provider) {
-      // Why: reconnect replaces the transport owner for the same generation-qualified id.
-      retained.provider = provider
-      retained.options = options
-      retained.nextRetryAt = 0
+    } else {
+      retained.options = mergePtyShutdownOptions(retained.options, options)
+      if (retained.provider !== provider) {
+        // Why: reconnect replaces the transport owner for the same generation-qualified id.
+        retained.provider = provider
+        retained.nextRetryAt = 0
+      }
     }
     void attemptRetainedPtyShutdown(retained)
   }
@@ -3611,53 +3663,39 @@ export function registerPtyHandlers(
       }
     },
     kill: (ptyId) => {
-      let provider: IPtyProvider
       let connectionId: string | null | undefined = ptyOwnership.get(ptyId)
       const parsedSshId = connectionId === undefined ? parseAppSshPtyId(ptyId) : null
       connectionId ??= parsedSshId?.connectionId
+      const options: PtyShutdownOptions = { immediate: false }
+      let provider: IPtyProvider | undefined
       try {
         provider = connectionId ? getProvider(connectionId) : getProviderForPty(ptyId)
       } catch {
         if (connectionId) {
-          // Why: disconnect does not prove remote process death. Keep the lease
-          // attachable so reconnect can retry shutdown against the same relay PTY.
-          return false
+          // Why: paired/mobile close has no renderer retry owner. Accept an
+          // offline close only after its exact durable lease owns the retry.
+          try {
+            return retainSshPtyShutdown(ptyId, connectionId, null, options) !== null
+          } catch {
+            return false
+          }
         }
         return false
       }
-      // Why: shutdown() is async but the PtyController interface is sync. Defer
-      // cleanup until shutdown resolves so transient SSH/daemon failures don't
-      // hide a still-running remote process or local daemon session.
-      //
-      // Same synthetic-exit contract as the renderer pty:kill handler: when the
-      // provider emitted its own exit during shutdown, the exit listener already
-      // delivered runtime + renderer exits — synthesizing again would double-fire.
-      void shutdownProviderAndDetectExit(provider, ptyId, { immediate: false })
-        .then((providerExitObserved) => {
-          finishPtyShutdown(ptyId, connectionId, store)
-          if (!providerExitObserved) {
-            runtime?.onPtyExit(ptyId, -1)
-            rememberSyntheticKillExit(ptyId)
-            sendPtyExitToRenderer({ id: ptyId, code: -1 })
-          }
-        })
-        .catch((err) => {
-          if (isPtyAlreadyGoneError(err)) {
-            finishPtyShutdown(ptyId, connectionId, store)
-            runtime?.onPtyExit(ptyId, -1)
-            rememberSyntheticKillExit(ptyId)
-            sendPtyExitToRenderer({ id: ptyId, code: -1 })
-            return
-          }
-          console.warn(
-            `[pty] Failed to stop PTY ${ptyId}: ${err instanceof Error ? err.message : String(err)}`
-          )
-          // Why: callers of controller.kill must observe a kill→exit pair so
-          // runtime tail buffers close and agents stop treating the pane as
-          // live. Preserve provider/lease state so a retry can still target
-          // the remote PTY if it survived the transient failure.
-          runtime?.onPtyExit(ptyId, -1)
-        })
+      let retained: RetainedPtyShutdown | null
+      try {
+        retained = connectionId
+          ? retainSshPtyShutdown(ptyId, connectionId, provider, options)
+          : retainLocalPtyShutdown(ptyId, options)
+      } catch {
+        return false
+      }
+      if (!retained) {
+        return false
+      }
+      // Why: controller callers need synchronous acceptance, not synchronous
+      // process proof. The retained owner delivers exit only after proof.
+      void attemptRetainedPtyShutdown(retained)
       return true
     },
     stopAndWait: async (ptyId, opts) => {
@@ -5281,30 +5319,30 @@ export function registerPtyHandlers(
       const ownedConnectionId = ptyOwnership.get(args.id)
       const parsedSshId = ownedConnectionId === undefined ? parseAppSshPtyId(args.id) : null
       const connectionId = ownedConnectionId ?? parsedSshId?.connectionId
-      const provider = connectionId ? sshProviders.get(connectionId) : tryGetProviderForPty(args.id)
-      if (!provider && connectionId) {
-        // Why: a disconnected provider is not proof the relay process exited.
-        // Reject without tombstoning so reconnect can target the retained lease.
-        store?.markSshRemotePtyShutdownRequested?.(connectionId, args.id)
-        throw new Error('SSH PTY provider unavailable')
-      }
-      const shutdownProvider = provider ?? getProviderForPty(args.id)
       const shutdownOptions: PtyShutdownOptions = {
         immediate: true,
         keepHistory: args.keepHistory ?? false,
         ...(args.expectedPaneKey ? { expectedPaneKey: args.expectedPaneKey } : {}),
         ...(args.expectedTabId ? { expectedTabId: args.expectedTabId } : {})
       }
+      const provider = connectionId ? sshProviders.get(connectionId) : tryGetProviderForPty(args.id)
+      if (!provider && connectionId) {
+        // Why: a disconnected provider is not proof the relay process exited.
+        // Retain only an exact durable lease so reconnect can target it without
+        // treating a generationless id as authority over a replacement PTY.
+        retainSshPtyShutdown(args.id, connectionId, null, shutdownOptions)
+        throw new Error('SSH PTY provider unavailable')
+      }
+      const shutdownProvider = provider ?? getProviderForPty(args.id)
       // Why: the first request and every retry need one generation-fenced owner;
       // a separate direct path can accept a stale provider's late completion.
       const retained = connectionId
         ? retainSshPtyShutdown(args.id, connectionId, shutdownProvider, shutdownOptions)
         : retainLocalPtyShutdown(args.id, shutdownOptions)
-      await attemptRetainedPtyShutdown(retained)
-      const ownerMap = connectionId ? pendingSshShutdownRetries : pendingLocalShutdownRetries
-      if (ownerMap.get(args.id) === retained) {
-        throw retained.lastError ?? new Error('PTY shutdown still pending')
+      if (!retained) {
+        throw new Error('PTY shutdown could not retain ownership')
       }
+      await attemptRetainedPtyShutdownForCaller(retained)
     }
   )
 

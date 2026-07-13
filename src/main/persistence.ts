@@ -17,6 +17,10 @@ import { writeFile, rename, mkdir, rm, copyFile } from 'node:fs/promises'
 import { join, dirname, isAbsolute, resolve, sep } from 'node:path'
 import { homedir } from 'node:os'
 import { createHash, randomUUID } from 'node:crypto'
+import {
+  applyTerminalTeardownIntentSnapshot,
+  writeTerminalTeardownIntentSnapshot
+} from './terminal-teardown-intent-snapshot'
 import type {
   Automation,
   AutomationCreateInput,
@@ -2683,6 +2687,7 @@ export class Store {
       fallbackSnapshotRoot: legacySnapshotRoot === profileSnapshotRoot ? null : legacySnapshotRoot
     }
     const loaded = this.load()
+    applyTerminalTeardownIntentSnapshot(loaded, this.dataFile)
     const normalized = normalizePersistedPaneIdentityState(loaded)
     this.state = normalized.state
     const adaptedProjectGroups = this.adaptFlatFolderScanProjectGroups()
@@ -3473,6 +3478,12 @@ export class Store {
           pendingRuntimeTerminalCloses: (parsed.pendingRuntimeTerminalCloses ?? [])
             .map(normalizeRuntimeTerminalClose)
             .filter((request): request is PersistedRuntimeTerminalClose => request !== null),
+          terminalTeardownIntentRevision:
+            typeof parsed.terminalTeardownIntentRevision === 'number' &&
+            Number.isSafeInteger(parsed.terminalTeardownIntentRevision) &&
+            parsed.terminalTeardownIntentRevision >= 0
+              ? parsed.terminalTeardownIntentRevision
+              : 0,
           claudeLivePtySessionIds: normalizeClaudeLivePtySessionIds(parsed.claudeLivePtySessionIds),
           migrationUnsupportedPtyEntries: normalizeMigrationUnsupportedPtyEntries(
             parsed.migrationUnsupportedPtyEntries
@@ -6370,7 +6381,7 @@ export class Store {
     } else {
       this.state.pendingLocalPtyShutdowns.push(request)
     }
-    this.flush()
+    this.persistTerminalTeardownIntents()
   }
 
   removePendingLocalPtyShutdown(ptyId: string): void {
@@ -6379,7 +6390,7 @@ export class Store {
       (entry) => entry.ptyId !== ptyId
     )
     if (this.state.pendingLocalPtyShutdowns.length !== before) {
-      this.flush()
+      this.persistTerminalTeardownIntents()
     }
   }
 
@@ -6397,7 +6408,7 @@ export class Store {
     } else {
       this.state.pendingRuntimeTerminalCloses.push(request)
     }
-    this.flush()
+    this.persistTerminalTeardownIntents()
   }
 
   removePendingRuntimeTerminalClose(environmentId: string, handle: string): void {
@@ -6406,7 +6417,7 @@ export class Store {
       this.state.pendingRuntimeTerminalCloses ?? []
     ).filter((entry) => entry.environmentId !== environmentId || entry.handle !== handle)
     if (this.state.pendingRuntimeTerminalCloses.length !== before) {
-      this.flush()
+      this.persistTerminalTeardownIntents()
     }
   }
 
@@ -6416,7 +6427,7 @@ export class Store {
       this.state.pendingRuntimeTerminalCloses ?? []
     ).filter((entry) => entry.environmentId !== environmentId)
     if (this.state.pendingRuntimeTerminalCloses.length !== before) {
-      this.flush()
+      this.persistTerminalTeardownIntents()
     }
   }
 
@@ -6458,6 +6469,7 @@ export class Store {
       this.state.sshRemotePtyLeases.push(next)
     }
     this.flush()
+    this.persistTerminalTeardownIntents()
   }
 
   markSshRemotePtyLeases(targetId: string, state: SshRemotePtyLease['state']): void {
@@ -6483,6 +6495,10 @@ export class Store {
         }
         changed = true
       }
+      if (shouldClearBindings && lease.shutdownRequestedAt !== undefined) {
+        delete lease.shutdownRequestedAt
+        changed = true
+      }
       if (shouldClearBindings) {
         leasesToClear.push(lease)
       }
@@ -6491,28 +6507,43 @@ export class Store {
       ? this.clearSshRemotePtyBindingsForLeases(targetId, leasesToClear)
       : false
     if (changed || bindingsChanged) {
-      this.flush()
+      if (shouldClearBindings) {
+        this.persistTerminalTeardownIntents()
+      } else {
+        this.scheduleSave()
+      }
     }
   }
 
-  markSshRemotePtyLease(targetId: string, ptyId: string, state: SshRemotePtyLease['state']): void {
+  markSshRemotePtyLease(
+    targetId: string,
+    ptyId: string,
+    state: SshRemotePtyLease['state']
+  ): boolean {
     const requestedGeneration = parseAppSshPtyId(ptyId)?.relayInstanceId
     const relayPtyId = this.getRelayPtyIdForSshLeaseStorage(targetId, ptyId)
     const lease = this.state.sshRemotePtyLeases?.find(
       (entry) =>
         entry.targetId === targetId &&
         entry.ptyId === relayPtyId &&
-        (requestedGeneration === undefined || entry.relayInstanceId === requestedGeneration)
+        entry.relayInstanceId === requestedGeneration
     )
     if (!lease) {
-      return
+      return false
     }
     const shouldClearBindings = state === 'terminated' || state === 'expired'
+    let intentChanged = false
+    if (shouldClearBindings && lease.shutdownRequestedAt !== undefined) {
+      delete lease.shutdownRequestedAt
+      intentChanged = true
+    }
     if (lease.state === state) {
-      if (shouldClearBindings && this.clearSshRemotePtyBindingsForLeases(targetId, [lease])) {
-        this.flush()
+      const bindingsChanged =
+        shouldClearBindings && this.clearSshRemotePtyBindingsForLeases(targetId, [lease])
+      if (bindingsChanged || intentChanged) {
+        this.persistTerminalTeardownIntents()
       }
-      return
+      return true
     }
     const now = Date.now()
     lease.state = state
@@ -6524,25 +6555,29 @@ export class Store {
     }
     if (shouldClearBindings) {
       this.clearSshRemotePtyBindingsForLeases(targetId, [lease])
+      this.persistTerminalTeardownIntents()
+    } else {
+      this.scheduleSave()
     }
-    this.flush()
+    return true
   }
 
-  markSshRemotePtyShutdownRequested(targetId: string, ptyId: string): void {
+  markSshRemotePtyShutdownRequested(targetId: string, ptyId: string): boolean {
     const requestedGeneration = parseAppSshPtyId(ptyId)?.relayInstanceId
     const relayPtyId = this.getRelayPtyIdForSshLeaseStorage(targetId, ptyId)
     const lease = this.state.sshRemotePtyLeases?.find(
       (entry) =>
         entry.targetId === targetId &&
         entry.ptyId === relayPtyId &&
-        (requestedGeneration === undefined || entry.relayInstanceId === requestedGeneration)
+        entry.relayInstanceId === requestedGeneration
     )
     if (!lease) {
-      return
+      return false
     }
     lease.shutdownRequestedAt = Date.now()
     lease.updatedAt = lease.shutdownRequestedAt
-    this.flush()
+    this.persistTerminalTeardownIntents()
+    return true
   }
 
   removeSshRemotePtyLease(targetId: string, ptyId: string): void {
@@ -6552,7 +6587,7 @@ export class Store {
       (lease) =>
         lease.targetId === targetId &&
         lease.ptyId === relayPtyId &&
-        (requestedGeneration === undefined || lease.relayInstanceId === requestedGeneration)
+        lease.relayInstanceId === requestedGeneration
     )
     const before = this.state.sshRemotePtyLeases?.length ?? 0
     this.clearSshRemotePtyBindingsForLeases(targetId, leases)
@@ -6560,10 +6595,10 @@ export class Store {
       (lease) =>
         lease.targetId !== targetId ||
         lease.ptyId !== relayPtyId ||
-        (requestedGeneration !== undefined && lease.relayInstanceId !== requestedGeneration)
+        lease.relayInstanceId !== requestedGeneration
     )
     if (this.state.sshRemotePtyLeases.length !== before) {
-      this.flush()
+      this.persistTerminalTeardownIntents()
     }
   }
 
@@ -6575,7 +6610,7 @@ export class Store {
       (lease) => lease.targetId !== targetId
     )
     if (this.state.sshRemotePtyLeases.length !== before) {
-      this.flush()
+      this.persistTerminalTeardownIntents()
     }
   }
 
@@ -6645,6 +6680,24 @@ export class Store {
   }
 
   // ── Flush (for shutdown) ───────────────────────────────────────────
+
+  private persistTerminalTeardownIntents(): void {
+    if (this.writesFrozen) {
+      return
+    }
+    this.state.terminalTeardownIntentRevision =
+      (this.state.terminalTeardownIntentRevision ?? 0) + 1
+    try {
+      // Why: teardown intent must survive a crash, but serializing the full
+      // multi-MB store per owner creates shutdown-time main-thread stalls.
+      writeTerminalTeardownIntentSnapshot(this.state, this.dataFile)
+      this.scheduleSave()
+    } catch (error) {
+      console.warn('[persistence] Failed to write terminal teardown intent snapshot:', error)
+      // The full-store sync path is an expensive but durable I/O-failure fallback.
+      this.flushOrThrow()
+    }
+  }
 
   flush(): void {
     try {

@@ -4537,7 +4537,9 @@ export class OrcaRuntimeService {
     }
     if (tab.type === 'terminal') {
       if (!this.notifier?.closeTerminal) {
-        this.closeHeadlessMobileTerminalTab(worktreeId, snapshot!, tab)
+        if (!this.closeHeadlessMobileTerminalTab(worktreeId, snapshot!, tab)) {
+          throw new Error('terminal_close_not_retained')
+        }
         return { closed: true }
       }
       // Why: a runtime-owned headless tab whose whole parent is being closed must
@@ -4551,14 +4553,18 @@ export class OrcaRuntimeService {
       ).length
       const closingWholeParent = tab.id !== tabId || parentLeafCount <= 1
       if (closingWholeParent && this.isRuntimeOwnedHeadlessMobileTab(worktreeId, tab)) {
-        this.closeHeadlessMobileTerminalTab(worktreeId, snapshot!, tab)
+        if (!this.closeHeadlessMobileTerminalTab(worktreeId, snapshot!, tab)) {
+          throw new Error('terminal_close_not_retained')
+        }
         this.notifier?.closeTerminal(tab.parentTabId)
         return { closed: true }
       }
       if (tab.id === tabId) {
         const pty = this.findPtyForMobileTerminalTab(worktreeId, tab)
         if (pty) {
-          this.ptyController?.kill(pty.ptyId)
+          if (this.ptyController?.kill(pty.ptyId) !== true) {
+            throw new Error('terminal_close_not_retained')
+          }
         } else {
           this.notifier?.closeTerminal(tab.parentTabId)
         }
@@ -4670,25 +4676,29 @@ export class OrcaRuntimeService {
     worktreeId: string,
     snapshot: RuntimeMobileSessionTabsSnapshot,
     tab: RuntimeMobileSessionTerminalTab
-  ): void {
+  ): boolean {
     const closedParentTabId = tab.parentTabId
-    const nextTabs = snapshot.tabs.filter((candidate) => {
-      if (candidate.type !== 'terminal' || candidate.parentTabId !== closedParentTabId) {
-        return true
-      }
+    const closingTabs = snapshot.tabs.filter(
+      (candidate): candidate is RuntimeMobileSessionTerminalTab =>
+        candidate.type === 'terminal' && candidate.parentTabId === closedParentTabId
+    )
+    for (const candidate of closingTabs) {
       const pty = this.findPtyForMobileTerminalTab(worktreeId, candidate)
-      if (pty?.connected) {
-        this.ptyController?.kill(pty.ptyId)
-      } else {
-        const persistedSshPtyId = this.getPersistedSshPtyIdForMobileTerminalTab(candidate)
-        if (persistedSshPtyId) {
-          // Why: close is an explicit deletion. Hydrated SSH PTYs can be known
-          // only by durable id before reconnect repopulates pane metadata.
-          this.ptyController?.kill(persistedSshPtyId)
-        }
+      // Why: close is an explicit deletion. Hydrated SSH PTYs can be known
+      // only by durable id before reconnect repopulates pane metadata.
+      const ptyId = pty?.connected
+        ? pty.ptyId
+        : this.getPersistedSshPtyIdForMobileTerminalTab(candidate)
+      // Why: depersisting is safe after durable owner acceptance, not after a
+      // best-effort provider call that can fail after this method returns.
+      if (ptyId && this.ptyController?.kill(ptyId) !== true) {
+        return false
       }
-      return false
-    })
+    }
+    const nextTabs = snapshot.tabs.filter(
+      (candidate) =>
+        candidate.type !== 'terminal' || candidate.parentTabId !== closedParentTabId
+    )
     this.removePersistedHeadlessTerminalTab(worktreeId, closedParentTabId)
     const active = nextTabs.find((candidate) => candidate.isActive) ?? nextTabs[0] ?? null
     const nextSnapshot: RuntimeMobileSessionTabsSnapshot = {
@@ -4707,6 +4717,7 @@ export class OrcaRuntimeService {
     }
     this.mobileSessionTabsByWorktree.set(worktreeId, nextSnapshot)
     this.emitMobileSessionTabsSnapshot(nextSnapshot)
+    return true
   }
 
   async moveMobileSessionTab(
