@@ -6,6 +6,7 @@ import { pluginConsentErrorMessage } from './plugin-error-presentation'
 import { Button } from '../ui/button'
 import { PluginVmRecipeConsentPreview } from './PluginVmRecipeConsentPreview'
 import { PluginKeybindingConsentPreview } from './PluginKeybindingConsentPreview'
+import { pluginCapabilityDescription } from './plugin-capability-presentation'
 import {
   Dialog,
   DialogContent,
@@ -41,48 +42,6 @@ function trustTier(plugin: PluginHostListEntry): string {
     'auto.components.settings.PluginConsentDialog.panelTrust',
     'Panel or inert content — no worker process'
   )
-}
-
-function capabilityDescription(kind: string, fallback: string): string {
-  switch (kind) {
-    case 'workspace:read':
-      return translate(
-        'auto.components.settings.PluginConsentDialog.capability.workspaceRead',
-        'Read the name, branch, and terminal list of your focused worktree'
-      )
-    case 'terminal:send':
-      return translate(
-        'auto.components.settings.PluginConsentDialog.capability.terminalSend',
-        'Type text into a terminal you can see (always a specific terminal)'
-      )
-    case 'notifications:show':
-      return translate(
-        'auto.components.settings.PluginConsentDialog.capability.notificationsShow',
-        'Show desktop notifications labeled with the plugin name'
-      )
-    case 'storage':
-      return translate(
-        'auto.components.settings.PluginConsentDialog.capability.storage',
-        "Store data in the plugin's own storage folder"
-      )
-    case 'secrets':
-      return translate(
-        'auto.components.settings.PluginConsentDialog.capability.secrets',
-        "Store and read secrets in the plugin's own encrypted vault"
-      )
-    case 'events:subscribe':
-      return translate(
-        'auto.components.settings.PluginConsentDialog.capability.eventsSubscribe',
-        'Get notified when worktrees are created or removed and when agent status changes'
-      )
-    case 'settings:own':
-      return translate(
-        'auto.components.settings.PluginConsentDialog.capability.settingsOwn',
-        "Read and change the plugin's own settings"
-      )
-    default:
-      return fallback
-  }
 }
 
 function hasInstructionalContent(plugin: PluginHostListEntry): boolean {
@@ -215,7 +174,7 @@ export function PluginConsentDialog({
                     <div key={capability.kind} className="flex items-start gap-2 text-sm leading-6">
                       <Check className="mt-1 size-3.5 shrink-0 text-muted-foreground" />
                       <span>
-                        {capabilityDescription(capability.kind, capability.description)}{' '}
+                        {pluginCapabilityDescription(capability.kind, capability.description)}{' '}
                         <span className="font-mono text-[11px] text-muted-foreground">
                           ({capability.kind})
                         </span>
