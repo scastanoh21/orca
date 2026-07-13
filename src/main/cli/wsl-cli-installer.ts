@@ -38,6 +38,11 @@ type WslCliInstallerOptions = {
   wslRunner?: (distro: string, command: string) => Promise<string>
 }
 
+export type ManagedWslCliRepairResult = {
+  changed: boolean
+  status: CliInstallStatus
+}
+
 export class WslCliInstaller {
   private readonly platform: NodeJS.Platform
   private readonly distro: string | null
@@ -132,6 +137,35 @@ export class WslCliInstaller {
     })
   }
 
+  async repairManagedRegistration(): Promise<ManagedWslCliRepairResult> {
+    const status = await this.getStatus()
+    if (!status.supported || status.state === 'conflict') {
+      return { changed: false, status }
+    }
+
+    if (status.state === 'stale') {
+      return { changed: true, status: await this.install() }
+    }
+
+    const legacyCommandPath = status.commandPath
+      ? `${getPosixDirname(status.commandPath)}/${LEGACY_WSL_COMMAND_NAME}`
+      : null
+    if (!legacyCommandPath || !this.distro) {
+      return { changed: false, status }
+    }
+
+    const legacyContent = await this.readCommandFile(this.distro, legacyCommandPath)
+    const legacyManaged =
+      typeof legacyContent === 'string' && legacyContent.includes(MANAGED_MARKER)
+    if (!legacyManaged) {
+      return { changed: false, status }
+    }
+
+    // Why: a legacy-only managed command proves the user opted into WSL CLI
+    // registration; install the current name before removing that owned script.
+    return { changed: true, status: await this.install() }
+  }
+
   async install(): Promise<CliInstallStatus> {
     const status = await this.getStatus()
     if (!status.supported || !status.commandPath || !status.launcherPath) {
@@ -141,6 +175,8 @@ export class WslCliInstaller {
       throw new Error(`Refusing to replace non-Orca command at ${status.commandPath}.`)
     }
 
+    // Why: the launcher and PowerShell bridge are one registration; preserve
+    // both originals until both replacements have committed successfully.
     await this.run(
       this.distro as string,
       [
@@ -153,8 +189,24 @@ export class WslCliInstaller {
           `${getPosixDirname(status.commandPath)}/${LEGACY_WSL_COMMAND_NAME}`
         )}`,
         'bridge_tmp="${bridge_path}.tmp.$$"',
-        'cleanup() { rm -f "$command_tmp" "$bridge_tmp"; }',
-        'trap cleanup EXIT',
+        'command_backup="${command_tmp}.backup"',
+        'bridge_backup="${bridge_tmp}.backup"',
+        'command_had_original=0',
+        'bridge_had_original=0',
+        'command_touched=0',
+        'bridge_touched=0',
+        'committed=0',
+        'rollback() {',
+        '  result=$?',
+        '  set +e',
+        '  if [ "$committed" -ne 1 ]; then',
+        `    if [ "$bridge_had_original" -eq 1 ]; then mv -f "$bridge_backup" ${quoteShell(getBridgePathFromCommandPath(status.commandPath))}; elif [ "$bridge_touched" -eq 1 ]; then rm -f ${quoteShell(getBridgePathFromCommandPath(status.commandPath))}; fi`,
+        `    if [ "$command_had_original" -eq 1 ]; then mv -f "$command_backup" ${quoteShell(status.commandPath)}; elif [ "$command_touched" -eq 1 ]; then rm -f ${quoteShell(status.commandPath)}; fi`,
+        '  fi',
+        '  rm -f "$command_tmp" "$bridge_tmp" "$command_backup" "$bridge_backup"',
+        '  exit "$result"',
+        '}',
+        'trap rollback EXIT',
         buildSafeReplaceGuard(status.commandPath, MANAGED_MARKER),
         buildSafeReplaceGuard(
           getBridgePathFromCommandPath(status.commandPath),
@@ -173,11 +225,17 @@ export class WslCliInstaller {
           getBridgePathFromCommandPath(status.commandPath),
           BRIDGE_MANAGED_MARKER
         ),
-        // Why: the command was renamed to avoid GNOME Orca; remove only the
-        // old Orca-managed WSL wrapper so unmanaged `orca` commands survive.
-        `if [ -f "$legacy_command_path" ] && grep -Fq ${quoteShell(MANAGED_MARKER)} "$legacy_command_path"; then rm -f "$legacy_command_path"; fi`,
+        `if [ -f ${quoteShell(status.commandPath)} ]; then mv -f ${quoteShell(status.commandPath)} "$command_backup"; command_had_original=1; command_touched=1; fi`,
+        `if [ -f ${quoteShell(getBridgePathFromCommandPath(status.commandPath))} ]; then mv -f ${quoteShell(getBridgePathFromCommandPath(status.commandPath))} "$bridge_backup"; bridge_had_original=1; bridge_touched=1; fi`,
         `mv -f "$bridge_tmp" ${quoteShell(getBridgePathFromCommandPath(status.commandPath))}`,
+        'bridge_touched=1',
         `mv -f "$command_tmp" ${quoteShell(status.commandPath)}`,
+        'command_touched=1',
+        'committed=1',
+        'rm -f "$command_backup" "$bridge_backup"',
+        // Why: the command was renamed to avoid GNOME Orca; remove only the
+        // old Orca-managed WSL wrapper after the replacement has committed.
+        `if [ ! -L "$legacy_command_path" ] && [ -f "$legacy_command_path" ] && grep -Fq ${quoteShell(MANAGED_MARKER)} "$legacy_command_path"; then rm -f "$legacy_command_path"; fi`,
         'trap - EXIT'
       ].join('\n')
     )
@@ -411,5 +469,6 @@ export const _internals = {
   buildEncodedWslBashCommand,
   buildWslBridgeScript,
   buildWslLauncher,
-  getBridgePathFromCommandPath
+  getBridgePathFromCommandPath,
+  parseManagedLauncherTarget
 }
