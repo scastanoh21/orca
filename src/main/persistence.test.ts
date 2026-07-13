@@ -8958,8 +8958,20 @@ describe('Store', () => {
       { ptyId: 'local-a', requestedAt: 1 },
       { ptyId: 'local-b', requestedAt: 2 }
     ])
+    reloaded.upsertPendingLocalPtyShutdown({ ptyId: 'local-c', requestedAt: 3 })
+
+    const secondReload = await createStore()
+    expect(secondReload.getPendingLocalPtyShutdowns()).toEqual([
+      { ptyId: 'local-a', requestedAt: 1 },
+      { ptyId: 'local-b', requestedAt: 2 },
+      { ptyId: 'local-c', requestedAt: 3 }
+    ])
+    expect(readTerminalTeardownIntentJournal()).toEqual([
+      expect.objectContaining({ kind: 'checkpoint', revision: 3 })
+    ])
     store.flush()
     reloaded.flush()
+    secondReload.flush()
   })
 
   it('ignores an older sidecar after the full-store fallback persisted a newer revision', async () => {

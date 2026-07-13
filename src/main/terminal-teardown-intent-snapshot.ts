@@ -78,6 +78,7 @@ function readRecords(dataFile: string): {
       // Multi-record journals are newline-delimited rather than one JSON value.
     }
     const records: TerminalTeardownIntentJournalRecord[] = []
+    let appendable = true
     for (const line of raw.split('\n')) {
       if (!line.trim()) {
         continue
@@ -87,6 +88,7 @@ function readRecords(dataFile: string): {
         value = JSON.parse(line)
       } catch {
         console.warn('[persistence] Ignoring truncated terminal teardown intent journal tail')
+        appendable = false
         break
       }
       const parsed = terminalTeardownIntentJournalRecordSchema.safeParse(value)
@@ -94,11 +96,12 @@ function readRecords(dataFile: string): {
         // Why: a crash can tear only the final append. Earlier complete records
         // remain durable, while replaying past corruption could invent state.
         console.warn('[persistence] Ignoring truncated terminal teardown intent journal tail')
+        appendable = false
         break
       }
       records.push(parsed.data)
     }
-    return { records, journalReady: records.length > 0 }
+    return { records, journalReady: appendable && records.length > 0 }
   } catch (error) {
     console.warn('[persistence] Ignoring invalid terminal teardown intent snapshot:', error)
     return { records: [], journalReady: false }
