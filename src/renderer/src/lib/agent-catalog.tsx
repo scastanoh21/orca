@@ -346,13 +346,17 @@ export function AgentIcon({
   // live network request — Google's favicon service is unreachable in some
   // regions and offline, which left these icons broken (#8451).
   const bundledFaviconUrl = AGENT_FAVICON_ASSETS[agent]
-  if (catalogEntry?.iconUrl || bundledFaviconUrl) {
+  // Why: one resolved src for guard + attribute so empty `iconUrl` cannot pass
+  // a truthy `||` check while `??` still renders a broken `<img src="">`.
+  const iconSrc = catalogEntry?.iconUrl ?? bundledFaviconUrl
+  if (iconSrc) {
     return (
       <img
-        src={catalogEntry?.iconUrl ?? bundledFaviconUrl}
+        src={iconSrc}
         width={size}
         height={size}
         alt=""
+        aria-hidden
         style={{ borderRadius: 2 }}
       />
     )

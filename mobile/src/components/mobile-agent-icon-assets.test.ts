@@ -16,7 +16,7 @@ const GLYPH_AGENT_IDS = new Set<TuiAgent>([
 ])
 
 const dirname = import.meta.dirname
-const assetsDir = path.resolve(dirname, '../../assets/agent-icons')
+const assetsDir = path.resolve(dirname, '../../../src/shared/agent-icons')
 const assetsModuleSource = readFileSync(path.join(dirname, 'mobile-agent-icon-assets.ts'), 'utf8')
 
 // Why: these agents previously loaded from Google's favicon service, which is
@@ -38,7 +38,7 @@ describe('mobile bundled agent icons', () => {
   it('wires every favicon-path agent into the bundled asset map', () => {
     for (const id of agentsNeedingBundledIcon) {
       expect(assetsModuleSource, `${id} not mapped in mobile-agent-icon-assets.ts`).toContain(
-        `assets/agent-icons/${id}.png`
+        `agent-icons/${id}.png`
       )
     }
   })
