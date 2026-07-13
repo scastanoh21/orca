@@ -16,7 +16,6 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
@@ -30,6 +29,7 @@ import { OrcaProfileCloudMenuItems } from './OrcaProfileCloudMenuItems'
 import { OrcaProfileCreateDialog } from './OrcaProfileCreateDialog'
 import { OrcaProfileOrgMembersDialog } from './OrcaProfileOrgMembersDialog'
 import { OrcaProfileManagementDialog } from './OrcaProfileManagementDialog'
+import { OrcaProfileMenuHeader } from './OrcaProfileMenuHeader'
 import { OrcaProfileSignOutConfirmDialog } from './OrcaProfileSignOutConfirmDialog'
 import { OrcaProfileSwitchConfirmDialog } from './OrcaProfileSwitchConfirmDialog'
 import { getOrcaAccountIdentity } from './orca-account-identity'
@@ -206,6 +206,10 @@ export function OrcaProfileSwitcher({
     ? translate('auto.components.orca.profiles.switcher.4815f7d163', 'Switch profile')
     : translate('auto.components.orca.profiles.switcher.account', 'Account')
   const accountIdentity = getOrcaAccountIdentity(activeProfile, authStatus)
+  const showAccountIdentity =
+    multiProfileUi ||
+    authStatus?.state === 'connected' ||
+    authStatus?.state === 'reconnect-required'
 
   return (
     <>
@@ -240,7 +244,11 @@ export function OrcaProfileSwitcher({
                 {!sidebarPlacement ? (
                   <>
                     <span className="hidden max-w-[108px] truncate text-xs font-medium sm:inline">
-                      {multiProfileUi ? activeProfile.name : accountIdentity.title}
+                      {multiProfileUi
+                        ? activeProfile.name
+                        : showAccountIdentity
+                          ? accountIdentity.title
+                          : triggerLabel}
                     </span>
                     {switching ? <Loader2 className="size-3 animate-spin" /> : <ChevronDown />}
                   </>
@@ -258,24 +266,19 @@ export function OrcaProfileSwitcher({
           sideOffset={sidebarPlacement ? 8 : 6}
           className="w-64"
         >
-          <DropdownMenuLabel className="px-2 py-1.5">
-            <div className="flex min-w-0 items-center gap-2">
-              {multiProfileUi ? (
-                <OrcaProfileAvatar profile={activeProfile} className="size-7 text-xs" />
-              ) : (
-                <CircleUserRound className="size-7 text-muted-foreground" />
-              )}
-              <div className="min-w-0">
-                <div className="truncate text-[13px] font-semibold text-foreground">
-                  {multiProfileUi ? activeProfile.name : accountIdentity.title}
-                </div>
-                <div className="truncate text-[11px] font-medium text-muted-foreground">
-                  {multiProfileUi ? getProfileSubtitle(activeProfile) : accountIdentity.subtitle}
-                </div>
-              </div>
-            </div>
-          </DropdownMenuLabel>
-          <DropdownMenuSeparator />
+          {showAccountIdentity ? (
+            <>
+              <OrcaProfileMenuHeader
+                profile={activeProfile}
+                title={multiProfileUi ? activeProfile.name : accountIdentity.title}
+                subtitle={
+                  multiProfileUi ? getProfileSubtitle(activeProfile) : accountIdentity.subtitle
+                }
+                showProfileAvatar={multiProfileUi}
+              />
+              <DropdownMenuSeparator />
+            </>
+          ) : null}
           {multiProfileUi
             ? profiles.map((profile) => {
                 const active = profile.id === activeProfileId
@@ -320,6 +323,7 @@ export function OrcaProfileSwitcher({
             connecting={connecting}
             profileActionDisabled={profileActionDisabled}
             allowProfileCreation={multiProfileUi}
+            separateAuthActions={showAccountIdentity || showOrgMembers}
             onConnect={() => {
               void connectCurrentProfile()
             }}

@@ -167,7 +167,7 @@ describe('OrcaProfileSwitcher', () => {
     expect(html).toContain('data-testid="signout-confirm-dialog"')
   })
 
-  it('presents a signed-out account instead of the local profile identity', () => {
+  it('presents only the sign-in action before an account identity exists', () => {
     mocks.state = baseState({
       orcaProfiles: [localProfile],
       orcaProfileAuthStatus: signedOutAuthStatus,
@@ -175,9 +175,9 @@ describe('OrcaProfileSwitcher', () => {
     })
     const html = renderToStaticMarkup(<OrcaProfileSwitcher />)
 
-    expect(html).toContain('Orca account')
-    expect(html).toContain('Signed out')
     expect(html).toContain('Sign in to Orca')
+    expect(html).not.toContain('Orca account')
+    expect(html).not.toContain('Signed out')
     expect(html).not.toContain('Personal')
     expect(html).not.toContain('>Local<')
   })
@@ -192,7 +192,7 @@ describe('OrcaProfileSwitcher', () => {
     })
     const html = renderToStaticMarkup(<OrcaProfileSwitcher />)
 
-    expect(html).toContain('Orca account')
+    expect(html).toContain('nina@example.com')
     expect(html).toContain('Sign-in required')
     expect(html).toContain('Sign in again')
   })

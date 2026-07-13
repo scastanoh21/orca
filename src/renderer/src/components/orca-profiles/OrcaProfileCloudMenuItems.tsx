@@ -36,6 +36,7 @@ export function OrcaProfileCloudMenuItems({
   connecting,
   profileActionDisabled,
   allowProfileCreation,
+  separateAuthActions,
   onConnect,
   onCreateProfileForOrg,
   onSelectOrg,
@@ -46,6 +47,7 @@ export function OrcaProfileCloudMenuItems({
   connecting: boolean
   profileActionDisabled: boolean
   allowProfileCreation: boolean
+  separateAuthActions: boolean
   onConnect: () => void
   onCreateProfileForOrg: (organization: OrcaCloudOrgSummary) => void
   onSelectOrg: (orgId: string) => void
@@ -114,7 +116,9 @@ export function OrcaProfileCloudMenuItems({
         </>
       ) : null}
 
-      <DropdownMenuSeparator />
+      {separateAuthActions || showOrganizationChoices || showCloudProfileCreation ? (
+        <DropdownMenuSeparator />
+      ) : null}
       {showSignIn ? (
         <DropdownMenuItem disabled={profileActionDisabled || !cloudConfigured} onSelect={onConnect}>
           {connecting ? <Loader2 className="size-4 animate-spin" /> : <LogIn />}

@@ -21,14 +21,20 @@ export function getOrcaAccountIdentity(
           : translate('auto.components.orca.profiles.switcher.accountSignedIn', 'Signed in'))
     }
   }
+  if (authStatus?.state === 'reconnect-required') {
+    return {
+      title:
+        cloud?.displayName?.trim() ||
+        cloud?.email ||
+        translate('auto.components.orca.profiles.switcher.accountTitle', 'Orca account'),
+      subtitle: translate(
+        'auto.components.orca.profiles.switcher.accountSignInRequired',
+        'Sign-in required'
+      )
+    }
+  }
   return {
     title: translate('auto.components.orca.profiles.switcher.accountTitle', 'Orca account'),
-    subtitle:
-      authStatus?.state === 'reconnect-required'
-        ? translate(
-            'auto.components.orca.profiles.switcher.accountSignInRequired',
-            'Sign-in required'
-          )
-        : translate('auto.components.orca.profiles.switcher.accountSignedOut', 'Signed out')
+    subtitle: translate('auto.components.orca.profiles.switcher.accountSignedOut', 'Signed out')
   }
 }
