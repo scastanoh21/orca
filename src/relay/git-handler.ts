@@ -45,11 +45,9 @@ import { detectConflictOperation, getStatusOp } from './git-handler-status-ops'
 import { checkIgnoredPathsOp } from './git-handler-check-ignore'
 import { resolveRelayPushTarget } from './git-handler-push-target'
 import {
-  MERGE_RECONCILIATION_PULL_ARGS,
-  isDivergentPullReconciliationError,
   isNoUpstreamError,
   normalizeGitErrorMessage,
-  pullArgsSpecifyReconciliation
+  runPullWithDivergenceFallback
 } from '../shared/git-remote-error'
 import { upstreamOnlyCommitsArePatchEquivalent } from '../shared/git-upstream-status'
 import { assertGitPushTargetShape } from '../shared/git-push-target-validation'
@@ -1053,22 +1051,7 @@ export class GitHandler {
 
     try {
       try {
-        try {
-          await runPull(pullArgs)
-        } catch (error) {
-          // Why: on hosts with no pull.rebase/pull.ff policy, Git 2.27+ refuses
-          // to reconcile divergent branches. Retry as a merge (Git's historical
-          // default) so SSH pulls succeed out of the box; forced strategies and
-          // rebase-configured users never reach this fallback.
-          if (
-            !pullArgsSpecifyReconciliation(pullArgs) &&
-            isDivergentPullReconciliationError(error)
-          ) {
-            await runPull([...MERGE_RECONCILIATION_PULL_ARGS, ...pullArgs])
-            return
-          }
-          throw error
-        }
+        await runPullWithDivergenceFallback(pullArgs, runPull)
       } catch (error) {
         // Why: mirror the local gitPull normalization so SSH users see the same
         // actionable messages instead of raw git stderr.

@@ -402,6 +402,51 @@ describe('git remote operations', () => {
     expect(gitExecFileAsyncMock.mock.calls).toHaveLength(3)
   })
 
+  it('retries a divergent pushTarget pull as a merge when no strategy is configured', async () => {
+    const divergentError = new Error(
+      'Command failed: git pull\n' + 'fatal: Need to specify how to reconcile divergent branches.'
+    )
+    gitExecFileAsyncMock
+      // First attempt: validate the target, then the plain pull rejects.
+      .mockResolvedValueOnce({ stdout: '', stderr: '' })
+      .mockRejectedValueOnce(divergentError)
+      // Fallback attempt: re-validate, then pull --no-rebase (merge) succeeds.
+      .mockResolvedValueOnce({ stdout: '', stderr: '' })
+      .mockResolvedValueOnce({ stdout: '', stderr: '' })
+
+    await gitPull('/repo', { remoteName: 'fork', branchName: 'feature/fix' })
+
+    // The merge flag is spliced ahead of the positional remote/branch args.
+    expect(gitExecFileAsyncMock.mock.calls).toEqual([
+      [['check-ref-format', '--branch', 'feature/fix'], { cwd: '/repo' }],
+      [['pull', 'fork', 'feature/fix'], { cwd: '/repo' }],
+      [['check-ref-format', '--branch', 'feature/fix'], { cwd: '/repo' }],
+      [['pull', '--no-rebase', 'fork', 'feature/fix'], { cwd: '/repo' }]
+    ])
+  })
+
+  it('surfaces a normalized error and does not loop when the merge fallback itself fails', async () => {
+    const divergentError = new Error(
+      'Command failed: git pull\n' + 'fatal: Need to specify how to reconcile divergent branches.'
+    )
+    const mergeConflictError = new Error(
+      'Command failed: git pull --no-rebase\nCONFLICT (content): Merge conflict in file.txt'
+    )
+    gitExecFileAsyncMock
+      // First attempt fails with the reconciliation error.
+      .mockResolvedValueOnce({ stdout: 'feature\n', stderr: '' })
+      .mockResolvedValueOnce({ stdout: 'origin/feature\n', stderr: '' })
+      .mockRejectedValueOnce(divergentError)
+      // The single merge fallback then fails on a real conflict.
+      .mockResolvedValueOnce({ stdout: 'feature\n', stderr: '' })
+      .mockResolvedValueOnce({ stdout: 'origin/feature\n', stderr: '' })
+      .mockRejectedValueOnce(mergeConflictError)
+
+    await expect(gitPull('/repo')).rejects.toThrow()
+    // At-most-once retry: probe+pull, then probe+fallback-pull — no further attempts.
+    expect(gitExecFileAsyncMock.mock.calls).toHaveLength(6)
+  })
+
   it('pulls the same-name origin branch for legacy base-tracking worktrees', async () => {
     gitExecFileAsyncMock
       .mockResolvedValueOnce({ stdout: 'feature\n', stderr: '' })

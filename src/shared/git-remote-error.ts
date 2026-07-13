@@ -106,6 +106,28 @@ export function pullArgsSpecifyReconciliation(pullArgs: string[]): boolean {
   return pullArgs.some((arg) => RECONCILIATION_PULL_ARG_PATTERN.test(arg))
 }
 
+// Why: on hosts with no pull.rebase/pull.ff policy, Git 2.27+ refuses to
+// reconcile divergent branches. Retry as a merge (Git's historical default) so
+// pulls succeed out of the box; callers that already forced a strategy — or
+// users who configured rebase — never reach this fallback.
+// Not routed through GitCapabilityCache: this is per-repo config/branch state,
+// not a stable host capability, and only fires on an actual divergence error,
+// so there is nothing host-scoped to cache.
+export async function runPullWithDivergenceFallback(
+  pullArgs: string[],
+  runPull: (effectiveArgs: string[]) => Promise<void>
+): Promise<void> {
+  try {
+    await runPull(pullArgs)
+  } catch (error) {
+    if (!pullArgsSpecifyReconciliation(pullArgs) && isDivergentPullReconciliationError(error)) {
+      await runPull([...MERGE_RECONCILIATION_PULL_ARGS, ...pullArgs])
+      return
+    }
+    throw error
+  }
+}
+
 export type GitRemoteOperation = 'push' | 'pull' | 'fetch' | 'upstream'
 
 export function normalizeGitErrorMessage(error: unknown, operation?: GitRemoteOperation): string {

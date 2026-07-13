@@ -3,8 +3,10 @@ import {
   formatSubmodulePushFailureDetail,
   isDivergentPullReconciliationError,
   isNoUpstreamError,
+  MERGE_RECONCILIATION_PULL_ARGS,
   normalizeGitErrorMessage,
-  pullArgsSpecifyReconciliation
+  pullArgsSpecifyReconciliation,
+  runPullWithDivergenceFallback
 } from './git-remote-error'
 
 afterEach(() => {
@@ -186,5 +188,48 @@ describe('pullArgsSpecifyReconciliation', () => {
     expect(pullArgsSpecifyReconciliation(['--no-rebase'])).toBe(true)
     expect(pullArgsSpecifyReconciliation(['--rebase=interactive'])).toBe(true)
     expect(pullArgsSpecifyReconciliation(['-r'])).toBe(true)
+  })
+})
+
+describe('runPullWithDivergenceFallback', () => {
+  const divergentError = new Error(
+    'Command failed: git pull\n' +
+      'hint: You have divergent branches and need to specify how to reconcile them.\n' +
+      'fatal: Need to specify how to reconcile divergent branches.'
+  )
+
+  it('retries with merge reconciliation args on a policy error', async () => {
+    const calls: string[][] = []
+    const runPull = vi.fn(async (effectiveArgs: string[]) => {
+      calls.push(effectiveArgs)
+      if (effectiveArgs.length === 0) {
+        throw divergentError
+      }
+    })
+
+    await runPullWithDivergenceFallback([], runPull)
+
+    expect(calls).toEqual([[], [...MERGE_RECONCILIATION_PULL_ARGS]])
+    expect(runPull).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not retry when pull args already specify reconciliation', async () => {
+    const runPull = vi.fn(async () => {
+      throw divergentError
+    })
+
+    await expect(runPullWithDivergenceFallback(['--ff-only'], runPull)).rejects.toBe(divergentError)
+    expect(runPull).toHaveBeenCalledTimes(1)
+    expect(runPull).toHaveBeenCalledWith(['--ff-only'])
+  })
+
+  it('rethrows non-divergence errors without retrying', async () => {
+    const otherError = new Error('fatal: Not possible to fast-forward, aborting.')
+    const runPull = vi.fn(async () => {
+      throw otherError
+    })
+
+    await expect(runPullWithDivergenceFallback([], runPull)).rejects.toBe(otherError)
+    expect(runPull).toHaveBeenCalledTimes(1)
   })
 })

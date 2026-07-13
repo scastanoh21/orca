@@ -1,8 +1,6 @@
 import {
-  MERGE_RECONCILIATION_PULL_ARGS,
-  isDivergentPullReconciliationError,
   normalizeGitErrorMessage,
-  pullArgsSpecifyReconciliation
+  runPullWithDivergenceFallback
 } from '../../shared/git-remote-error'
 import { resolveEffectiveGitUpstream } from '../../shared/git-effective-upstream'
 import { gitRefTargetsBranchOnRemote } from '../../shared/git-remote-branch-name'
@@ -245,19 +243,7 @@ async function gitPullWithArgs(
   }
 
   try {
-    try {
-      await runPull(pullArgs)
-    } catch (error) {
-      // Why: on hosts with no pull.rebase/pull.ff policy, Git 2.27+ refuses to
-      // reconcile divergent branches. Retry as a merge (Git's historical
-      // default) so pulls succeed out of the box; callers that already forced a
-      // strategy — or users who configured rebase — never reach this fallback.
-      if (!pullArgsSpecifyReconciliation(pullArgs) && isDivergentPullReconciliationError(error)) {
-        await runPull([...MERGE_RECONCILIATION_PULL_ARGS, ...pullArgs])
-        return
-      }
-      throw error
-    }
+    await runPullWithDivergenceFallback(pullArgs, runPull)
   } catch (error) {
     throw new Error(normalizeGitErrorMessage(error, 'pull'))
   }
