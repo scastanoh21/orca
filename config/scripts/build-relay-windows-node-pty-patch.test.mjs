@@ -76,9 +76,11 @@ describe('packaged Windows SSH relay node-pty patch', () => {
     for (const platform of ['win32-x64', 'win32-arm64']) {
       const relayDir = join(projectRoot, 'out', 'relay', platform)
       const relayContent = readFileSync(join(relayDir, 'relay.js'))
+      const watcherContent = readFileSync(join(relayDir, 'relay-watcher.js'))
       const patchContent = readFileSync(join(relayDir, patchName))
       const expectedHash = createHash('sha256')
         .update(relayContent)
+        .update(watcherContent)
         .update(patchContent)
         .digest('hex')
         .slice(0, 12)
