@@ -2090,9 +2090,9 @@ app.whenReady().then(async () => {
   }
 
   if (serveOptions) {
-    // Why: headless serve has no renderer startup barrier, so settle managed
-    // WSL command reconciliation before exposing its runtime transport.
-    await managedWslCliReconciliationReady
+    // Why: give managed WSL launchers a brief chance to migrate before headless
+    // PTYs become reachable without letting slow repairs withhold all RPC readiness.
+    await managedWslCliStartupBarrierReady
     await startServeAgentHookServer()
     registerHeadlessPtyRuntime(
       runtime,

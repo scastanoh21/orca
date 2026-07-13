@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
-describe('desktop startup ordering', () => {
+describe('startup ordering', () => {
   it('passes the startup barrier into PTY handlers without blocking window creation', () => {
     const source = readFileSync(join(process.cwd(), 'src/main/index.ts'), 'utf8')
     const attachStart = source.indexOf('attachMainWindowServices(')
@@ -24,7 +24,7 @@ describe('desktop startup ordering', () => {
     expect(Math.max(rpcStartIndex, legacyRpcStartIndex)).toBeGreaterThanOrEqual(0)
   })
 
-  it('shows the desktop window without waiting for WSL registration reconciliation', () => {
+  it('bounds WSL reconciliation before serve RPC while leaving desktop startup independent', () => {
     const source = readFileSync(join(process.cwd(), 'src/main/index.ts'), 'utf8')
     const barrierStart = source.indexOf("ipcMain.handle('app:awaitFirstWindowStartupServices'")
     const barrierEnd = source.indexOf("ipcMain.handle(\n  'app:startupDiagnostic'", barrierStart)
@@ -43,7 +43,11 @@ describe('desktop startup ordering', () => {
     expect(serveStart).toBeGreaterThan(reconciliationStart)
     expect(serveEnd).toBeGreaterThan(serveStart)
     expect(desktopWindowStart).toBeGreaterThan(reconciliationStart)
-    expect(serveStartup).toContain('await managedWslCliReconciliationReady')
+    expect(serveStartup).toContain('await managedWslCliStartupBarrierReady')
+    expect(serveStartup).not.toContain('await managedWslCliReconciliationReady')
+    expect(serveStartup.indexOf('await managedWslCliStartupBarrierReady')).toBeLessThan(
+      serveStartup.indexOf('await runtimeRpc.start()')
+    )
     expect(desktopStartup).not.toContain('await managedWslCliReconciliationReady')
     expect(barrier).toContain('managedWslCliStartupBarrierReady')
     expect(barrier).not.toContain('managedWslCliReconciliationReady')
