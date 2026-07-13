@@ -13,6 +13,8 @@ import {
 
 const PLACEHOLDER_RE = /\{\{[^}]+\}\}/g
 const LOCALES_DIR = path.join('src', 'renderer', 'src', 'i18n', 'locales')
+const MIGRATION_FLAG = '--migration-rewrite-locales'
+const MIGRATION_ENV = 'ORCA_I18N_MIGRATION_REWRITE'
 
 const LOCALE_CONFIG = {
   zh: {
@@ -126,6 +128,12 @@ function parseLocaleArg(argv) {
 }
 
 export async function main(root = process.cwd(), locale = parseLocaleArg(process.argv)) {
+  if (!process.argv.includes(MIGRATION_FLAG) || process.env[MIGRATION_ENV] !== '1') {
+    console.error(
+      `Refusing to rewrite locale catalogs. Set ${MIGRATION_ENV}=1 and pass ${MIGRATION_FLAG} for migration-only use.`
+    )
+    return 1
+  }
   const config = LOCALE_CONFIG[locale]
   if (!config) {
     console.error(

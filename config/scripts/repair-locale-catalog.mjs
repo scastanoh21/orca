@@ -4,8 +4,11 @@ import process from 'node:process'
 import { pathToFileURL } from 'node:url'
 
 import { repairCacheMap, repairCatalog } from './locale-translation-policy.mjs'
+import { compareCodeUnits } from './localization-code-unit-order.mjs'
 
 const LOCALES_DIR = path.join('src', 'renderer', 'src', 'i18n', 'locales')
+const MIGRATION_FLAG = '--migration-rewrite-locales'
+const MIGRATION_ENV = 'ORCA_I18N_MIGRATION_REWRITE'
 
 const LOCALE_CACHE_FILES = {
   ko: '.ko-catalog-cache.json',
@@ -32,7 +35,7 @@ async function loadCache(cachePath) {
 }
 
 async function saveCache(cachePath, cache) {
-  const raw = Object.fromEntries([...cache.entries()].sort(([a], [b]) => a.localeCompare(b)))
+  const raw = Object.fromEntries([...cache.entries()].sort(([a], [b]) => compareCodeUnits(a, b)))
   await fs.writeFile(cachePath, `${JSON.stringify(raw, null, 2)}\n`, 'utf8')
 }
 
@@ -57,6 +60,12 @@ export async function repairLocale(root, locale) {
 }
 
 export async function main(root = process.cwd(), locale = parseLocaleArg(process.argv)) {
+  if (!process.argv.includes(MIGRATION_FLAG) || process.env[MIGRATION_ENV] !== '1') {
+    console.error(
+      `Refusing to rewrite locale catalogs. Set ${MIGRATION_ENV}=1 and pass ${MIGRATION_FLAG} for migration-only use.`
+    )
+    return 1
+  }
   const locales = locale ? [locale] : ['ko', 'zh', 'ja', 'es']
   const unsupported = locales.filter((code) => !LOCALE_CACHE_FILES[code])
   if (unsupported.length > 0) {

@@ -6,3 +6,7 @@
 /config/scripts/run-internal-dev-setup.mjs text eol=lf
 /config/scripts/verify-cli-bin.mjs text eol=lf
 /config/scripts/verify-release-required-assets.mjs text eol=lf
+/config/localization-extraction/en.json text eol=lf
+/config/localization-state/*.json text eol=lf
+/src/renderer/src/i18n/locales/*.json text eol=lf
+/src/shared/localization-keys.ts text eol=lf

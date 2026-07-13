@@ -338,6 +338,7 @@ export const NATIVE_PICKER_LABELS = {
 }
 
 const CJK_LATIN_SPACED_TERM_PATTERN = CJK_LATIN_SPACED_TERMS.join('|')
+const TRANSLATABLE_VALUE_CONTEXT_KEYS = new Set(['auto.components.mobile.MobileHero.a8fb43cf1c'])
 
 export function isEnglishOnlyKey(key) {
   return ENGLISH_ONLY_KEY_PREFIXES.some((prefix) => key.startsWith(prefix))
@@ -352,6 +353,10 @@ export function shouldPreserveEnglishValue(enValue, key = '') {
   }
   if (isEnglishOnlyKey(key)) {
     return true
+  }
+  // Why: this CTA is an action, not a reference to the Continue AI product.
+  if (TRANSLATABLE_VALUE_CONTEXT_KEYS.has(key)) {
+    return false
   }
   return NEVER_TRANSLATE_VALUES.has(enValue)
 }
