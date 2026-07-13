@@ -60,6 +60,7 @@ import { StarNagCard } from './components/StarNagCard'
 import { StarNagAgentValueMomentObserver } from './components/star-nag/StarNagAgentValueMomentObserver'
 import { StarNagToastHost } from './components/star-nag/StarNagToastHost'
 import { ManagedSkillAdoptionNudge } from './components/managed-skills/ManagedSkillAdoptionNudge'
+import { ManagedSkillAutoUpdate } from './components/managed-skills/ManagedSkillAutoUpdate'
 import { TelemetryFirstLaunchSurface } from './components/TelemetryFirstLaunchSurface'
 import { ZoomOverlay } from './components/ZoomOverlay'
 import { onOnboardingReopened } from './components/onboarding/show-onboarding-event'
@@ -2829,6 +2830,7 @@ function App(): React.JSX.Element {
       </TooltipProvider>
       <Toaster closeButton toastOptions={{ className: 'font-sans text-sm' }} />
       <ManagedSkillAdoptionNudge />
+      <ManagedSkillAutoUpdate />
       <PinnedTabCloseDialog />
       {/* Why: rendered last so it sits after all -webkit-app-region:drag elements
           in DOM order. Electron's hit-test for drag regions is DOM-order-based and

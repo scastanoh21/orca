@@ -73,6 +73,8 @@ import type { SkillDiscoveryResult, SkillDiscoveryTarget } from '../shared/skill
 import type {
   OrcaSkillInstallResultArgs,
   SkillAdoptionDismissalArgs,
+  SkillAutoUpdateBatchArgs,
+  SkillAutoUpdateBatchResult,
   SkillManagementActionArgs,
   SkillManagementInventory,
   SkillReplacementPreview
@@ -2211,6 +2213,8 @@ const api = {
       ipcRenderer.invoke('skills:replace', args),
     updateManaged: (args: SkillManagementActionArgs): Promise<SkillManagementInventory> =>
       ipcRenderer.invoke('skills:updateManaged', args),
+    autoUpdateManaged: (args?: SkillAutoUpdateBatchArgs): Promise<SkillAutoUpdateBatchResult> =>
+      ipcRenderer.invoke('skills:autoUpdateManaged', args),
     recordOrcaInstall: (args: OrcaSkillInstallResultArgs): Promise<SkillManagementInventory> =>
       ipcRenderer.invoke('skills:recordOrcaInstall', args)
   },

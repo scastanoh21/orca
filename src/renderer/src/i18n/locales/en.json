@@ -4903,10 +4903,10 @@
           "4c05b9d7cb": "Preparing setup terminal.",
           "checkingManagement": "Checking…",
           "review": "Review",
-          "manage": "Manage",
-          "manageUpdate": "Manage and update",
+          "manage": "Track updates",
+          "manageUpdate": "Track & update",
           "update": "Update",
-          "managedCurrent": "Skill is managed and current.",
+          "managedCurrent": "Orca is tracking this skill and it’s up to date.",
           "retryUpdate": "Retry update",
           "actionFailed": "Skill action failed."
         },
@@ -9056,7 +9056,7 @@
           "replace": "Use official version",
           "actionFailed": "Skill action failed.",
           "title": "Orca skill updates",
-          "description": "Track new versions of official Orca skills and choose when to update them.",
+          "description": "Orca can keep the official skills you’ve installed up to date.",
           "refresh": "Check now",
           "hostPending": "View only on this host; updating is not available yet.",
           "managedToast": "Orca is now tracking this skill for updates.",
@@ -9087,7 +9087,10 @@
           "summaryUnknown": "This installed copy does not match a known Orca version.",
           "summaryExternal": "Another installer controls this copy, so Orca will not change it.",
           "summaryInaccessible": "Orca could not read this installed copy.",
-          "summaryFailed": "The last update failed. Your previous copy was kept."
+          "summaryFailed": "The last update failed. Your previous copy was kept.",
+          "autoUpdateLabel": "Update automatically",
+          "autoUpdateDescription": "Install new versions of tracked skills as they ship with Orca. Skills with local changes are never updated automatically.",
+          "summaryManagedCurrentAuto": "Orca keeps this skill up to date automatically."
         }
       },
       "right": {
@@ -13017,8 +13020,13 @@
         "adoptionNudge": {
           "title_one": "Track updates for an installed Orca skill?",
           "title_other": "Track updates for {{value0}} installed Orca skills?",
-          "description": "These match Orca’s official versions. Orca shows when updates are available and only installs one after you approve it.",
-          "review": "Choose skills"
+          "description": "These match Orca’s official versions. Orca will show when updates are available.",
+          "review": "Choose skills",
+          "descriptionAuto": "These match Orca’s official versions. Orca will keep them up to date automatically."
+        },
+        "autoUpdate": {
+          "updated_one": "Updated the {{value0}} skill to the latest version.",
+          "updated_other": "Updated {{value0}} Orca skills to their latest versions."
         }
       }
     },

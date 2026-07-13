@@ -9087,7 +9087,10 @@
           "summaryUnknown": "설치된 복사본이 알려진 Orca 버전과 일치하지 않습니다.",
           "summaryExternal": "다른 설치 프로그램이 이 복사본을 관리하므로 Orca는 변경하지 않습니다.",
           "summaryInaccessible": "Orca가 설치된 복사본을 읽지 못했습니다.",
-          "summaryFailed": "마지막 업데이트에 실패했습니다. 이전 복사본은 유지되었습니다."
+          "summaryFailed": "마지막 업데이트에 실패했습니다. 이전 복사본은 유지되었습니다.",
+          "autoUpdateLabel": "Update automatically",
+          "autoUpdateDescription": "Install new versions of tracked skills as they ship with Orca. Skills with local changes are never updated automatically.",
+          "summaryManagedCurrentAuto": "Orca keeps this skill up to date automatically."
         }
       },
       "right": {
@@ -13018,7 +13021,12 @@
           "title_one": "설치된 Orca 스킬의 업데이트를 추적할까요?",
           "title_other": "설치된 Orca 스킬 {{value0}}개의 업데이트를 추적할까요?",
           "description": "Orca의 공식 버전과 일치합니다. 업데이트가 있으면 표시되며 승인한 후에만 설치됩니다.",
-          "review": "스킬 선택"
+          "review": "스킬 선택",
+          "descriptionAuto": "These match Orca’s official versions. Orca will keep them up to date automatically."
+        },
+        "autoUpdate": {
+          "updated_one": "Updated the {{value0}} skill to the latest version.",
+          "updated_other": "Updated {{value0}} Orca skills to their latest versions."
         }
       }
     },

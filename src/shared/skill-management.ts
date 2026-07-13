@@ -150,6 +150,19 @@ export type OrcaSkillInstallResultArgs = {
   target?: SkillDiscoveryTarget
 }
 
+export type SkillAutoUpdateBatchArgs = {
+  target?: SkillDiscoveryTarget
+}
+
+export type SkillAutoUpdateBatchResult = {
+  /** Skill names whose managed destination now matches the bundled release. */
+  updatedSkillNames: string[]
+  /** Skill names whose update failed; they surface in settings as update-failed. */
+  failedSkillNames: string[]
+  /** Post-batch inventory, or null when auto-update was disabled or unavailable. */
+  inventory: SkillManagementInventory | null
+}
+
 export type SkillReplacementFilePreview = {
   path: string
   change: 'added' | 'removed' | 'modified'

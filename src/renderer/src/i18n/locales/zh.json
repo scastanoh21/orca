@@ -9087,7 +9087,10 @@
           "summaryUnknown": "已安装的副本与任何已知 Orca 版本都不一致。",
           "summaryExternal": "另一个安装程序正在管理此副本，因此 Orca 不会更改它。",
           "summaryInaccessible": "Orca 无法读取已安装的副本。",
-          "summaryFailed": "上次更新失败。已保留之前的副本。"
+          "summaryFailed": "上次更新失败。已保留之前的副本。",
+          "autoUpdateLabel": "Update automatically",
+          "autoUpdateDescription": "Install new versions of tracked skills as they ship with Orca. Skills with local changes are never updated automatically.",
+          "summaryManagedCurrentAuto": "Orca keeps this skill up to date automatically."
         }
       },
       "right": {
@@ -13018,7 +13021,12 @@
           "title_one": "要跟踪已安装 Orca 技能的更新吗？",
           "title_other": "要跟踪 {{value0}} 个已安装 Orca 技能的更新吗？",
           "description": "这些技能与 Orca 官方版本一致。有更新时 Orca 会显示，并且只会在你批准后安装。",
-          "review": "选择技能"
+          "review": "选择技能",
+          "descriptionAuto": "These match Orca’s official versions. Orca will keep them up to date automatically."
+        },
+        "autoUpdate": {
+          "updated_one": "Updated the {{value0}} skill to the latest version.",
+          "updated_other": "Updated {{value0}} Orca skills to their latest versions."
         }
       }
     },

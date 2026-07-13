@@ -15,6 +15,15 @@ describe('managed skill settings copy', () => {
     )
   })
 
+  it('describes managed rows by whether Orca updates them automatically', () => {
+    expect(
+      managedSkillSummaryCopy({ status: 'managed-current' }, { autoUpdateEnabled: true })
+    ).toBe('Orca keeps this skill up to date automatically.')
+    expect(
+      managedSkillSummaryCopy({ status: 'managed-current' }, { autoUpdateEnabled: false })
+    ).toBe('Orca is tracking this skill for new versions.')
+  })
+
   it('turns package identifiers into readable skill names', () => {
     expect(managedSkillDisplayName('computer-use')).toBe('Computer Use')
     expect(managedSkillDisplayName('orca-cli')).toBe('Orca CLI')

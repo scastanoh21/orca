@@ -40,14 +40,20 @@ export function managedSkillStatusCopy(status: SkillManagementStatus): string {
 }
 
 export function managedSkillSummaryCopy(
-  installation: Pick<SkillManagementInstallation, 'status'>
+  installation: Pick<SkillManagementInstallation, 'status'>,
+  options?: { autoUpdateEnabled?: boolean }
 ): string {
   switch (installation.status) {
     case 'managed-current':
-      return translate(
-        'auto.components.settings.ManagedOrcaSkills.summaryManagedCurrent',
-        'Orca is tracking this skill for new versions.'
-      )
+      return options?.autoUpdateEnabled
+        ? translate(
+            'auto.components.settings.ManagedOrcaSkills.summaryManagedCurrentAuto',
+            'Orca keeps this skill up to date automatically.'
+          )
+        : translate(
+            'auto.components.settings.ManagedOrcaSkills.summaryManagedCurrent',
+            'Orca is tracking this skill for new versions.'
+          )
     case 'known-current':
       return translate(
         'auto.components.settings.ManagedOrcaSkills.summaryKnownCurrent',

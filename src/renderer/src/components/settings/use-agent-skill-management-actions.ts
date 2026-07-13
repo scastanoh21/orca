@@ -33,11 +33,11 @@ export function useAgentSkillManagementActions(args: {
     }
     switch (installation?.status) {
       case 'known-current':
-        return translate('auto.components.settings.AgentSkillSetupPanel.manage', 'Manage')
+        return translate('auto.components.settings.AgentSkillSetupPanel.manage', 'Track updates')
       case 'known-update-available':
         return translate(
           'auto.components.settings.AgentSkillSetupPanel.manageUpdate',
-          'Manage and update'
+          'Track & update'
         )
       case 'managed-update-available':
         return translate('auto.components.settings.AgentSkillSetupPanel.update', 'Update')
@@ -81,7 +81,7 @@ export function useAgentSkillManagementActions(args: {
       toast.success(
         translate(
           'auto.components.settings.AgentSkillSetupPanel.managedCurrent',
-          'Skill is managed and current.'
+          'Orca is tracking this skill and it’s up to date.'
         )
       )
       notifyInstalledAgentSkillsChanged()

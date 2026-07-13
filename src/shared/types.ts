@@ -2863,6 +2863,10 @@ export type GlobalSettings = {
   /** Why: disabling must persist so startup does not reinstall global agent
    *  hook entries right after the user removes them from Settings or CLI. */
   agentStatusHooksEnabled: boolean
+  /** Why: background skill writes stay consent-gated. This defaults on but
+   *  authorizes updating only destinations the user already manages; it never
+   *  claims new paths or touches locally modified copies. */
+  managedSkillAutoUpdateEnabled?: boolean
   /** Why: generated tab titles are semantic but subjective, so they stay opt-in
    *  and manual renames remain the stronger user intent. */
   tabAutoGenerateTitle: boolean

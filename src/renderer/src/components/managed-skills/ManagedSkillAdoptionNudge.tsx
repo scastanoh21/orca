@@ -10,6 +10,9 @@ export function ManagedSkillAdoptionNudge(): null {
   const persistedKeys = useRef(new Set<string>())
   const openSettingsPage = useAppStore((store) => store.openSettingsPage)
   const openSettingsTarget = useAppStore((store) => store.openSettingsTarget)
+  const autoUpdateEnabled = useAppStore(
+    (store) => store.settings?.managedSkillAutoUpdateEnabled !== false
+  )
 
   useEffect(() => {
     const candidates =
@@ -59,10 +62,15 @@ export function ManagedSkillAdoptionNudge(): null {
             { value0: count }
           ),
       {
-        description: translate(
-          'auto.components.managedSkills.adoptionNudge.description',
-          'These match Orca’s official versions. Orca shows when updates are available and only installs one after you approve it.'
-        ),
+        description: autoUpdateEnabled
+          ? translate(
+              'auto.components.managedSkills.adoptionNudge.descriptionAuto',
+              'These match Orca’s official versions. Orca will keep them up to date automatically.'
+            )
+          : translate(
+              'auto.components.managedSkills.adoptionNudge.description',
+              'These match Orca’s official versions. Orca will show when updates are available.'
+            ),
         duration: 12_000,
         onDismiss: persistDismissal,
         onAutoClose: persistDismissal,
@@ -76,7 +84,7 @@ export function ManagedSkillAdoptionNudge(): null {
         }
       }
     )
-  }, [openSettingsPage, openSettingsTarget, state])
+  }, [autoUpdateEnabled, openSettingsPage, openSettingsTarget, state])
 
   return null
 }

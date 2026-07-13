@@ -66,6 +66,7 @@ describe('registerSkillsHandlers', () => {
   const repos = [{ id: 'repo-1', path: 'C:\\Users\\alice\\repo' }]
   const store = {
     getRepos: vi.fn(() => repos),
+    getSettings: vi.fn(),
     getSkillManagementLedger: vi.fn(),
     setManagedSkillDestination: vi.fn(),
     dismissSkillAdoptionCandidate: vi.fn()
@@ -80,9 +81,11 @@ describe('registerSkillsHandlers', () => {
     adoptExactSkillSnapshotMock.mockReset()
     updateManagedSkillMock.mockReset()
     statMock.mockReset()
+    store.getSettings.mockReset()
     store.getSkillManagementLedger.mockReset()
     store.setManagedSkillDestination.mockReset()
     store.dismissSkillAdoptionCandidate.mockReset()
+    store.getSettings.mockReturnValue({})
     store.getSkillManagementLedger.mockReturnValue({
       schemaVersion: 1,
       destinations: {},
@@ -337,6 +340,105 @@ describe('registerSkillsHandlers', () => {
     await handler(null, { skillNames: ['orca-cli'], startedAt: Date.now() - 1_000 })
 
     expect(adoptExactSkillSnapshotMock).not.toHaveBeenCalled()
+  })
+
+  it('declines auto-update without inventory work when the setting is off', async () => {
+    store.getSettings.mockReturnValue({ managedSkillAutoUpdateEnabled: false })
+    const handler = getHandler('skills:autoUpdateManaged')
+
+    await expect(handler(null, undefined)).resolves.toEqual({
+      updatedSkillNames: [],
+      failedSkillNames: [],
+      inventory: null
+    })
+    expect(inventoryManagedSkillsMock).not.toHaveBeenCalled()
+  })
+
+  it('declines auto-update silently on an unauthorized build instead of throwing', async () => {
+    const handler = getHandler('skills:autoUpdateManaged', {
+      isPackaged: false,
+      buildIdentity: null,
+      userDataDir: '/real/user-data',
+      temporaryRoot: '/tmp'
+    })
+
+    await expect(handler(null, undefined)).resolves.toEqual({
+      updatedSkillNames: [],
+      failedSkillNames: [],
+      inventory: null
+    })
+    expect(inventoryManagedSkillsMock).not.toHaveBeenCalled()
+  })
+
+  it('coalesces overlapping auto-update triggers into one batch', async () => {
+    let resolveInventory: (value: unknown) => void = () => undefined
+    inventoryManagedSkillsMock.mockReturnValue(
+      new Promise((resolve) => {
+        resolveInventory = resolve
+      })
+    )
+    const handler = getHandler('skills:autoUpdateManaged')
+
+    const first = handler(null, undefined)
+    const second = handler(null, undefined)
+    resolveInventory({
+      schemaVersion: 1,
+      hostId: 'local',
+      installations: [],
+      adoptionCandidateCount: 0,
+      scannedAt: 1
+    })
+
+    expect(await second).toBe(await first)
+    expect(inventoryManagedSkillsMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('auto-updates only managed candidates and records failures durably', async () => {
+    const prior = { id: 'managed', hostId: 'local', lastOutcome: 'adopted' }
+    store.getSkillManagementLedger.mockReturnValue({
+      schemaVersion: 1,
+      destinations: { managed: prior },
+      dismissedAdoptionCandidates: []
+    })
+    inventoryManagedSkillsMock.mockResolvedValue({
+      schemaVersion: 1,
+      hostId: 'local',
+      installations: [
+        {
+          id: 'managed',
+          name: 'orca-cli',
+          status: 'managed-update-available',
+          managed: true,
+          actionsSupported: true
+        },
+        {
+          id: 'unmanaged',
+          name: 'orchestration',
+          status: 'known-update-available',
+          managed: false,
+          actionsSupported: true
+        }
+      ],
+      adoptionCandidateCount: 0,
+      scannedAt: 1
+    })
+    updateManagedSkillMock.mockRejectedValue(Object.assign(new Error('busy'), { code: 'EBUSY' }))
+    const handler = getHandler('skills:autoUpdateManaged')
+
+    const result = await handler(null, undefined)
+
+    expect(result).toMatchObject({ updatedSkillNames: [], failedSkillNames: ['orca-cli'] })
+    expect(updateManagedSkillMock).toHaveBeenCalledTimes(1)
+    expect(updateManagedSkillMock).toHaveBeenCalledWith(
+      expect.objectContaining({ installationId: 'managed' })
+    )
+    expect(store.setManagedSkillDestination).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: 'managed',
+        lastOutcome: 'failed',
+        lastErrorCategory: 'filesystem-ebusy'
+      })
+    )
   })
 
   it('persists a failed managed update for retry diagnostics', async () => {

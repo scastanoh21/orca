@@ -6,11 +6,12 @@ import type {
   SkillManagementStatus,
   SkillReplacementPreview
 } from '../../../../shared/skill-management'
+import type { GlobalSettings } from '../../../../shared/types'
 import { useManagedAgentSkills } from '@/hooks/useManagedAgentSkills'
 import { translate } from '@/i18n/i18n'
 import { Button } from '../ui/button'
 import { ManagedSkillReplacementDialog } from './ManagedSkillReplacementDialog'
-import { SettingsBadge, SettingsSubsectionHeader } from './SettingsFormControls'
+import { SettingsBadge, SettingsSubsectionHeader, SettingsSwitchRow } from './SettingsFormControls'
 import {
   managedSkillDisplayName,
   managedSkillStatusCopy,
@@ -55,8 +56,15 @@ function missingVisibilityCopy(installation: SkillManagementInstallation): strin
     : null
 }
 
-export function ManagedOrcaSkillsSection(): React.JSX.Element {
+export function ManagedOrcaSkillsSection({
+  settings,
+  updateSettings
+}: {
+  settings: GlobalSettings
+  updateSettings: (updates: Partial<GlobalSettings>) => void | Promise<void>
+}): React.JSX.Element {
   const state = useManagedAgentSkills()
+  const autoUpdateEnabled = settings.managedSkillAutoUpdateEnabled !== false
   const [preview, setPreview] = useState<SkillReplacementPreview | null>(null)
   const [previewLoadingId, setPreviewLoadingId] = useState<string | null>(null)
   const previewLoadingIdRef = useRef<string | null>(null)
@@ -105,7 +113,7 @@ export function ManagedOrcaSkillsSection(): React.JSX.Element {
         title={translate('auto.components.settings.ManagedOrcaSkills.title', 'Orca skill updates')}
         description={translate(
           'auto.components.settings.ManagedOrcaSkills.description',
-          'Track new versions of official Orca skills and choose when to update them.'
+          'Orca can keep the official skills you’ve installed up to date.'
         )}
         action={
           <Button
@@ -118,6 +126,18 @@ export function ManagedOrcaSkillsSection(): React.JSX.Element {
             {translate('auto.components.settings.ManagedOrcaSkills.refresh', 'Check now')}
           </Button>
         }
+      />
+      <SettingsSwitchRow
+        label={translate(
+          'auto.components.settings.ManagedOrcaSkills.autoUpdateLabel',
+          'Update automatically'
+        )}
+        description={translate(
+          'auto.components.settings.ManagedOrcaSkills.autoUpdateDescription',
+          'Install new versions of tracked skills as they ship with Orca. Skills with local changes are never updated automatically.'
+        )}
+        checked={autoUpdateEnabled}
+        onChange={() => void updateSettings({ managedSkillAutoUpdateEnabled: !autoUpdateEnabled })}
       />
       {state.error ? <p className="text-xs text-destructive">{state.error}</p> : null}
       {state.inventory?.installations.length ? (
@@ -139,7 +159,7 @@ export function ManagedOrcaSkillsSection(): React.JSX.Element {
                     </SettingsBadge>
                   </div>
                   <p className="text-xs text-muted-foreground">
-                    {managedSkillSummaryCopy(installation)}
+                    {managedSkillSummaryCopy(installation, { autoUpdateEnabled })}
                   </p>
                   {visibility ? (
                     <p className="text-[11px] text-muted-foreground">{visibility}</p>

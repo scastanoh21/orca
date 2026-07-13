@@ -318,6 +318,8 @@ import type { SkillDiscoveryResult, SkillDiscoveryTarget } from '../shared/skill
 import type {
   OrcaSkillInstallResultArgs,
   SkillAdoptionDismissalArgs,
+  SkillAutoUpdateBatchArgs,
+  SkillAutoUpdateBatchResult,
   SkillManagementActionArgs,
   SkillManagementInventory,
   SkillReplacementPreview
@@ -2223,6 +2225,7 @@ export type PreloadApi = {
     previewReplacement: (args: SkillManagementActionArgs) => Promise<SkillReplacementPreview>
     replace: (args: SkillManagementActionArgs) => Promise<SkillManagementInventory>
     updateManaged: (args: SkillManagementActionArgs) => Promise<SkillManagementInventory>
+    autoUpdateManaged: (args?: SkillAutoUpdateBatchArgs) => Promise<SkillAutoUpdateBatchResult>
     recordOrcaInstall: (args: OrcaSkillInstallResultArgs) => Promise<SkillManagementInventory>
   }
   pet: {

@@ -85,6 +85,30 @@ async function installMockSkillManagement(
   }, inventory)
 }
 
+async function installMockSkillAutoUpdate(
+  app: ElectronApplication,
+  updatedSkillNames: string[]
+): Promise<void> {
+  await app.evaluate((electron, names) => {
+    electron.ipcMain.removeHandler('skills:autoUpdateManaged')
+    electron.ipcMain.handle('skills:autoUpdateManaged', () => {
+      const current = (globalThis as MockSkillDiscoveryGlobal)
+        .__orcaSettingsSkillManagementInventory!
+      // The real batch leaves updated rows managed-current; mirror that so the
+      // post-update refresh shows the settled state.
+      ;(globalThis as MockSkillDiscoveryGlobal).__orcaSettingsSkillManagementInventory = {
+        ...current,
+        installations: current.installations.map((installation) =>
+          names.includes(installation.name)
+            ? { ...installation, status: 'managed-current' as const }
+            : installation
+        )
+      }
+      return { updatedSkillNames: names, failedSkillNames: [], inventory: null }
+    })
+  }, updatedSkillNames)
+}
+
 function makeSkill(sourceKind: SkillSourceKind, directoryPath: string): DiscoveredSkill {
   return {
     id: `${sourceKind}-orca-cli`,
@@ -174,6 +198,19 @@ test.describe('Settings skill detection', () => {
         makeSkill('plugin', '/Users/test/.codex/plugins/cache/vendor/orchestration')
       ])
     )
+    // Why: the setup panel's action label reads the management inventory, so
+    // pin it too — the developer's real global skill homes must not steer
+    // this assertion.
+    await installMockSkillManagement(electronApp, {
+      schemaVersion: 1,
+      hostId: 'local',
+      installations: [managedInstallation('orchestration', 'known-update-available')],
+      adoptionCandidateCount: 0,
+      scannedAt: Date.now()
+    })
+    await orcaPage.evaluate(() => {
+      window.dispatchEvent(new Event('orca:installed-agent-skills-changed'))
+    })
 
     await openOrchestrationSettings(orcaPage)
     const section = orcaPage.locator('[data-settings-section="orchestration"]')
@@ -190,7 +227,7 @@ test.describe('Settings skill detection', () => {
     )
     await section.getByRole('button', { name: 'Re-check' }).click()
 
-    await expect(section.getByText('Manage and update', { exact: true }).first()).toBeVisible()
+    await expect(section.getByText('Track & update', { exact: true }).first()).toBeVisible()
     await expect(
       section.getByText('Enables agents to hand off context and coordinate work through Orca.')
     ).toBeVisible()
@@ -220,15 +257,57 @@ test.describe('Settings skill detection', () => {
       window.dispatchEvent(new Event('orca:installed-agent-skills-changed'))
     })
 
-    await expect(orcaPage.getByText('Orca agent skills', { exact: true })).toBeVisible()
-    await expect(orcaPage.getByRole('button', { name: 'Manage', exact: true })).toBeVisible()
+    await expect(orcaPage.getByText('Orca skill updates', { exact: true })).toBeVisible()
+    await expect(orcaPage.getByText('Update automatically', { exact: true })).toBeVisible()
+    await expect(orcaPage.getByRole('button', { name: 'Track updates', exact: true })).toBeVisible()
     await expect(orcaPage.getByRole('button', { name: 'Update', exact: true })).toBeVisible()
     await expect(orcaPage.getByRole('button', { name: 'Retry', exact: true })).toBeVisible()
-    await expect(orcaPage.getByText('1 installed Orca skills can be kept up to date')).toBeVisible()
-    await orcaPage.locator('#agents').getByRole('button', { name: 'Review', exact: true }).click()
-    await expect(orcaPage.getByRole('heading', { name: 'Replace computer-use?' })).toBeVisible()
-    await orcaPage.getByRole('button', { name: 'Replace skill' }).click()
-    await expect(orcaPage.getByRole('heading', { name: 'Replace computer-use?' })).toBeVisible()
+    await expect(orcaPage.getByText('Track updates for an installed Orca skill?')).toBeVisible()
+    await orcaPage
+      .locator('#agents')
+      .getByRole('button', { name: 'Review changes', exact: true })
+      .click()
+    await expect(
+      orcaPage.getByRole('heading', { name: 'Review local changes to Computer Use' })
+    ).toBeVisible()
+    await orcaPage.getByRole('button', { name: 'Use official version' }).click()
+    await expect(
+      orcaPage.getByRole('heading', { name: 'Review local changes to Computer Use' })
+    ).toBeVisible()
     await expect(orcaPage.locator('#agents').getByText('injected rollback')).toBeVisible()
+  })
+
+  test('auto-updates a managed skill in the background and reports one toast', async ({
+    electronApp,
+    orcaPage
+  }) => {
+    const stale = managedInstallation('orchestration', 'managed-update-available')
+    // A digest the always-mounted runner has not attempted in this session.
+    stale.currentPackageDigest = 'e'.repeat(64)
+    await installMockSkillManagement(electronApp, {
+      schemaVersion: 1,
+      hostId: 'local',
+      installations: [stale],
+      adoptionCandidateCount: 0,
+      scannedAt: Date.now()
+    })
+    await installMockSkillAutoUpdate(electronApp, ['orchestration'])
+    await orcaPage.evaluate(() => {
+      window.dispatchEvent(new Event('orca:installed-agent-skills-changed'))
+    })
+
+    await expect(
+      orcaPage.getByText('Updated the Orchestration skill to the latest version.')
+    ).toBeVisible()
+
+    await orcaPage.evaluate(() => {
+      const state = window.__store!.getState()
+      state.openSettingsTarget({ pane: 'agents', repoId: null })
+      state.openSettingsPage()
+    })
+    await expect(orcaPage.getByText('Up to date', { exact: true })).toBeVisible()
+    await expect(
+      orcaPage.getByText('Orca keeps this skill up to date automatically.')
+    ).toBeVisible()
   })
 })

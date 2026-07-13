@@ -830,7 +830,7 @@ export function AgentsPane({
         wslCapabilitiesLoading={wslCapabilitiesLoading}
       />
 
-      <ManagedOrcaSkillsSection />
+      <ManagedOrcaSkillsSection settings={settings} updateSettings={updateSettings} />
 
       <AgentStatusHooksSetting settings={settings} updateSettings={updateSettings} />
 

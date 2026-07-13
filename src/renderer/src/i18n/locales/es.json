@@ -4903,10 +4903,10 @@
           "4c05b9d7cb": "Preparando el terminal de configuración.",
           "checkingManagement": "Comprobando…",
           "review": "Revisar",
-          "manage": "Gestionar",
-          "manageUpdate": "Gestionar y actualizar",
+          "manage": "Seguir actualizaciones",
+          "manageUpdate": "Seguir y actualizar",
           "update": "Actualizar",
-          "managedCurrent": "El skill está gestionado y actualizado.",
+          "managedCurrent": "Orca sigue este skill y está actualizado.",
           "retryUpdate": "Reintentar actualización",
           "actionFailed": "La acción del skill falló."
         },
@@ -9054,7 +9054,7 @@
           "replace": "Usar versión oficial",
           "actionFailed": "La acción del skill falló.",
           "title": "Actualizaciones de skills de Orca",
-          "description": "Sigue las nuevas versiones de los skills oficiales de Orca y elige cuándo actualizarlos.",
+          "description": "Orca puede mantener actualizados los skills oficiales que has instalado.",
           "refresh": "Comprobar ahora",
           "hostPending": "Solo lectura en este host; las actualizaciones aún no están disponibles.",
           "managedToast": "Orca ahora sigue las actualizaciones de este skill.",
@@ -9087,7 +9087,10 @@
           "summaryUnknown": "Esta copia instalada no coincide con ninguna versión conocida de Orca.",
           "summaryExternal": "Otro instalador controla esta copia, por lo que Orca no la cambiará.",
           "summaryInaccessible": "Orca no pudo leer esta copia instalada.",
-          "summaryFailed": "La última actualización falló. Se conservó la copia anterior."
+          "summaryFailed": "La última actualización falló. Se conservó la copia anterior.",
+          "autoUpdateLabel": "Actualizar automáticamente",
+          "autoUpdateDescription": "Instala nuevas versiones de los skills seguidos cuando lleguen con Orca. Los skills con cambios locales nunca se actualizan automáticamente.",
+          "summaryManagedCurrentAuto": "Orca mantiene este skill actualizado automáticamente."
         }
       },
       "right": {
@@ -13017,8 +13020,13 @@
         "adoptionNudge": {
           "title_one": "¿Seguir las actualizaciones de un skill de Orca instalado?",
           "title_other": "¿Seguir las actualizaciones de {{value0}} skills de Orca instalados?",
-          "description": "Coinciden con versiones oficiales de Orca. Orca muestra cuándo hay actualizaciones y solo instala una después de tu aprobación.",
-          "review": "Elegir skills"
+          "description": "Coinciden con las versiones oficiales de Orca. Orca mostrará cuándo hay actualizaciones disponibles.",
+          "review": "Elegir skills",
+          "descriptionAuto": "Coinciden con las versiones oficiales de Orca. Orca los mantendrá actualizados automáticamente."
+        },
+        "autoUpdate": {
+          "updated_one": "Se actualizó el skill {{value0}} a la última versión.",
+          "updated_other": "Se actualizaron {{value0}} skills de Orca a sus últimas versiones."
         }
       }
     },
