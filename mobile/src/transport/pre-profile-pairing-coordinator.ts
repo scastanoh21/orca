@@ -5,7 +5,7 @@ import {
   type DeviceCredentialInstalled,
   type MobileRelayEndpoint
 } from '../../../src/shared/mobile-relay-credential-contract'
-import { connect, type ConnectOptions, type RpcClient } from './rpc-client'
+import { connect, type ConnectOptions } from './rpc-client'
 import { getNextHostName, saveHost } from './host-store'
 import type { HostProfile, PairingOffer, RpcResponse } from './types'
 import {
@@ -21,6 +21,11 @@ import {
   promotePairingJournalCredential,
   writeMobileRelayCredentialBundle
 } from './mobile-relay-credential-bundle'
+import {
+  connectMobileRelayForPairing,
+  type PairingCandidateClient
+} from './mobile-relay-physical-client'
+import { racePairingCandidates, type PairingCandidate } from './pairing-candidate-race'
 
 export type PreProfilePairingAttempt = {
   readonly result: Promise<{ hostId: string }>
@@ -30,6 +35,7 @@ export type PreProfilePairingAttempt = {
 
 type Dependencies = {
   connectDirect: typeof connect
+  connectRelay: typeof connectMobileRelayForPairing
   getNextHostName: typeof getNextHostName
   saveHost: typeof saveHost
   saveJournal: typeof saveMobileRelayPairingJournal
@@ -42,6 +48,7 @@ type Dependencies = {
 
 const defaultDependencies: Dependencies = {
   connectDirect: connect,
+  connectRelay: connectMobileRelayForPairing,
   getNextHostName,
   saveHost,
   saveJournal: saveMobileRelayPairingJournal,
@@ -59,7 +66,7 @@ export function startPreProfilePairing(args: {
   dependencies?: Partial<Dependencies>
 }): PreProfilePairingAttempt {
   const dependencies = { ...defaultDependencies, ...args.dependencies }
-  const clients = new Set<RpcClient>()
+  const clients = new Set<PairingCandidateClient>()
   let disposed = false
   let timedOut = false
   let timer: ReturnType<typeof setTimeout> | null = null
@@ -115,7 +122,7 @@ async function runPairing(
   offer: PairingOffer,
   connectOptions: ConnectOptions | undefined,
   dependencies: Dependencies,
-  clients: Set<RpcClient>,
+  clients: Set<PairingCandidateClient>,
   isDisposed: () => boolean
 ): Promise<{ hostId: string }> {
   const now = dependencies.now()
@@ -134,14 +141,24 @@ async function runPairing(
     assertActive(isDisposed)
   }
 
-  const client = dependencies.connectDirect(
+  const directClient = dependencies.connectDirect(
     offer.endpoint,
     offer.deviceToken,
     offer.publicKeyB64,
     connectOptions
   )
-  clients.add(client)
-  requireSuccess(await client.sendRequest('status.get'))
+  clients.add(directClient)
+  const candidates: PairingCandidate[] = [{ path: 'direct', client: directClient }]
+  if (journal) {
+    const relayClient = dependencies.connectRelay({
+      relay: offer.relay!,
+      deviceToken: offer.deviceToken,
+      desktopPublicKeyB64: offer.publicKeyB64
+    })
+    clients.add(relayClient)
+    candidates.push({ path: 'relay', client: relayClient })
+  }
+  const winner = await racePairingCandidates(candidates)
   assertActive(isDisposed)
 
   if (!journal) {
@@ -153,16 +170,19 @@ async function runPairing(
     ...journal,
     metadata: {
       ...journal.metadata,
-      winner: 'direct',
-      authorizationMode: 'authenticated-direct'
+      winner: winner.path,
+      authorizationMode: winner.path === 'direct' ? 'authenticated-direct' : 'relay-basis'
     }
   }
   await dependencies.updateJournal(journal.metadata.journalId, () => journal!.metadata)
-  const provision = await client.sendRequest('pairing.provisionRelay', {
+  const provision = await winner.client.sendRequest('pairing.provisionRelay', {
     reqId: journal.metadata.installReqId,
     newResumeTokenHash: journal.metadata.pendingResumeTokenHash
   })
   if (isMethodNotFound(provision)) {
+    if (winner.path !== 'direct') {
+      throw new Error('relay pairing RPC unavailable after relay path authentication')
+    }
     await dependencies.saveHost(baseHost(offer, hostId, hostName, now))
     await dependencies.clearJournal(journal.metadata.journalId)
     return { hostId }
@@ -170,7 +190,7 @@ async function runPairing(
   const installed = DeviceCredentialInstalledSchema.parse(requireSuccess(provision))
   const endpoints = PairingGetEndpointsResultSchema.parse(
     requireSuccess(
-      await client.sendRequest('pairing.getEndpoints', {
+      await winner.client.sendRequest('pairing.getEndpoints', {
         installReqId: journal.metadata.installReqId
       })
     )
