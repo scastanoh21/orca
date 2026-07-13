@@ -30,6 +30,33 @@ describe('createWslCliReconciliationStartupBarrier', () => {
     }
   })
 
+  it('fails open immediately when reconciliation rejects before the budget expires', async () => {
+    vi.useFakeTimers()
+    let rejectReconciliation!: (error: Error) => void
+
+    try {
+      const reconciliation = new Promise<void>((_resolve, reject) => {
+        rejectReconciliation = reject
+      })
+      const barrier = createWslCliReconciliationStartupBarrier(reconciliation)
+      let barrierSettled = false
+      void barrier.then(() => {
+        barrierSettled = true
+      })
+
+      await vi.advanceTimersByTimeAsync(1)
+      expect(barrierSettled).toBe(false)
+
+      // Why: a fast WSL discovery failure should release the barrier via its catch
+      // branch without waiting out the budget, and must clear the pending timer.
+      rejectReconciliation(new Error('WSL discovery failed'))
+      await expect(barrier).resolves.toBeUndefined()
+      expect(vi.getTimerCount()).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('lets serve reach RPC readiness at budget while reconciliation remains pending', async () => {
     vi.useFakeTimers()
     let resolveReconciliation!: () => void
