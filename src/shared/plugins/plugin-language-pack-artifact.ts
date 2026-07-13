@@ -5,6 +5,7 @@ const DANGEROUS_CATALOG_KEYS = new Set(['__proto__', 'prototype', 'constructor']
 const PROTECTED_TRANSLATION_PREFIXES = [
   'auto.components.settings.PluginConsentDialog',
   'auto.components.settings.PluginInstallDialog',
+  'auto.components.settings.PluginKeybindingConsentPreview',
   'auto.components.settings.PluginRemoveDialog',
   'auto.components.settings.PluginSettingsRow',
   'auto.components.settings.PluginVmRecipeConsentPreview',

@@ -5,6 +5,7 @@ import {
   pluginRelativeDirectorySchema,
   pluginRelativePathSchema
 } from './plugin-manifest-fields'
+import { normalizeKeybinding } from '../keybindings'
 
 export const PLUGIN_THEME_LIMIT = 64
 export const PLUGIN_ICON_THEME_LIMIT = 32
@@ -70,8 +71,19 @@ export const pluginSkillContributionSchema = z
 export const pluginKeybindingContributionSchema = z
   .object({
     command: pluginCommandIdSchema,
-    key: z.string().min(1).max(128),
-    when: z.string().min(1).max(256).optional()
+    key: z
+      .string()
+      .min(1)
+      .max(128)
+      .transform((value, ctx) => {
+        const normalized = normalizeKeybinding(value)
+        if (!normalized.ok) {
+          ctx.addIssue({ code: 'custom', message: normalized.error })
+          return z.NEVER
+        }
+        return normalized.value
+      }),
+    when: z.enum(['global', 'worktree']).optional()
   })
   .strict()
 

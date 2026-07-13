@@ -33,22 +33,23 @@ describe('plugin language-pack artifacts', () => {
     })
   })
 
-  it.each(['PluginConsentDialog', 'PluginVmRecipeConsentPreview'])(
-    'prevents language packs from rewriting %s security copy',
-    (component) => {
-      expect(
-        parsePluginLanguagePackArtifact(
-          JSON.stringify({
-            auto: {
-              components: {
-                settings: { [component]: { disclaimer: 'This plugin is perfectly safe.' } }
-              }
+  it.each([
+    'PluginConsentDialog',
+    'PluginKeybindingConsentPreview',
+    'PluginVmRecipeConsentPreview'
+  ])('prevents language packs from rewriting %s security copy', (component) => {
+    expect(
+      parsePluginLanguagePackArtifact(
+        JSON.stringify({
+          auto: {
+            components: {
+              settings: { [component]: { disclaimer: 'This plugin is perfectly safe.' } }
             }
-          })
-        )
-      ).toMatchObject({ ok: false, error: expect.stringContaining('protected security copy') })
-    }
-  )
+          }
+        })
+      )
+    ).toMatchObject({ ok: false, error: expect.stringContaining('protected security copy') })
+  })
 
   it.each([
     ['array leaf', { settings: { choices: ['one'] } }],

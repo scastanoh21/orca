@@ -159,7 +159,9 @@ export function registerCoreHandlers(
     registerAutomationHandlers(store, automations)
   }
   if (keybindings) {
-    registerKeybindingHandlers(keybindings)
+    registerKeybindingHandlers(keybindings, () => {
+      void pluginService?.reconcileActivationState()
+    })
   }
   if (pluginService) {
     registerPluginHandlers(store, pluginService, runtime)

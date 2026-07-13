@@ -25,6 +25,7 @@ function serviceWith(
     activation?: ReturnType<PluginService['activationState']>
     worker?: ReturnType<PluginService['workerState']>
     vmRecipes?: ReturnType<PluginService['contentPacks']['vmRecipes']['preview']>
+    commands?: ReturnType<PluginService['contentPacks']['commands']['preview']>
   } = {}
 ): PluginService {
   return {
@@ -37,7 +38,8 @@ function serviceWith(
     workerState: () => options.worker ?? { state: 'inactive', restarts: 0 },
     activationError: () => null,
     contentPacks: {
-      vmRecipes: { preview: () => options.vmRecipes ?? [] }
+      vmRecipes: { preview: () => options.vmRecipes ?? [] },
+      commands: { preview: () => options.commands ?? [] }
     }
   } as unknown as PluginService
 }
@@ -165,6 +167,51 @@ describe('buildPluginList consent identity', () => {
           { phase: 'create', command: './create.sh' },
           { phase: 'destroy', command: 'none' }
         ]
+      }
+    ])
+  })
+
+  it('projects command handlers and normalized keybindings for consent and dispatch', () => {
+    const commandManifest = pluginManifestSchema.parse({
+      ...manifest,
+      contributes: {
+        commands: [{ id: 'tasks', title: 'Open Tasks', context: 'worktree', action: 'view.tasks' }],
+        keybindings: [{ command: 'tasks', key: 'mod+alt+t' }]
+      }
+    })
+    const plugin: ValidDiscoveredPlugin = {
+      pluginKey: 'orca-samples.demo',
+      rootDir: join(tmpdir(), 'plugins', 'demo'),
+      manifest: commandManifest,
+      consentFingerprint: 'sha256-current',
+      consentContentHash: 'a'.repeat(64),
+      contentHash: null,
+      isDev: true
+    }
+
+    expect(
+      buildPluginList(
+        serviceWith(plugin, {
+          commands: [
+            {
+              pluginKey: plugin.pluginKey,
+              id: 'tasks',
+              title: 'Open Tasks',
+              context: 'worktree',
+              handler: { type: 'built-in', action: 'view.tasks' },
+              keybindings: [{ key: 'Mod+Alt+T', when: 'worktree' }]
+            }
+          ]
+        }),
+        emptyPluginLockfile()
+      )[0]?.commands
+    ).toEqual([
+      {
+        id: 'tasks',
+        title: 'Open Tasks',
+        context: 'worktree',
+        handler: { type: 'built-in', action: 'view.tasks' },
+        keybindings: [{ key: 'Mod+Alt+T', when: 'worktree' }]
       }
     ])
   })

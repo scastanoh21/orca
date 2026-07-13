@@ -167,6 +167,31 @@ describe('PluginConsentDialog', () => {
     expect(commands[0]?.getAttribute('aria-label')).toBe('Cloud Sandbox · Create command')
   })
 
+  it('shows plugin shortcuts and names built-in chords they replace', async () => {
+    await renderConsent(
+      {
+        ...plugin,
+        hasWorker: false,
+        capabilities: [],
+        commands: [
+          {
+            id: 'tasks',
+            title: 'Open Tasks',
+            context: 'global',
+            handler: { type: 'built-in', action: 'view.tasks' },
+            keybindings: [{ key: 'Mod+P', when: 'global' }]
+          }
+        ]
+      },
+      vi.fn().mockResolvedValue(undefined)
+    )
+
+    expect(document.body.textContent).toContain('Review plugin content')
+    expect(document.body.textContent).toContain('Keyboard shortcuts')
+    expect(document.body.textContent).toContain('Open Tasks')
+    expect(document.body.textContent).toContain('Replaces: Go to File')
+  })
+
   it('records Keep Disabled when Escape dismisses the dialog', async () => {
     const onDecision = vi.fn().mockResolvedValue(undefined)
     await renderConsent(plugin, onDecision)

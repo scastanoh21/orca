@@ -1,4 +1,6 @@
 import type { RefinementCtx } from 'zod'
+import { isPluginCommandAliasActionId } from './plugin-command-actions'
+import { getKeybindingConflictIdentity } from '../keybindings'
 
 type IdentifiedContribution = { id: string }
 type PathContribution = { path: string }
@@ -7,14 +9,14 @@ type ContributionValidationManifest = {
   main?: string
   contributes: {
     panels: IdentifiedContribution[]
-    commands: (IdentifiedContribution & { action?: string })[]
+    commands: (IdentifiedContribution & { action?: string; context?: 'global' | 'worktree' })[]
     events: { on: string }[]
     themes: IdentifiedContribution[]
     iconThemes: IdentifiedContribution[]
     terminalThemes: IdentifiedContribution[]
     languagePacks: { locale: string }[]
     skills: PathContribution[]
-    keybindings: { command: string; key: string }[]
+    keybindings: { command: string; key: string; when?: 'global' | 'worktree' }[]
     vmRecipes: PathContribution[]
     agents: PathContribution[]
   }
@@ -71,16 +73,50 @@ export function validatePluginManifestContributions(
       ctx
     )
   }
-  rejectDuplicateValues(
-    manifest.contributes.keybindings,
-    (entry) => {
-      const keybinding = entry as { command: string; key: string }
-      return `${keybinding.command}\u0000${keybinding.key.toLowerCase()}`
-    },
-    'keybindings',
-    'keybinding',
-    ctx
-  )
+  const keybindingIdentities = new Set<string>()
+  for (const [index, keybinding] of manifest.contributes.keybindings.entries()) {
+    const identities = (['darwin', 'linux', 'win32'] as const).map((platform) =>
+      getKeybindingConflictIdentity(keybinding.key, platform)
+    )
+    if (identities.some((identity) => keybindingIdentities.has(identity))) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['contributes', 'keybindings', index],
+        message: `duplicate keybinding: ${keybinding.key.toLowerCase()}`
+      })
+    }
+    identities.forEach((identity) => keybindingIdentities.add(identity))
+  }
+
+  const commands = new Map(manifest.contributes.commands.map((command) => [command.id, command]))
+  for (const [index, command] of manifest.contributes.commands.entries()) {
+    if (command.action !== undefined && !isPluginCommandAliasActionId(command.action)) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['contributes', 'commands', index, 'action'],
+        message: `unknown built-in action: ${command.action}`
+      })
+    }
+  }
+  for (const [index, keybinding] of manifest.contributes.keybindings.entries()) {
+    const command = commands.get(keybinding.command)
+    if (!command) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['contributes', 'keybindings', index, 'command'],
+        message: `unknown contributed command: ${keybinding.command}`
+      })
+      continue
+    }
+    const commandContext = command.context ?? 'global'
+    if (keybinding.when !== undefined && keybinding.when !== commandContext) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['contributes', 'keybindings', index, 'when'],
+        message: 'keybinding context must match its command context'
+      })
+    }
+  }
 
   if (
     !manifest.main &&

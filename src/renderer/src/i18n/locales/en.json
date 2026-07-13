@@ -125,7 +125,8 @@
       "fe21e8f6f5": "Go back ({{value0}})",
       "064bd07810": "Go back",
       "ce37cf5279": "Toggle sidebar ({{value0}})",
-      "e4b9e7dff7": "Toggle sidebar"
+      "e4b9e7dff7": "Toggle sidebar",
+      "pluginCommandFailed": "Could not run the plugin command."
     },
     "web": {
       "WebConnect": {
@@ -582,6 +583,9 @@
             "de50bef680": "macOS is blocking Orca notifications"
           }
         }
+      },
+      "pluginCommandKeybindings": {
+        "group": "Plugins"
       }
     },
     "hooks": {
@@ -1857,7 +1861,8 @@
         "workspaceTabMissing": "Tab no longer exists",
         "projectsGroupsHeader": "Projects & Groups",
         "projectBadge": "Project",
-        "repoGroupBadge": "Repo group"
+        "repoGroupBadge": "Repo group",
+        "pluginCommandFailed": "Could not run the plugin command."
       },
       "github": {
         "pr": {
@@ -6489,7 +6494,8 @@
           "25b0004fbf": "Terminal active",
           "781cb74d22": "Runs from terminal panes.",
           "cb02e00202": "Terminal",
-          "d8c988dab4": "~/.orca/keybindings.json"
+          "d8c988dab4": "~/.orca/keybindings.json",
+          "shortcutUnavailable": "Shortcut is no longer available."
         },
         "SourceControlAiActionRecipeDefaults": {
           "2576299196": "args",
@@ -9204,6 +9210,13 @@
           "warning": "This plugin installs VM recipes. Orca runs the commands below on your local desktop host when you use the matching lifecycle action.",
           "commandLabel": "{{value0}} · {{value1}} command",
           "heading": "VM recipe commands"
+        },
+        "PluginKeybindingConsentPreview": {
+          "warning": "This plugin adds keyboard shortcuts. Plugin shortcuts take priority over matching Orca shortcuts while the plugin is enabled.",
+          "heading": "Keyboard shortcuts",
+          "worktree": "Runs only while a workspace is active.",
+          "global": "Runs in the app without requiring an active workspace.",
+          "shadows": "Replaces: {{value0}}"
         }
       },
       "right": {
@@ -12262,6 +12275,10 @@
                 "project": "Project"
               }
             }
+          },
+          "pluginQuickActions": {
+            "description": "{{value0}} plugin command",
+            "keyword": "plugin command"
           }
         }
       },

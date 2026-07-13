@@ -5,6 +5,7 @@ import { translate } from '@/i18n/i18n'
 import { pluginConsentErrorMessage } from './plugin-error-presentation'
 import { Button } from '../ui/button'
 import { PluginVmRecipeConsentPreview } from './PluginVmRecipeConsentPreview'
+import { PluginKeybindingConsentPreview } from './PluginKeybindingConsentPreview'
 import {
   Dialog,
   DialogContent,
@@ -30,7 +31,7 @@ function trustTier(plugin: PluginHostListEntry): string {
       'Background worker — runs its own process'
     )
   }
-  if (plugin.hasSkills || (plugin.vmRecipes?.length ?? 0) > 0) {
+  if (hasInstructionalContent(plugin)) {
     return translate(
       'auto.components.settings.PluginConsentDialog.instructionalTrust',
       'Instructional content — runs later under user or agent authority'
@@ -85,7 +86,11 @@ function capabilityDescription(kind: string, fallback: string): string {
 }
 
 function hasInstructionalContent(plugin: PluginHostListEntry): boolean {
-  return plugin.hasSkills || (plugin.vmRecipes?.length ?? 0) > 0
+  return (
+    plugin.hasSkills ||
+    (plugin.vmRecipes?.length ?? 0) > 0 ||
+    plugin.commands.some((command) => command.keybindings.length > 0)
+  )
 }
 
 function consentTitle(plugin: PluginHostListEntry): string {
@@ -250,6 +255,7 @@ export function PluginConsentDialog({
                 </span>
               </div>
             ) : null}
+            <PluginKeybindingConsentPreview commands={plugin.commands} />
             <PluginVmRecipeConsentPreview recipes={plugin.vmRecipes ?? []} />
             {error ? <p className="text-xs text-destructive">{error}</p> : null}
             <DialogFooter>

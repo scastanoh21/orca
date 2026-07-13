@@ -10,7 +10,9 @@ import { PluginSkillRegistry } from './plugin-skill-registry'
 import { PluginThemeRegistry } from './plugin-theme-registry'
 import { PluginTerminalThemeRegistry } from './plugin-terminal-theme-registry'
 import { PluginVmRecipeRegistry } from './plugin-vm-recipe-registry'
+import { PluginCommandRegistry } from './plugin-command-registry'
 import { verifyInstructionalPluginContent } from './plugin-instructional-content-integrity'
+import type { KeybindingOverrides } from '../../shared/keybindings'
 
 export class PluginContentPackRegistry {
   readonly themes: PluginThemeRegistry
@@ -19,6 +21,7 @@ export class PluginContentPackRegistry {
   readonly terminalThemes: PluginTerminalThemeRegistry
   readonly skills: PluginSkillRegistry
   readonly vmRecipes: PluginVmRecipeRegistry
+  readonly commands: PluginCommandRegistry
   private readonly activationErrors = new Map<string, string>()
 
   constructor(
@@ -35,11 +38,13 @@ export class PluginContentPackRegistry {
       options.homeDirectory
     )
     this.vmRecipes = new PluginVmRecipeRegistry()
+    this.commands = new PluginCommandRegistry()
   }
 
   async reconcile(
     discovered: readonly DiscoveredPlugin[],
-    isApproved: (plugin: ValidDiscoveredPlugin) => boolean
+    isApproved: (plugin: ValidDiscoveredPlugin) => boolean,
+    keybindings: KeybindingOverrides = {}
   ): Promise<void> {
     const approvedKeys = new Set(
       discovered
@@ -80,7 +85,8 @@ export class PluginContentPackRegistry {
         this.iconThemes.reconcile(discovered, approveAtomically),
         this.terminalThemes.reconcile(discovered, approveAtomically),
         this.skills.reconcile(discovered, approveAtomically),
-        this.vmRecipes.reconcile(discovered, approveAtomically)
+        this.vmRecipes.reconcile(discovered, approveAtomically),
+        this.commands.reconcile(discovered, approveAtomically, keybindings)
       ])
 
       let foundNewError = false
@@ -109,7 +115,8 @@ export class PluginContentPackRegistry {
       this.iconThemes.error(pluginKey) ??
       this.terminalThemes.error(pluginKey) ??
       this.skills.error(pluginKey) ??
-      this.vmRecipes.error(pluginKey)
+      this.vmRecipes.error(pluginKey) ??
+      this.commands.error(pluginKey)
     )
   }
 }

@@ -1938,6 +1938,7 @@ app.whenReady().then(async () => {
     getDisabledPlugins: () => normalizePluginIdList(store?.getSettings().disabledPlugins),
     getPluginConsents: () => normalizePluginConsents(store?.getSettings().pluginConsents),
     getDevPluginPaths: () => normalizePluginIdList(store?.getSettings().devPluginPaths),
+    getKeybindings: () => keybindings?.getOverrides() ?? {},
     hostEntryPath: resolvePluginHostEntryPath(app.getAppPath(), app.isPackaged)
   })
   // Why: headless `orca serve` clients reach plugins through the runtime RPC

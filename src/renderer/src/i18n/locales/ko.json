@@ -125,7 +125,8 @@
       "fe21e8f6f5": "돌아가기({{value0}})",
       "064bd07810": "돌아가기",
       "ce37cf5279": "사이드바 표시/숨기기({{value0}})",
-      "e4b9e7dff7": "사이드바 표시/숨기기"
+      "e4b9e7dff7": "사이드바 표시/숨기기",
+      "pluginCommandFailed": "플러그인 명령을 실행할 수 없습니다."
     },
     "web": {
       "WebConnect": {
@@ -582,6 +583,9 @@
             "de50bef680": "macOS가 Orca 알림을 차단하고 있습니다"
           }
         }
+      },
+      "pluginCommandKeybindings": {
+        "group": "Plugins"
       }
     },
     "hooks": {
@@ -1857,7 +1861,8 @@
         "workspaceTabMissing": "탭이 더 이상 존재하지 않습니다",
         "projectsGroupsHeader": "프로젝트 및 그룹",
         "projectBadge": "프로젝트",
-        "repoGroupBadge": "리포지토리 그룹"
+        "repoGroupBadge": "리포지토리 그룹",
+        "pluginCommandFailed": "플러그인 명령을 실행할 수 없습니다."
       },
       "github": {
         "pr": {
@@ -6437,7 +6442,8 @@
           "25b0004fbf": "Terminal 활성",
           "781cb74d22": "terminal 패널에서 실행됩니다.",
           "cb02e00202": "터미널",
-          "d8c988dab4": "~/.orca/keybindings.json"
+          "d8c988dab4": "~/.orca/keybindings.json",
+          "shortcutUnavailable": "단축키를 더 이상 사용할 수 없습니다."
         },
         "SourceControlAiActionRecipeDefaults": {
           "2576299196": "인수",
@@ -9204,6 +9210,13 @@
           "warning": "이 플러그인은 VM 레시피를 설치합니다. 해당 수명 주기 작업을 사용하면 Orca가 아래 명령을 로컬 데스크톱 호스트에서 실행합니다.",
           "commandLabel": "{{value0}} · {{value1}} 명령",
           "heading": "VM 레시피 명령"
+        },
+        "PluginKeybindingConsentPreview": {
+          "warning": "이 플러그인은 키보드 단축키를 추가합니다. 플러그인이 활성화된 동안 일치하는 Orca 단축키보다 플러그인 단축키가 우선합니다.",
+          "heading": "키보드 단축키",
+          "worktree": "워크스페이스가 활성화된 동안에만 실행됩니다.",
+          "global": "활성 워크스페이스 없이 앱에서 실행됩니다.",
+          "shadows": "대체 항목: {{value0}}"
         }
       },
       "right": {
@@ -12262,6 +12275,10 @@
                 "project": "프로젝트"
               }
             }
+          },
+          "pluginQuickActions": {
+            "description": "{{value0}} 플러그인 명령",
+            "keyword": "플러그인 명령"
           }
         }
       },

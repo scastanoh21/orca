@@ -949,7 +949,13 @@ export type PluginHostListEntry = {
   isDev: boolean
   capabilities: { kind: string; description: string }[]
   panels: PluginHostPanel[]
-  commands: { id: string; title: string }[]
+  commands: {
+    id: string
+    title: string
+    context: 'global' | 'worktree'
+    handler: { type: 'built-in'; action: string } | { type: 'worker' }
+    keybindings: { key: string; when: 'global' | 'worktree' }[]
+  }[]
   hasWorker: boolean
   hasSkills?: boolean
   vmRecipes?: {

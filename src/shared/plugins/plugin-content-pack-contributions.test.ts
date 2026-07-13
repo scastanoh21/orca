@@ -43,6 +43,7 @@ describe('content-pack manifest contributions', () => {
     expect(parsed.main).toBeUndefined()
     expect(parsed.contributes.skills[0]?.path).toBe('skills')
     expect(parsed.contributes.languagePacks[0]?.locale).toBe('pt-BR')
+    expect(parsed.contributes.keybindings[0]?.key).toBe('Mod+Alt+T')
   })
 
   it('defaults every contribution registry to an empty array', () => {
@@ -69,6 +70,56 @@ describe('content-pack manifest contributions', () => {
         manifest({ commands: [{ id: 'content-pack.run', title: 'Run content pack' }] })
       )
     ).toMatchObject({ ok: false, error: expect.stringContaining('worker command') })
+  })
+
+  it.each([
+    [
+      'unknown alias target',
+      {
+        commands: [{ id: 'open', title: 'Open', action: 'missing.action' }]
+      },
+      'unknown built-in action'
+    ],
+    [
+      'unknown command reference',
+      { keybindings: [{ command: 'missing', key: 'Mod+K' }] },
+      'unknown contributed command'
+    ],
+    [
+      'invalid chord',
+      {
+        commands: [{ id: 'open', title: 'Open', action: 'view.tasks' }],
+        keybindings: [{ command: 'open', key: 'Mod+NotAKey' }]
+      },
+      'key'
+    ],
+    [
+      'global binding for a worktree command',
+      {
+        commands: [{ id: 'open', title: 'Open', context: 'worktree', action: 'view.tasks' }],
+        keybindings: [{ command: 'open', key: 'Mod+K', when: 'global' }]
+      },
+      'command context'
+    ],
+    [
+      'platform-equivalent duplicate chords',
+      {
+        commands: [
+          { id: 'first', title: 'First', action: 'view.tasks' },
+          { id: 'second', title: 'Second', action: 'sidebar.left.toggle' }
+        ],
+        keybindings: [
+          { command: 'first', key: 'Mod+K' },
+          { command: 'second', key: 'Ctrl+K' }
+        ]
+      },
+      'duplicate keybinding'
+    ]
+  ])('rejects %s', (_label, contributes, error) => {
+    expect(parsePluginManifest(manifest(contributes))).toMatchObject({
+      ok: false,
+      error: expect.stringContaining(error)
+    })
   })
 
   it.each([
@@ -108,12 +159,10 @@ describe('content-pack manifest contributions', () => {
         expect.arrayContaining([
           'duplicate themes id: same',
           'duplicate language pack locale: pt-br',
-          'duplicate skills path: skills'
+          'duplicate skills path: skills',
+          'duplicate keybinding: mod+t'
         ])
       )
-      expect(
-        parsed.error.issues.some((issue) => issue.message.startsWith('duplicate keybinding:'))
-      ).toBe(true)
     }
   })
 })

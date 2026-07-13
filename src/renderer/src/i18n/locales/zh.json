@@ -125,7 +125,8 @@
       "fe21e8f6f5": "返回 ({{value0}})",
       "064bd07810": "返回",
       "ce37cf5279": "切换侧边栏 ({{value0}})",
-      "e4b9e7dff7": "切换侧边栏"
+      "e4b9e7dff7": "切换侧边栏",
+      "pluginCommandFailed": "无法运行插件命令。"
     },
     "web": {
       "WebConnect": {
@@ -582,6 +583,9 @@
             "de50bef680": "macOS 正在阻止 Orca 通知"
           }
         }
+      },
+      "pluginCommandKeybindings": {
+        "group": "Plugins"
       }
     },
     "hooks": {
@@ -1857,7 +1861,8 @@
         "workspaceTabMissing": "标签页不再存在",
         "projectsGroupsHeader": "项目和分组",
         "projectBadge": "项目",
-        "repoGroupBadge": "仓库组"
+        "repoGroupBadge": "仓库组",
+        "pluginCommandFailed": "无法运行插件命令。"
       },
       "github": {
         "pr": {
@@ -6437,7 +6442,8 @@
           "25b0004fbf": "终端活跃",
           "781cb74d22": "从终端窗格运行。",
           "cb02e00202": "终端",
-          "d8c988dab4": "~/.orca/keybindings.json"
+          "d8c988dab4": "~/.orca/keybindings.json",
+          "shortcutUnavailable": "此快捷键已不再可用。"
         },
         "SourceControlAiActionRecipeDefaults": {
           "2576299196": "参数",
@@ -9204,6 +9210,13 @@
           "warning": "此插件会安装 VM 配方。当你使用对应的生命周期操作时，Orca 会在本地桌面主机上运行以下命令。",
           "commandLabel": "{{value0}} · {{value1}}命令",
           "heading": "VM 配方命令"
+        },
+        "PluginKeybindingConsentPreview": {
+          "warning": "此插件会添加键盘快捷键。插件启用期间，插件快捷键优先于相同的 Orca 快捷键。",
+          "heading": "键盘快捷键",
+          "worktree": "仅在有活动工作区时运行。",
+          "global": "无需活动工作区即可在应用中运行。",
+          "shadows": "替代：{{value0}}"
         }
       },
       "right": {
@@ -12262,6 +12275,10 @@
                 "project": "项目"
               }
             }
+          },
+          "pluginQuickActions": {
+            "description": "{{value0}} 插件命令",
+            "keyword": "插件命令"
           }
         }
       },

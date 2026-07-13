@@ -2,11 +2,13 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import type { KeybindingOverrides } from '../../shared/keybindings'
 import { fingerprintPluginConsent } from '../../shared/plugins/plugin-consent-fingerprint'
 import { pluginManifestSchema, type PluginManifest } from '../../shared/plugins/plugin-manifest'
 import type { PluginWorkerHandle } from './plugin-host-process'
 import { PluginService } from './plugin-service'
 import type { PluginWorkerFactory } from './plugin-worker-manager'
+import { hashPluginTree } from './plugin-content-hash'
 
 const roots: string[] = []
 const services: PluginService[] = []
@@ -103,6 +105,111 @@ afterEach(async () => {
 })
 
 describe('PluginService worker reconciliation', () => {
+  it('blocks every runtime surface until a saved override resolves a content conflict', async () => {
+    const conflictingManifest = (id: string): PluginManifest =>
+      pluginManifestSchema.parse({
+        manifestVersion: 1,
+        id,
+        publisher: 'orca-samples',
+        name: id,
+        version: '1.0.0',
+        engines: { orca: '>=1.0.0' },
+        pluginApi: 1,
+        main: 'worker.js',
+        contributes: {
+          panels: [{ id: 'panel', title: 'Panel', entry: 'panel.html' }],
+          commands: [{ id: 'run', title: 'Run' }],
+          keybindings: [{ command: 'run', key: 'Mod+Alt+T' }],
+          events: [{ on: 'worktree.created' }]
+        },
+        capabilities: [{ kind: 'events:subscribe' }]
+      })
+    const firstManifest = conflictingManifest('first')
+    const secondManifest = conflictingManifest('second')
+    const firstRoot = await pluginRoot(firstManifest)
+    const secondRoot = await pluginRoot(secondManifest)
+    const firstHash = await hashPluginTree(firstRoot)
+    const secondHash = await hashPluginTree(secondRoot)
+    if (!firstHash.ok || !secondHash.ok) {
+      throw new Error('could not hash conflict fixtures')
+    }
+    let keybindings: KeybindingOverrides = {}
+    const factory = vi.fn<PluginWorkerFactory>(async () => testWorker())
+    const service = new PluginService({
+      userDataPath: firstRoot,
+      hostVersion: '1.4.0',
+      isPluginSystemEnabled: () => true,
+      getDisabledPlugins: () => [],
+      getPluginConsents: () => ({
+        'orca-samples.first': fingerprintPluginConsent(firstManifest, firstHash.hash),
+        'orca-samples.second': fingerprintPluginConsent(secondManifest, secondHash.hash)
+      }),
+      getDevPluginPaths: () => [firstRoot, secondRoot],
+      getKeybindings: () => keybindings,
+      workerFactory: factory
+    })
+    services.push(service)
+
+    await service.initialize()
+
+    expect(service.activationError('orca-samples.first')).toContain('conflicts')
+    expect(service.getGrantedCapabilities('orca-samples.first')).toBeNull()
+    await expect(service.invokeCommand('orca-samples.first', 'run')).rejects.toThrow('not enabled')
+    await expect(service.panels.readEntry('orca-samples.first', 'panel')).resolves.toBeNull()
+    service.emitEvent('worktree.created', {
+      worktreeId: 'worktree-1',
+      path: '/repo',
+      branch: 'feature'
+    })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(factory).not.toHaveBeenCalled()
+
+    keybindings = { 'plugin:orca-samples.first/run': ['Mod+Shift+T'] }
+    await service.reconcileActivationState()
+
+    expect(service.activationError('orca-samples.first')).toBeNull()
+    await expect(service.panels.readEntry('orca-samples.first', 'panel')).resolves.toMatchObject({
+      html: expect.stringContaining('<h1>Panel</h1>')
+    })
+    await expect(service.invokeCommand('orca-samples.first', 'run')).resolves.toBeNull()
+    expect(factory).toHaveBeenCalledOnce()
+  })
+
+  it('rejects declarative aliases at the worker-command boundary without activating code', async () => {
+    const aliasManifest = pluginManifestSchema.parse({
+      manifestVersion: 1,
+      id: 'demo',
+      publisher: 'orca-samples',
+      name: 'Demo',
+      version: '1.0.0',
+      engines: { orca: '>=1.0.0' },
+      pluginApi: 1,
+      contributes: {
+        commands: [{ id: 'tasks', title: 'Tasks', action: 'view.tasks' }]
+      },
+      capabilities: []
+    })
+    const root = await pluginRoot(aliasManifest)
+    const factory = vi.fn<PluginWorkerFactory>()
+    const service = new PluginService({
+      userDataPath: root,
+      hostVersion: '1.4.0',
+      isPluginSystemEnabled: () => true,
+      getDisabledPlugins: () => [],
+      getPluginConsents: () => ({ [pluginKey]: fingerprintPluginConsent(aliasManifest) }),
+      getDevPluginPaths: () => [root],
+      workerFactory: factory
+    })
+    services.push(service)
+
+    await service.initialize()
+
+    await expect(service.invokeCommand(pluginKey, 'tasks')).rejects.toThrow(
+      'is a built-in action alias'
+    )
+    expect(factory).not.toHaveBeenCalled()
+  })
+
   it('denies every authority boundary immediately when the feature flag turns off', async () => {
     const root = await pluginRoot()
     const harness = createHarness(root)

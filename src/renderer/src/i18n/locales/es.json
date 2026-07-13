@@ -125,7 +125,8 @@
       "fe21e8f6f5": "Volver ({{value0}})",
       "064bd07810": "Volver",
       "ce37cf5279": "Alternar barra lateral ({{value0}})",
-      "e4b9e7dff7": "Alternar barra lateral"
+      "e4b9e7dff7": "Alternar barra lateral",
+      "pluginCommandFailed": "No se pudo ejecutar el comando del plugin."
     },
     "web": {
       "WebConnect": {
@@ -582,6 +583,9 @@
             "de50bef680": "macOS está bloqueando las notificaciones de Orca"
           }
         }
+      },
+      "pluginCommandKeybindings": {
+        "group": "Plugins"
       }
     },
     "hooks": {
@@ -1857,7 +1861,8 @@
         "workspaceTabMissing": "La pestaña ya no existe",
         "projectsGroupsHeader": "Proyectos y grupos",
         "projectBadge": "Proyecto",
-        "repoGroupBadge": "Grupo de repositorios"
+        "repoGroupBadge": "Grupo de repositorios",
+        "pluginCommandFailed": "No se pudo ejecutar el comando del plugin."
       },
       "github": {
         "pr": {
@@ -6452,7 +6457,8 @@
           "25b0004fbf": "Terminal activa",
           "781cb74d22": "Se ejecuta desde paneles de terminal.",
           "cb02e00202": "Terminal",
-          "d8c988dab4": "~/.orca/keybindings.json"
+          "d8c988dab4": "~/.orca/keybindings.json",
+          "shortcutUnavailable": "El atajo ya no está disponible."
         },
         "SourceControlAiActionRecipeDefaults": {
           "2576299196": "argumentos",
@@ -9204,6 +9210,13 @@
           "warning": "Este plugin instala recetas de VM. Orca ejecuta los comandos siguientes en el equipo local cuando usas la acción de ciclo de vida correspondiente.",
           "commandLabel": "{{value0}} · comando de {{value1}}",
           "heading": "Comandos de recetas de VM"
+        },
+        "PluginKeybindingConsentPreview": {
+          "warning": "Este plugin añade atajos de teclado. Los atajos del plugin tienen prioridad sobre los atajos coincidentes de Orca mientras el plugin está activado.",
+          "heading": "Atajos de teclado",
+          "worktree": "Solo se ejecuta mientras hay un espacio de trabajo activo.",
+          "global": "Se ejecuta en la aplicación sin requerir un espacio de trabajo activo.",
+          "shadows": "Reemplaza: {{value0}}"
         }
       },
       "right": {
@@ -12262,6 +12275,10 @@
                 "project": "Proyecto"
               }
             }
+          },
+          "pluginQuickActions": {
+            "description": "Comando del plugin {{value0}}",
+            "keyword": "comando del plugin"
           }
         }
       },
