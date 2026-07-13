@@ -1,5 +1,3 @@
-import type WebSocket from 'ws'
-import type { OrcaCloudAuthConfig } from '../../orca-profiles/profile-cloud-auth-config'
 import type { PairingRelay } from '../../../shared/mobile-relay-pairing-offer'
 import type {
   DeviceCredentialInstalled,
@@ -8,9 +6,6 @@ import type {
   MobileRelayEndpoint,
   PairingProvisionRelayParams
 } from '../../../shared/mobile-relay-credential-contract'
-import type { MobileRelayStatus } from '../../../shared/mobile-relay-status'
-import type { E2EEKeypair } from '../e2ee-keypair'
-import type { MobileSocketWiring } from '../rpc/mobile-socket-wiring'
 import { CloudRelayTransport } from '../rpc/relay-transport'
 import { RelayControlClient } from './relay-control-client'
 import type { DeviceCredentialInstallAuthorization } from './relay-control-requests'
@@ -21,32 +16,9 @@ import {
   type RelayAuthorization,
   type RelayAssignment
 } from './relay-http-client'
+import type { RelayBrokerStatus, RelaySessionBrokerOptions } from './relay-session-broker-contract'
 
-export type RelayBrokerStatus = MobileRelayStatus
-
-type RelayIdentity = {
-  userId: string
-  profileId: string
-  organizationId: string
-}
-
-type RelaySessionBrokerOptions = {
-  authConfig: OrcaCloudAuthConfig
-  accessToken: string
-  identity: RelayIdentity
-  keypair: E2EEKeypair
-  appVersion: string
-  mobileSocketWiring: MobileSocketWiring
-  isCurrent: () => boolean
-  refreshAccessToken: () => Promise<string | null>
-  onStatus: (status: RelayBrokerStatus) => void
-  onResolveDirector: () => void
-  fetch?: typeof globalThis.fetch
-  createControlSocket?: (url: string, relayJwt: string) => WebSocket
-  createDataSocket?: (url: string) => WebSocket
-  random?: () => number
-  now?: () => number
-}
+export type { RelayBrokerStatus } from './relay-session-broker-contract'
 
 export class StaleRelayBrokerError extends Error {
   constructor() {
@@ -186,6 +158,7 @@ export class RelaySessionBroker {
     if (this.closed) {
       return
     }
+    const publishOffline = this.options.isCurrent()
     this.closed = true
     if (this.refreshTimer) {
       clearTimeout(this.refreshTimer)
@@ -195,11 +168,13 @@ export class RelaySessionBroker {
     this.control = null
     void this.transport?.stop()
     this.transport = null
-    this.options.onStatus('offline')
+    if (publishOffline) {
+      this.options.onStatus('offline')
+    }
   }
 
   private async open(accessToken: string): Promise<void> {
-    this.options.onStatus('connecting')
+    this.publishStatus('connecting')
     const authorization = await exchangeRelayAuthorization({
       endpoint: this.options.authConfig.relayTokenEndpoint,
       accessToken,
@@ -220,6 +195,9 @@ export class RelaySessionBroker {
       generation: 0,
       createSocket: this.options.createDataSocket
     })
+    // Why: stale-epoch cleanup must own partially opened resources before the
+    // next await, even though the broker is not externally active yet.
+    this.transport = transport
     this.options.mobileSocketWiring.attachTransport(transport, (ws) => transport.metadataFor(ws))
     await transport.start()
     this.assertCurrent()
@@ -232,21 +210,27 @@ export class RelaySessionBroker {
       keypair: this.options.keypair,
       appVersion: this.options.appVersion,
       onConnectionOpen: (message) => {
-        void transport.openConnection(message).catch(() => {})
+        if (this.isCurrent()) {
+          void transport.openConnection(message).catch(() => {})
+        }
       },
       onDrain: () => {
-        this.options.onStatus('draining')
+        if (!this.isCurrent()) {
+          return
+        }
+        this.publishStatus('draining')
         // Why: the data plane never chooses recovery targets; every drain
         // returns to the configured stable director.
         this.options.onResolveDirector()
       },
       onClose: () => {
-        if (!this.closed) {
-          this.options.onStatus('offline')
+        if (this.isCurrent()) {
+          this.publishStatus('offline')
         }
       },
       createSocket: this.options.createControlSocket
     })
+    this.control = control
     const ack = await control.connect()
     this.assertCurrent()
     if (ack.generation <= 0) {
@@ -255,9 +239,7 @@ export class RelaySessionBroker {
     transport.setGeneration(ack.generation)
     this.authorization = authorization
     this.assignment = assignment
-    this.transport = transport
-    this.control = control
-    this.options.onStatus('registered')
+    this.publishStatus('registered')
     this.scheduleRefresh()
   }
 
@@ -308,8 +290,18 @@ export class RelaySessionBroker {
   }
 
   private assertCurrent(): void {
-    if (this.closed || !this.options.isCurrent()) {
+    if (!this.isCurrent()) {
       throw new StaleRelayBrokerError()
+    }
+  }
+
+  private isCurrent(): boolean {
+    return !this.closed && this.options.isCurrent()
+  }
+
+  private publishStatus(status: RelayBrokerStatus): void {
+    if (this.isCurrent()) {
+      this.options.onStatus(status)
     }
   }
 }
