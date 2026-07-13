@@ -4,8 +4,8 @@ import {
   claudeRosterHasWorkingSubagent,
   claudeRosterToSnapshots,
   claudeTeammateIdMatchesName,
+  finishClaudeSubagent,
   foldClaudeBackgroundTasksIntoRoster,
-  markClaudeSubagentIdle,
   markClaudeTeammateIdleByName,
   readClaudeBackgroundAgentTasks,
   upsertWorkingClaudeSubagent,
@@ -13,55 +13,59 @@ import {
 } from './claude-subagent-roster'
 
 describe('claude-subagent-roster', () => {
-  it('tracks spawn and stop as working → idle', () => {
+  it('removes a finished one-shot subagent on stop', () => {
     const roster: ClaudeSubagentRoster = new Map()
     upsertWorkingClaudeSubagent(roster, 'a1', { agentType: 'general-purpose' }, 100)
     expect(claudeRosterHasWorkingSubagent(roster)).toBe(true)
 
-    markClaudeSubagentIdle(roster, 'a1')
-    expect(claudeRosterHasWorkingSubagent(roster)).toBe(false)
-    expect(claudeRosterToSnapshots(roster)).toEqual([
-      {
-        id: 'a1',
-        state: 'idle',
-        startedAt: 100,
-        agentType: 'general-purpose',
-        description: undefined
-      }
-    ])
+    // Why: retaining finished one-shots as idle rows piled up dozens of dead
+    // "Idle - general-purpose" sidebar rows over a long workflow session.
+    finishClaudeSubagent(roster, 'a1')
+    expect(roster.size).toBe(0)
+    expect(claudeRosterToSnapshots(roster)).toBeUndefined()
   })
 
-  it('re-marks an idle subagent working without resetting startedAt', () => {
+  it('idles a teammate on stop instead of removing it', () => {
     const roster: ClaudeSubagentRoster = new Map()
-    upsertWorkingClaudeSubagent(roster, 'a1', {}, 100)
-    markClaudeSubagentIdle(roster, 'a1')
-    upsertWorkingClaudeSubagent(roster, 'a1', { description: 'round two' }, 200)
-    expect(roster.get('a1')).toMatchObject({
+    upsertWorkingClaudeSubagent(roster, 'aprobe1-6d3cb5b5', { agentType: 'probe1' }, 100)
+    finishClaudeSubagent(roster, 'aprobe1-6d3cb5b5')
+    expect(roster.get('aprobe1-6d3cb5b5')).toMatchObject({ state: 'idle', teammate: true })
+  })
+
+  it('re-marks an idle teammate working without resetting startedAt', () => {
+    const roster: ClaudeSubagentRoster = new Map()
+    upsertWorkingClaudeSubagent(roster, 'aprobe1-6d3cb5b5', { agentType: 'probe1' }, 100)
+    finishClaudeSubagent(roster, 'aprobe1-6d3cb5b5')
+    upsertWorkingClaudeSubagent(roster, 'aprobe1-6d3cb5b5', { description: 'round two' }, 200)
+    expect(roster.get('aprobe1-6d3cb5b5')).toMatchObject({
       state: 'working',
       startedAt: 100,
       description: 'round two'
     })
   })
 
-  it('ignores unknown ids on markClaudeSubagentIdle', () => {
+  it('ignores unknown ids on finishClaudeSubagent', () => {
     const roster: ClaudeSubagentRoster = new Map()
-    markClaudeSubagentIdle(roster, 'ghost')
+    finishClaudeSubagent(roster, 'ghost')
     expect(roster.size).toBe(0)
   })
 
   it('caps roster size, evicting the oldest idle entry first', () => {
     const roster: ClaudeSubagentRoster = new Map()
-    for (let i = 0; i < AGENT_STATUS_MAX_SUBAGENTS; i++) {
+    upsertWorkingClaudeSubagent(roster, 'aprobe1-6d3cb5b5', { agentType: 'probe1' }, 0)
+    for (let i = 1; i < AGENT_STATUS_MAX_SUBAGENTS; i++) {
       upsertWorkingClaudeSubagent(roster, `a${i}`, {}, i)
     }
     // Why: all working — a new spawn cannot evict live children and is dropped.
     upsertWorkingClaudeSubagent(roster, 'overflow', {}, 999)
     expect(roster.has('overflow')).toBe(false)
 
-    markClaudeSubagentIdle(roster, 'a3')
+    // Why: only teammates hold idle entries now; an idle teammate is the
+    // eviction pool when a burst of new spawns hits the cap.
+    finishClaudeSubagent(roster, 'aprobe1-6d3cb5b5')
     upsertWorkingClaudeSubagent(roster, 'replacement', {}, 1000)
     expect(roster.has('replacement')).toBe(true)
-    expect(roster.has('a3')).toBe(false)
+    expect(roster.has('aprobe1-6d3cb5b5')).toBe(false)
     expect(roster.size).toBe(AGENT_STATUS_MAX_SUBAGENTS)
   })
 
@@ -108,8 +112,7 @@ describe('claude-subagent-roster', () => {
   it('folds background_tasks in without trusting ambiguous entries', () => {
     const roster: ClaudeSubagentRoster = new Map()
     upsertWorkingClaudeSubagent(roster, 'a1', {}, 100)
-    markClaudeSubagentIdle(roster, 'a1')
-    upsertWorkingClaudeSubagent(roster, 'ateam-xyz', { agentType: 'reviewer' }, 150)
+    upsertWorkingClaudeSubagent(roster, 'ateam-xyz', { agentType: 'team' }, 150)
 
     foldClaudeBackgroundTasksIntoRoster(
       roster,
@@ -137,7 +140,36 @@ describe('claude-subagent-roster', () => {
     expect(roster.size).toBe(2)
     // Why: id-exact matches are one-shot subagents whose run state IS reliable.
     expect(roster.get('a1')).toMatchObject({ state: 'working', description: 'review loop' })
-    expect(roster.get('ateam-xyz')).toMatchObject({ state: 'working', agentType: 'reviewer' })
+    // Why: the working lifecycle-tracked teammate is not listed by id, but
+    // omission proves nothing for teammates — it must survive the fold.
+    expect(roster.get('ateam-xyz')).toMatchObject({ state: 'working', agentType: 'team' })
+  })
+
+  it('removes an id-matched task reported not running', () => {
+    const roster: ClaudeSubagentRoster = new Map()
+    upsertWorkingClaudeSubagent(roster, 'a1', { agentType: 'general-purpose' }, 100)
+    foldClaudeBackgroundTasksIntoRoster(
+      roster,
+      [{ id: 'a1', agentType: undefined, description: undefined, running: false, teammate: false }],
+      200
+    )
+    expect(roster.size).toBe(0)
+  })
+
+  it('removes a killed one-shot missing from a present list', () => {
+    const roster: ClaudeSubagentRoster = new Map()
+    // Why: a running one-shot is always listed id-exact at a lead Stop, so a
+    // working non-teammate missing from the list is dead (SubagentStop lost);
+    // keeping it pinned the pane 'working' forever.
+    upsertWorkingClaudeSubagent(roster, 'akilled0000000001', { agentType: 'general-purpose' }, 100)
+    foldClaudeBackgroundTasksIntoRoster(
+      roster,
+      [
+        { id: 'other', agentType: undefined, description: undefined, running: true, teammate: true }
+      ],
+      200
+    )
+    expect(roster.size).toBe(0)
   })
 
   it('recreates unmatched running one-shot subagents after a listener restart', () => {
@@ -174,17 +206,14 @@ describe('claude-subagent-roster', () => {
     expect(roster.size).toBe(0)
   })
 
-  it('demotes task-id-authoritative entries missing from a present list', () => {
+  it('removes non-teammate authoritative entries and keeps live teammates on omission', () => {
     const roster: ClaudeSubagentRoster = new Map()
-    // Why: seeded/bt-sourced ids ARE task ids; absence from a present list
-    // proves the task finished. Lifecycle-tracked ids (teammates) prove
-    // nothing by absence and must keep their state.
     roster.set('a-phantom', {
       state: 'working',
       startedAt: 100,
       backgroundTasksAuthoritative: true
     })
-    upsertWorkingClaudeSubagent(roster, 'ateam-xyz', { agentType: 'reviewer' }, 150)
+    upsertWorkingClaudeSubagent(roster, 'ateam-xyz', { agentType: 'team' }, 150)
 
     foldClaudeBackgroundTasksIntoRoster(
       roster,
@@ -193,11 +222,33 @@ describe('claude-subagent-roster', () => {
       ],
       200
     )
-    expect(roster.get('a-phantom')).toMatchObject({ state: 'idle' })
+    expect(roster.has('a-phantom')).toBe(false)
     expect(roster.get('ateam-xyz')).toMatchObject({ state: 'working' })
   })
 
-  it('marks fold-recreated entries as task-id-authoritative for later folds', () => {
+  it('demotes a seeded teammate phantom missing from a present list to idle', () => {
+    const roster: ClaudeSubagentRoster = new Map()
+    // Why: a teammate seeded from a pre-restart snapshot may be dead, but its
+    // task id never appears in background_tasks — demote instead of delete so
+    // a live idle teammate keeps its row while a phantom stops gating the pane.
+    roster.set('aprobe1-6d3cb5b5', {
+      state: 'working',
+      startedAt: 100,
+      agentType: 'probe1',
+      teammate: true,
+      backgroundTasksAuthoritative: true
+    })
+    foldClaudeBackgroundTasksIntoRoster(
+      roster,
+      [
+        { id: 'other', agentType: undefined, description: undefined, running: true, teammate: true }
+      ],
+      200
+    )
+    expect(roster.get('aprobe1-6d3cb5b5')).toMatchObject({ state: 'idle', teammate: true })
+  })
+
+  it('removes fold-recreated entries missing from a later present list', () => {
     const roster: ClaudeSubagentRoster = new Map()
     foldClaudeBackgroundTasksIntoRoster(
       roster,
@@ -211,13 +262,21 @@ describe('claude-subagent-roster', () => {
       ],
       200
     )
-    expect(roster.get('a9')).toMatchObject({ state: 'idle' })
+    expect(roster.has('a9')).toBe(false)
   })
 
-  it('stops demoting an entry once live activity re-tracks it', () => {
+  it('keeps a re-tracked working teammate missing from a present list', () => {
     const roster: ClaudeSubagentRoster = new Map()
-    roster.set('a-seeded', { state: 'working', startedAt: 100, backgroundTasksAuthoritative: true })
-    upsertWorkingClaudeSubagent(roster, 'a-seeded', {}, 150)
+    roster.set('aprobe1-6d3cb5b5', {
+      state: 'working',
+      startedAt: 100,
+      agentType: 'probe1',
+      teammate: true,
+      backgroundTasksAuthoritative: true
+    })
+    // Why: live activity clears the authoritative flag; a busy teammate must
+    // not be demoted by a Stop that (as always) omits its lifecycle id.
+    upsertWorkingClaudeSubagent(roster, 'aprobe1-6d3cb5b5', { agentType: 'probe1' }, 150)
 
     foldClaudeBackgroundTasksIntoRoster(
       roster,
@@ -226,7 +285,7 @@ describe('claude-subagent-roster', () => {
       ],
       200
     )
-    expect(roster.get('a-seeded')).toMatchObject({ state: 'working' })
+    expect(roster.get('aprobe1-6d3cb5b5')).toMatchObject({ state: 'working' })
   })
 
   it('matches teammate ids by name only up to the hyphen-free suffix', () => {

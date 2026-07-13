@@ -2309,9 +2309,9 @@ describe('shared agent-hook-listener', () => {
 
       const stopped = claudeEvent({ hook_event_name: 'SubagentStop', agent_id: 'r1' })
       expect(stopped?.payload.state).toBe('done')
-      expect(stopped?.payload.subagents).toEqual([
-        expect.objectContaining({ id: 'r1', state: 'idle' })
-      ])
+      // Why: a finished one-shot leaves the sidebar instead of squatting as a
+      // permanent idle row for the rest of the session.
+      expect(stopped?.payload.subagents).toBeUndefined()
     })
 
     it('keeps gating on tracked children when background_tasks is absent (older Claude)', () => {
@@ -2555,7 +2555,7 @@ describe('shared agent-hook-listener', () => {
       expect(stopped?.payload.state).toBe('done')
     })
 
-    it('demotes a snapshot-seeded child missing from a present background_tasks list', () => {
+    it('removes a snapshot-seeded child missing from a present background_tasks list', () => {
       seedClaudeSubagentRosterFromSnapshots(state, PANE_KEY, [
         { id: 'a77', state: 'working', startedAt: 1000, agentType: 'general-purpose' }
       ])
@@ -2569,9 +2569,7 @@ describe('shared agent-hook-listener', () => {
         ]
       })
       expect(stop?.payload.state).toBe('done')
-      expect(stop?.payload.subagents).toEqual([
-        expect.objectContaining({ id: 'a77', state: 'idle' })
-      ])
+      expect(stop?.payload.subagents).toBeUndefined()
     })
 
     it('keeps a snapshot-seeded child working while background_tasks still lists it', () => {

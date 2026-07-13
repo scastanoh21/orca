@@ -14,12 +14,18 @@ export type TrackedClaudeSubagent = {
   description?: string
   state: 'working' | 'idle'
   startedAt: number
-  /** The id came from background_tasks or a persisted snapshot, not live
-   *  lifecycle events, so a PRESENT list omitting it proves the task is gone
-   *  (a phantom seeded before restart would otherwise gate the pane 'working'
-   *  forever — teams sessions never send an empty list). Cleared once live
-   *  activity re-tracks the id, so a seeded-but-alive teammate is demoted at
-   *  most until its next tool event. */
+  /** Known agent-teams teammate: its id embeds its name (`a<name>-<hex>`)
+   *  while one-shot ids are hyphen-free (`a<hex>`). Teammates are long-lived —
+   *  SubagentStop means "finished a task", not "gone" — and their lifecycle
+   *  ids never appear in background_tasks, so omission proves nothing. */
+  teammate?: true
+  /** The id came from a persisted snapshot or background_tasks, not live
+   *  lifecycle events. Only matters for teammate-shaped seeds now: a PRESENT
+   *  list omitting a seeded-working teammate demotes it to idle so a phantom
+   *  seeded before restart can't gate the pane 'working' forever (teams
+   *  sessions never send an empty list). Cleared once live activity re-tracks
+   *  the id. Non-teammate entries omitted from a present list are removed
+   *  outright regardless of this flag. */
   backgroundTasksAuthoritative?: boolean
 }
 
@@ -45,11 +51,18 @@ export function upsertWorkingClaudeSubagent(
   if (id.length === 0 || id.length > CLAUDE_SUBAGENT_ID_MAX_LENGTH) {
     return
   }
+  // Why: teammate SubagentStart carries agent_type = teammate name and the id
+  // embeds it; one-shot ids are hyphen-free hex so they can never match.
+  const teammate =
+    fields.agentType !== undefined && claudeTeammateIdMatchesName(id, fields.agentType)
   const existing = roster.get(id)
   if (existing) {
     existing.state = 'working'
     existing.agentType = fields.agentType ?? existing.agentType
     existing.description = fields.description ?? existing.description
+    if (teammate) {
+      existing.teammate = true
+    }
     // Why: live activity proves the lifecycle stream owns this id again;
     // background_tasks absence must stop demoting it (teammate ids never
     // appear there). The fold re-tags its own recreations after this call.
@@ -63,7 +76,8 @@ export function upsertWorkingClaudeSubagent(
     state: 'working',
     startedAt: now,
     agentType: fields.agentType,
-    description: fields.description
+    description: fields.description,
+    ...(teammate ? { teammate: true as const } : {})
   })
 }
 
@@ -83,11 +97,20 @@ function evictOldestIdleClaudeSubagent(roster: ClaudeSubagentRoster): boolean {
   return true
 }
 
-export function markClaudeSubagentIdle(roster: ClaudeSubagentRoster, id: string): void {
+/** SubagentStop: a finished one-shot subagent leaves the sidebar immediately —
+ *  retaining it as an idle row made long workflow/ultracode sessions pile up
+ *  dozens of dead rows. Teammates only idle (alive + resumable): SubagentStop
+ *  fires each time a teammate finishes a task, not just at shutdown. */
+export function finishClaudeSubagent(roster: ClaudeSubagentRoster, id: string): void {
   const existing = roster.get(id)
-  if (existing) {
-    existing.state = 'idle'
+  if (!existing) {
+    return
   }
+  if (existing.teammate) {
+    existing.state = 'idle'
+    return
+  }
+  roster.delete(id)
 }
 
 /** Read the agent-typed entries of a hook payload's `background_tasks` field.
@@ -129,20 +152,23 @@ export function readClaudeBackgroundAgentTasks(hookPayload: Record<string, unkno
 
 /** Fold a lead Stop's `background_tasks` into the lifecycle-tracked roster.
  *
- *  Why this is NOT a replace: teammate entries report `status: "running"`
- *  while the teammate is alive but idle, and their task ids never match the
- *  `agent_id` used by SubagentStart/SubagentStop — so the list cannot decide
- *  teammate working-ness or map onto lifecycle-tracked children. Only the
- *  unambiguous signals are taken:
+ *  The list is authoritative for non-teammate children: a running one-shot is
+ *  always listed under its lifecycle `agent_id` (verified against live hook
+ *  captures), foreground children cannot span a lead Stop, and finished tasks
+ *  are dropped from the list entirely. So:
  *  - an empty list proves nothing is left alive → clear the roster;
- *  - an id-exact match (one-shot background subagents reuse `agent_id` as the
- *    task id) is trusted fully — description enrichment and run state;
+ *  - an id-exact match that is running is trusted fully (state + enrichment);
+ *    one reported not running is finished → remove it;
  *  - an unmatched RUNNING non-teammate entry is a one-shot subagent this
  *    listener never saw start (Orca/relay restart mid-run) → recreate it so
  *    the pane doesn't read done while the child still runs;
- *  - a roster entry whose id is KNOWN to be a task id
- *    (backgroundTasksAuthoritative) but is missing from the present list is
- *    finished → demote it to idle. */
+ *  - a non-teammate roster entry missing from the present list is finished or
+ *    dead (its SubagentStop was killed/lost) → remove it, otherwise it pins
+ *    the pane 'working' forever;
+ *  - teammates are exempt: their task ids never match lifecycle agent_ids, so
+ *    omission proves nothing — except a snapshot-seeded phantom
+ *    (backgroundTasksAuthoritative), which demotes to idle so it cannot gate
+ *    the pane while teams sessions never send an empty list. */
 export function foldClaudeBackgroundTasksIntoRoster(
   roster: ClaudeSubagentRoster,
   tasks: ClaudeBackgroundAgentTask[],
@@ -157,7 +183,11 @@ export function foldClaudeBackgroundTasksIntoRoster(
     listedIds.add(task.id)
     const existing = roster.get(task.id)
     if (existing) {
-      existing.state = task.running ? 'working' : 'idle'
+      if (!task.running) {
+        roster.delete(task.id)
+        continue
+      }
+      existing.state = 'working'
       existing.agentType = task.agentType ?? existing.agentType
       existing.description = task.description ?? existing.description
       continue
@@ -177,9 +207,16 @@ export function foldClaudeBackgroundTasksIntoRoster(
     }
   }
   for (const [id, tracked] of roster) {
-    if (tracked.backgroundTasksAuthoritative && tracked.state === 'working' && !listedIds.has(id)) {
-      tracked.state = 'idle'
+    if (listedIds.has(id)) {
+      continue
     }
+    if (tracked.teammate) {
+      if (tracked.backgroundTasksAuthoritative && tracked.state === 'working') {
+        tracked.state = 'idle'
+      }
+      continue
+    }
+    roster.delete(id)
   }
 }
 
@@ -205,6 +242,9 @@ export function markClaudeTeammateIdleByName(roster: ClaudeSubagentRoster, name:
       continue
     }
     matchedById = true
+    // Why: TeammateIdle is teammate-only proof; the flag keeps this entry
+    // exempt from one-shot removal on SubagentStop and fold omission.
+    tracked.teammate = true
     if (tracked.state !== 'idle') {
       tracked.state = 'idle'
       changed = true
@@ -215,6 +255,7 @@ export function markClaudeTeammateIdleByName(roster: ClaudeSubagentRoster, name:
   }
   for (const tracked of roster.values()) {
     if (tracked.agentType === name && tracked.state !== 'idle') {
+      tracked.teammate = true
       tracked.state = 'idle'
       changed = true
     }

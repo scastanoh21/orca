@@ -38,8 +38,8 @@ import {
   claudeRosterHasWorkingSubagent,
   claudeRosterToSnapshots,
   claudeTeammateIdMatchesName,
+  finishClaudeSubagent,
   foldClaudeBackgroundTasksIntoRoster,
-  markClaudeSubagentIdle,
   markClaudeTeammateIdleByName,
   readClaudeBackgroundAgentTasks,
   upsertWorkingClaudeSubagent,
@@ -2411,7 +2411,7 @@ function normalizeClaudeSubagentLifecycleEvent(
         Date.now()
       )
     } else {
-      markClaudeSubagentIdle(roster, agentId)
+      finishClaudeSubagent(roster, agentId)
       // Why: a blocked child that dies (killed, errored) without another tool
       // event would otherwise pin its permission/question wait on the pane
       // forever — nothing else references that agent again.
@@ -2449,9 +2449,16 @@ export function seedClaudeSubagentRosterFromSnapshots(
       startedAt: snapshot.startedAt,
       agentType: snapshot.agentType,
       description: snapshot.description,
+      // Why: re-derive teammate-ness from the persisted id/agentType so a
+      // seeded teammate keeps its idle row instead of being removed as a
+      // finished one-shot by the next fold.
+      ...(snapshot.agentType && claudeTeammateIdMatchesName(snapshot.id, snapshot.agentType)
+        ? { teammate: true as const }
+        : {}),
       // Why: the seed can be a phantom (child finished while Orca was down,
       // its SubagentStop lost). Let a PRESENT background_tasks list that
-      // omits the id demote it instead of gating the pane 'working' forever.
+      // omits the id remove it (or demote a teammate) instead of gating the
+      // pane 'working' forever.
       backgroundTasksAuthoritative: true
     })
   }
