@@ -137,6 +137,54 @@ describe('pre-handler PTY buffer', () => {
     expect(handler).toHaveBeenCalledWith(-1)
   })
 
+  it.each(['false', 'null', 'reject'] as const)(
+    're-drives a replacement probe after a stale %s result',
+    async (outcome) => {
+      const target = `pty-replacement-redrive-${outcome}`
+      const fillerPrefix = `pty-replacement-redrive-${outcome}-filler-`
+      let resolveOld: ((alive: boolean | null) => void) | undefined
+      let rejectOld: ((error: Error) => void) | undefined
+      const hasPty = vi
+        .fn()
+        .mockImplementationOnce(
+          () =>
+            new Promise<boolean | null>((resolve, reject) => {
+              resolveOld = resolve
+              rejectOld = reject
+            })
+        )
+        .mockResolvedValueOnce(false)
+      const oldHandler = vi.fn()
+      const replacementHandler = vi.fn()
+      let oldCurrent = true
+      try {
+        bufferPreHandlerPtyExit(target, 1)
+        for (let index = 0; index < 64; index += 1) {
+          bufferPreHandlerPtyExit(`${fillerPrefix}${index}`, index)
+        }
+        reconcilePreHandlerPtyExitAfterOverflow(target, hasPty, oldHandler, () => oldCurrent)
+        oldCurrent = false
+        reconcilePreHandlerPtyExitAfterOverflow(target, hasPty, replacementHandler, () => true)
+        expect(hasPty).toHaveBeenCalledOnce()
+
+        if (outcome === 'reject') {
+          rejectOld?.(new Error('stale probe failed'))
+        } else {
+          resolveOld?.(outcome === 'false' ? false : null)
+        }
+
+        await vi.waitFor(() => expect(hasPty).toHaveBeenCalledTimes(2))
+        await vi.waitFor(() => expect(replacementHandler).toHaveBeenCalledWith(-1))
+        expect(oldHandler).not.toHaveBeenCalled()
+      } finally {
+        clearPreHandlerPtyState(target)
+        for (let index = 0; index < 64; index += 1) {
+          clearPreHandlerPtyState(`${fillerPrefix}${index}`)
+        }
+      }
+    }
+  )
+
   it('keeps a replacement probe owned when an older same-id probe settles', async () => {
     const target = 'pty-reused-probe-owner'
     const oldPrefix = 'pty-reused-probe-old-'

@@ -32,9 +32,11 @@ import { createPtyInputWriteQueue } from './pty-input-write-queue'
 import { acquirePtySessionConnectAdmission } from './pty-session-connect-admission'
 import {
   createPtyPrimaryHandlerOwner,
-  publishPtyPrimaryHandlerOwner,
+  publishPtyPrimaryDataHandlerOwner,
+  publishPtyPrimaryExitHandlerOwner,
   restorePtyPrimaryHandlersAfterFailedAdmission,
-  revokePtyPrimaryHandlerOwner,
+  revokePtyPrimaryDataHandlerOwner,
+  revokePtyPrimaryExitHandlerOwner,
   suspendPtyPrimaryHandlersForAdmission
 } from './pty-primary-handler-admission'
 import type { PtyPrimaryHandlerOwner } from './pty-primary-handler-admission'
@@ -588,13 +590,19 @@ export function createIpcPtyTransport(opts: IpcPtyTransportOptions = {}): PtyTra
       owner: PtyPrimaryHandlerOwner
     }
   >()
-  const ownedExitHandlers = new Map<string, (code: number) => void>()
+  const ownedExitHandlers = new Map<
+    string,
+    { handler: (code: number) => void; owner: PtyPrimaryHandlerOwner }
+  >()
 
   function unregisterPtyHandlers(id: string): void {
     unregisterPtyDataAndStatusHandlers(id)
     const ownedExit = ownedExitHandlers.get(id)
-    if (ownedExit && ptyExitHandlers.get(id) === ownedExit) {
+    if (ownedExit && ptyExitHandlers.get(id) === ownedExit.handler) {
       ptyExitHandlers.delete(id)
+    }
+    if (ownedExit) {
+      revokePtyPrimaryExitHandlerOwner(id, ownedExit.owner)
     }
     ownedExitHandlers.delete(id)
     if (ptyTeardownHandlers.get(id) === clearAccumulatedState) {
@@ -613,7 +621,7 @@ export function createIpcPtyTransport(opts: IpcPtyTransportOptions = {}): PtyTra
       }
       // Why: an admission may have temporarily removed the global handlers;
       // revoking the local owner still prevents failed admission from reviving them.
-      revokePtyPrimaryHandlerOwner(id, owned.owner)
+      revokePtyPrimaryDataHandlerOwner(id, owned.owner)
     }
     ownedDataAndReplayHandlers.delete(id)
   }
@@ -651,8 +659,15 @@ export function createIpcPtyTransport(opts: IpcPtyTransportOptions = {}): PtyTra
     const owner = createPtyPrimaryHandlerOwner()
     ptyDataHandlers.set(id, dataHandler)
     ownedDataAndReplayHandlers.set(id, { data: dataHandler, replay: replayHandler, owner })
-    publishPtyPrimaryHandlerOwner(id, owner)
-    drainPreHandlerPtyData(id, dataHandler)
+    publishPtyPrimaryDataHandlerOwner(id, owner)
+    drainPreHandlerPtyData(
+      id,
+      dataHandler,
+      () =>
+        owner.active &&
+        ownedDataAndReplayHandlers.get(id)?.owner === owner &&
+        ptyDataHandlers.get(id) === dataHandler
+    )
   }
 
   function clearAccumulatedState(): void {
@@ -706,8 +721,10 @@ export function createIpcPtyTransport(opts: IpcPtyTransportOptions = {}): PtyTra
       storedCallbacks.onDisconnect?.()
       onPtyExit?.(id)
     }
+    const owner = createPtyPrimaryHandlerOwner()
     ptyExitHandlers.set(id, exitHandler)
-    ownedExitHandlers.set(id, exitHandler)
+    ownedExitHandlers.set(id, { handler: exitHandler, owner })
+    publishPtyPrimaryExitHandlerOwner(id, owner)
     // Why: shutdownWorktreeTerminals bypasses the transport layer — it
     // kills PTYs directly via IPC without calling disconnect()/destroy().
     // This teardown callback lets unregisterPtyDataHandlers cancel
@@ -720,7 +737,9 @@ export function createIpcPtyTransport(opts: IpcPtyTransportOptions = {}): PtyTra
         id,
         window.api.pty.hasPty,
         exitHandler,
-        () => ownedExitHandlers.get(id) === exitHandler && ptyExitHandlers.get(id) === exitHandler
+        () =>
+          ownedExitHandlers.get(id)?.handler === exitHandler &&
+          ptyExitHandlers.get(id) === exitHandler
       )
     }
   }
