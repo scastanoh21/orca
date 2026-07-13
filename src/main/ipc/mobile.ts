@@ -4,6 +4,7 @@ import QRCode from 'qrcode'
 import type { RuntimeAccessGrant } from '../../shared/runtime-access-grants'
 import { isTailnetIPv4Address } from '../../shared/tailnet-address'
 import type { DeviceEntry } from '../runtime/device-registry'
+import type { RelayBrokerStatus } from '../runtime/relay/relay-session-broker'
 import type { OrcaRuntimeRpcServer } from '../runtime/runtime-rpc'
 import {
   getWebSocketPort,
@@ -60,6 +61,7 @@ function toRuntimeAccessGrant(device: DeviceEntry): RuntimeAccessGrant {
 export type MobileHandlerDependencies = {
   firewallEnvironment?: WindowsMobileFirewallEnvironment
   openWindowsNetworkSettings?: () => Promise<void>
+  getRelayStatus?: () => RelayBrokerStatus
 }
 
 export function registerMobileHandlers(
@@ -234,6 +236,10 @@ export function registerMobileHandlers(
     await openSettings()
     return true
   })
+
+  ipcMain.handle('mobile:getRelayStatus', () => ({
+    status: dependencies.getRelayStatus?.() ?? 'offline'
+  }))
 }
 
 function isWindowRenderer(event: IpcMainInvokeEvent): boolean {
