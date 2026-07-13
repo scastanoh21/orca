@@ -22233,6 +22233,33 @@ describe('OrcaRuntimeService', () => {
     expect(getForegroundProcess).not.toHaveBeenCalledWith('pty-unrelated')
   })
 
+  it('scopes host-owned terminal stop liveness away from unrelated providers', async () => {
+    const runtime = new OrcaRuntimeService(store)
+    const processLists = [[{ id: 'pty-1', cwd: '/tmp/worktree-a', title: 'Shell' }], []]
+    const listProcesses = vi.fn(async (connectionId?: string | null) => {
+      if (connectionId !== null) {
+        throw new Error('unrelated SSH provider unavailable')
+      }
+      return processLists.shift() ?? []
+    })
+    runtime.setPtyController({
+      write: () => true,
+      kill: () => false,
+      stopAndWait: async (ptyId) => {
+        runtime.onPtyExit(ptyId, -1)
+        return true
+      },
+      getForegroundProcess: async () => null,
+      listProcesses
+    })
+    syncSinglePty(runtime, 'pty-1')
+
+    await expect(
+      runtime.stopTerminalsForWorktree('id:repo-1::/tmp/worktree-a', { hostId: 'local' })
+    ).resolves.toEqual({ stopped: 1 })
+    expect(listProcesses.mock.calls).toEqual([[null], [null]])
+  })
+
   it('blocks paired terminal admission until project stop and removal are atomic', async () => {
     const removeProject = vi.fn()
     const runtime = new OrcaRuntimeService({ ...store, removeProject } as never)
@@ -22371,11 +22398,7 @@ describe('OrcaRuntimeService', () => {
     await Promise.resolve()
 
     await expect(
-      runtime.runWithTerminalCreateAdmission(
-        TEST_WORKTREE_ID,
-        async () => undefined,
-        'local'
-      )
+      runtime.runWithTerminalCreateAdmission(TEST_WORKTREE_ID, async () => undefined, 'local')
     ).rejects.toThrow('terminal_admission_blocked_for_project_removal')
     await expect(
       runtime.runWithTerminalCreateAdmission(

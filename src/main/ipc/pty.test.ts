@@ -3355,6 +3355,30 @@ describe('registerPtyHandlers', () => {
     deletePtyOwnership('missing-pty')
   })
 
+  it('lists only the selected provider for host-scoped liveness proof', async () => {
+    const localSessions = [{ id: 'local-pty', cwd: '/local', title: 'Shell' }]
+    const localListProcesses = vi.fn().mockResolvedValue(localSessions)
+    const unrelatedSshListProcesses = vi.fn().mockRejectedValue(new Error('unrelated SSH down'))
+    setLocalPtyProvider({
+      listProcesses: localListProcesses,
+      onData: vi.fn(() => () => {}),
+      onReplay: vi.fn(() => () => {}),
+      onExit: vi.fn(() => () => {})
+    } as never)
+    registerSshPtyProvider('ssh-b', { listProcesses: unrelatedSshListProcesses } as never)
+    const runtime = { setPtyController: vi.fn() }
+    handlers.clear()
+    registerPtyHandlers(mainWindow as never, runtime as never)
+    const controller = runtime.setPtyController.mock.calls[0]?.[0] as {
+      listProcesses: (connectionId?: string | null) => Promise<unknown[]>
+    }
+
+    await expect(controller.listProcesses(null)).resolves.toEqual(localSessions)
+    expect(localListProcesses).toHaveBeenCalledOnce()
+    expect(unrelatedSshListProcesses).not.toHaveBeenCalled()
+    await expect(controller.listProcesses('ssh-b')).rejects.toThrow('unrelated SSH down')
+  })
+
   it('persists local daemon shutdown and retries after renderer loss', async () => {
     vi.useFakeTimers()
     const shutdown = vi
@@ -3425,6 +3449,7 @@ describe('registerPtyHandlers', () => {
 
   it('rebinds a persisted local shutdown after async daemon startup replaces the provider', async () => {
     vi.useFakeTimers()
+    const startup = makeDeferred()
     const makeProvider = (shutdown: ReturnType<typeof vi.fn>) =>
       ({
         spawn: vi.fn(),
@@ -3436,10 +3461,52 @@ describe('registerPtyHandlers', () => {
         onReplay: vi.fn(() => () => {}),
         onExit: vi.fn(() => () => {})
       }) as never
-    const fallbackShutdown = vi.fn().mockRejectedValue(new Error('temporary provider'))
+    const fallbackShutdown = vi.fn().mockResolvedValue(undefined)
     const daemonShutdown = vi.fn().mockResolvedValue(undefined)
     const removePendingLocalPtyShutdown = vi.fn()
     setLocalPtyProvider(makeProvider(fallbackShutdown))
+    handlers.clear()
+    registerPtyHandlers(
+      mainWindow as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      {
+        getPendingLocalPtyShutdowns: () => [{ ptyId: 'daemon-pty', requestedAt: 1 }],
+        upsertPendingLocalPtyShutdown: vi.fn(),
+        removePendingLocalPtyShutdown
+      } as never,
+      { awaitLocalPtyStartup: () => startup.promise }
+    )
+    await vi.advanceTimersByTimeAsync(0)
+    expect(fallbackShutdown).not.toHaveBeenCalled()
+
+    setLocalPtyProvider(makeProvider(daemonShutdown))
+    startup.resolve()
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(fallbackShutdown).not.toHaveBeenCalled()
+    expect(daemonShutdown).toHaveBeenCalledOnce()
+    expect(removePendingLocalPtyShutdown).toHaveBeenCalledWith('daemon-pty')
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(vi.getTimerCount()).toBe(0)
+    vi.useRealTimers()
+  })
+
+  it('does not let an in-flight old provider complete persisted shutdown ownership', async () => {
+    vi.useFakeTimers()
+    const oldShutdown = makeDeferred()
+    const makeProvider = (shutdown: (id: string) => Promise<void>) =>
+      ({
+        shutdown,
+        onData: vi.fn(() => () => {}),
+        onReplay: vi.fn(() => () => {}),
+        onExit: vi.fn(() => () => {})
+      }) as never
+    const newShutdown = vi.fn().mockResolvedValue(undefined)
+    const removePendingLocalPtyShutdown = vi.fn()
+    setLocalPtyProvider(makeProvider(() => oldShutdown.promise))
     handlers.clear()
     registerPtyHandlers(mainWindow as never, undefined, undefined, undefined, undefined, {
       getPendingLocalPtyShutdowns: () => [{ ptyId: 'daemon-pty', requestedAt: 1 }],
@@ -3448,12 +3515,12 @@ describe('registerPtyHandlers', () => {
     } as never)
     await vi.advanceTimersByTimeAsync(0)
 
-    setLocalPtyProvider(makeProvider(daemonShutdown))
+    setLocalPtyProvider(makeProvider(newShutdown))
+    oldShutdown.resolve()
     await vi.advanceTimersByTimeAsync(0)
 
-    expect(fallbackShutdown).toHaveBeenCalledOnce()
-    expect(daemonShutdown).toHaveBeenCalledOnce()
-    expect(removePendingLocalPtyShutdown).toHaveBeenCalledWith('daemon-pty')
+    expect(newShutdown).toHaveBeenCalledOnce()
+    expect(removePendingLocalPtyShutdown).toHaveBeenCalledOnce()
     await vi.advanceTimersByTimeAsync(30_000)
     expect(vi.getTimerCount()).toBe(0)
     vi.useRealTimers()

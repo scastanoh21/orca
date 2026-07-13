@@ -633,7 +633,13 @@ function attemptRetainedPtyShutdown(retained: RetainedPtyShutdown): Promise<void
   }
   retained.provider = currentProvider
   const attempt = shutdownProviderAndDetectExit(currentProvider, retained.id, retained.options)
-    .then((providerExitObserved) => completeRetainedPtyShutdown(retained, providerExitObserved))
+    .then((providerExitObserved) => {
+      // Why: provider replacement can finish while an older shutdown is in flight.
+      if (retained.provider !== currentProvider) {
+        return
+      }
+      completeRetainedPtyShutdown(retained, providerExitObserved)
+    })
     .catch((error: unknown) => {
       const ownerMap = retained.connectionId
         ? pendingSshShutdownRetries
@@ -666,7 +672,8 @@ function attemptRetainedPtyShutdown(retained: RetainedPtyShutdown): Promise<void
 function retainLocalPtyShutdown(
   id: string,
   options: PtyShutdownOptions,
-  attempts = 0
+  attempts = 0,
+  deferUntilProviderReady = false
 ): RetainedPtyShutdown {
   let retained = pendingLocalShutdownRetries.get(id)
   if (!retained) {
@@ -677,7 +684,11 @@ function retainLocalPtyShutdown(
       provider: null,
       store: activePtyStore,
       attempts,
-      nextRetryAt: attempts === 0 ? 0 : Date.now() + 250,
+      nextRetryAt: deferUntilProviderReady
+        ? Number.POSITIVE_INFINITY
+        : attempts === 0
+          ? 0
+          : Date.now() + 250,
       inFlight: null
     }
     pendingLocalShutdownRetries.set(id, retained)
@@ -1714,6 +1725,15 @@ export function registerPtyHandlers(
   }
 ): void {
   activePtyStore = store ?? null
+  let localPtyStartupPromise: Promise<void> | undefined
+  const getLocalPtyStartupPromise = (connectionId?: string | null): Promise<void> | undefined => {
+    if (connectionId) {
+      return undefined
+    }
+    // Why: cold-start replay and local spawn must wait for the final daemon owner.
+    localPtyStartupPromise ??= options?.awaitLocalPtyStartup?.()
+    return localPtyStartupPromise
+  }
   notifyRetainedPtyExit = (id) => {
     runtime?.onPtyExit(id, -1)
     rememberSyntheticKillExit(id)
@@ -1724,12 +1744,30 @@ export function registerPtyHandlers(
       ? store.getPendingLocalPtyShutdowns()
       : []
   for (const request of persistedLocalShutdowns) {
-    const retained = retainLocalPtyShutdown(request.ptyId, {
-      immediate: true,
-      ...(request.expectedPaneKey ? { expectedPaneKey: request.expectedPaneKey } : {}),
-      ...(request.expectedTabId ? { expectedTabId: request.expectedTabId } : {})
-    })
-    void attemptRetainedPtyShutdown(retained)
+    const startupReady = getLocalPtyStartupPromise()
+    const retained = retainLocalPtyShutdown(
+      request.ptyId,
+      {
+        immediate: true,
+        ...(request.expectedPaneKey ? { expectedPaneKey: request.expectedPaneKey } : {}),
+        ...(request.expectedTabId ? { expectedTabId: request.expectedTabId } : {})
+      },
+      0,
+      Boolean(startupReady)
+    )
+    const retryWithReadyProvider = (): void => {
+      if (pendingLocalShutdownRetries.get(retained.id) !== retained) {
+        return
+      }
+      retained.nextRetryAt = 0
+      void attemptRetainedPtyShutdown(retained)
+    }
+    // Why: a rejected startup barrier means the in-process fallback is the final owner.
+    if (startupReady) {
+      void startupReady.then(retryWithReadyProvider, retryWithReadyProvider)
+    } else {
+      retryWithReadyProvider()
+    }
   }
   for (const [connectionId, provider] of sshProviders) {
     retryPersistedSshShutdowns(connectionId, provider)
@@ -1741,16 +1779,6 @@ export function registerPtyHandlers(
   clearRendererDispatcherReadyWatchdog()
   resetRendererDeliveryAccountingForLifecycleReset = () => {}
   registerRendererLifecycleResetHandlers(mainWindow.webContents)
-
-  const getLocalPtyStartupPromise = (connectionId?: string | null): Promise<void> | undefined => {
-    if (connectionId) {
-      return undefined
-    }
-    // Why: during desktop cold start the daemon provider swap now overlaps
-    // first paint. Local spawns must wait before resolving getProvider(), while
-    // SSH/headless paths do not use the desktop daemon.
-    return options?.awaitLocalPtyStartup?.()
-  }
 
   // Remove any previously registered handlers so we can re-register them
   // (e.g. when macOS re-activates the app and creates a new window).
@@ -3682,7 +3710,17 @@ export function registerPtyHandlers(
         /* best effort: renderer clear still handles local PTYs */
       }
     },
-    listProcesses: async () => {
+    listProcesses: async (connectionId?: string | null) => {
+      if (connectionId === null) {
+        return localProvider.listProcesses()
+      }
+      if (connectionId) {
+        const provider = sshProviders.get(connectionId)
+        if (!provider) {
+          throw new Error(`SSH PTY provider not available: ${connectionId}`)
+        }
+        return provider.listProcesses()
+      }
       const providerSessions = await Promise.all([
         localProvider.listProcesses(),
         ...Array.from(sshProviders.values(), (provider) => provider.listProcesses())

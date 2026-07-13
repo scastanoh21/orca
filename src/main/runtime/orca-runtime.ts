@@ -1199,7 +1199,7 @@ type RuntimePtyController = {
   hasChildProcesses?(ptyId: string): Promise<boolean>
   clearBuffer?(ptyId: string): Promise<void>
   resize?(ptyId: string, cols: number, rows: number): boolean
-  listProcesses?(): Promise<PtyProcessInfo[]>
+  listProcesses?(connectionId?: string | null): Promise<PtyProcessInfo[]>
   serializeBuffer?(
     ptyId: string,
     opts?: { scrollbackRows?: number; altScreenForcesZeroRows?: boolean }
@@ -19207,7 +19207,8 @@ export class OrcaRuntimeService {
     }
     const refreshedPtyLiveness = await this.refreshPtyWorktreeRecordsFromController(
       resolvedWorktrees,
-      worktree.id
+      worktree.id,
+      connectionId
     )
     if (!refreshedPtyLiveness) {
       throw new Error('terminal_liveness_unavailable')
@@ -19229,7 +19230,8 @@ export class OrcaRuntimeService {
     }
     const postStopLiveness = await this.refreshPtyWorktreeRecordsFromController(
       resolvedWorktrees,
-      worktree.id
+      worktree.id,
+      connectionId
     )
     if (!postStopLiveness) {
       throw new Error('terminal_stop_postcheck_unavailable')
@@ -20600,13 +20602,14 @@ export class OrcaRuntimeService {
    */
   private async refreshPtyWorktreeRecordsFromController(
     resolvedWorktrees: ResolvedWorktree[],
-    targetWorktreeId: string | null = null
+    targetWorktreeId: string | null = null,
+    connectionId?: string | null
   ): Promise<Set<string> | null> {
     if (!this.ptyController?.listProcesses) {
       return null
     }
     const sessionsResult = await withTimeoutResult(
-      this.ptyController.listProcesses(),
+      this.ptyController.listProcesses(connectionId),
       PTY_CONTROLLER_LIST_TIMEOUT_MS
     )
     if (!sessionsResult.ok) {
