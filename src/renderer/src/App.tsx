@@ -129,7 +129,8 @@ import {
   timeRendererStartupSyncStep
 } from './startup/startup-diagnostics'
 import { shouldRenderPetOverlay } from './components/pet/pet-overlay-visibility'
-import { applyDocumentTheme } from './lib/document-theme'
+import { applyDocumentTheme, applyPluginAppTheme } from './lib/document-theme'
+import { usePluginThemes } from './store/plugin-themes'
 import { getSystemPrefersDark } from './lib/terminal-theme'
 import { publishTerminalViewAttributesAtAppStart } from './components/terminal-pane/terminal-appearance'
 import { isEditableTarget } from './lib/editable-target'
@@ -653,6 +654,11 @@ function App(): React.JSX.Element {
   const rightSidebarExplorerView = useAppStore((s) => s.rightSidebarExplorerView)
   const isFullScreen = useAppStore((s) => s.isFullScreen)
   const settings = useAppStore((s) => s.settings)
+  const pluginThemes = usePluginThemes()
+  const activePluginTheme = useMemo(
+    () => pluginThemes.find((theme) => theme.id === settings?.pluginAppTheme) ?? null,
+    [pluginThemes, settings?.pluginAppTheme]
+  )
   const systemPrefersDark = useSystemPrefersDark()
   const leftSidebarStyle = useMemo(
     () => resolveLeftSidebarStyleVariables(settings, systemPrefersDark),
@@ -1481,10 +1487,12 @@ function App(): React.JSX.Element {
       return
     }
 
-    if (settings.theme === 'dark') {
+    applyPluginAppTheme(activePluginTheme)
+    const themePreference = activePluginTheme?.base ?? settings.theme
+    if (themePreference === 'dark') {
       applyDocumentTheme('dark')
       return undefined
-    } else if (settings.theme === 'light') {
+    } else if (themePreference === 'light') {
       applyDocumentTheme('light')
       return undefined
     } else {
@@ -1500,7 +1508,7 @@ function App(): React.JSX.Element {
       mq.addEventListener('change', handler)
       return () => mq.removeEventListener('change', handler)
     }
-  }, [settings])
+  }, [activePluginTheme, settings])
 
   useEffect(() => {
     document.documentElement.style.setProperty(

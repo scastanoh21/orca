@@ -9162,6 +9162,13 @@
           "invalidManifest": "orca-plugin.json no es válido. Corrígelo y actualiza los plugins.",
           "invalidArtifact": "Falta un archivo de proceso o panel declarado, o no es seguro. Corrige los archivos del plugin y actualiza.",
           "consentChanged": "El plugin cambió mientras lo revisabas. Cierra este diálogo y revisa los permisos actualizados."
+        },
+        "AppearanceInterfaceSection": {
+          "pluginTheme": {
+            "title": "Tema de plugin",
+            "description": "Aplica un tema de un plugin de Orca habilitado.",
+            "builtIn": "Usar tema integrado"
+          }
         }
       },
       "right": {

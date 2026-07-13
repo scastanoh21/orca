@@ -54,6 +54,7 @@ import type {
   PluginPanelEntry
 } from '../shared/plugins/plugin-panel-bridge'
 import type { PluginConsentRequest } from '../shared/plugins/plugin-consent-request'
+import type { PluginThemeRegistration } from '../shared/plugins/plugin-theme-artifact'
 import type {
   LocalhostWorktreeLabelResult,
   LocalhostWorktreeLabelRoute
@@ -3172,6 +3173,7 @@ export type PreloadApi = {
   }
   plugins: {
     list: () => Promise<PluginHostListEntry[]>
+    listThemes: () => Promise<PluginThemeRegistration[]>
     /** Records the consent-dialog answer; approval is keyed to the plugin's
      *  current capability and trusted-worker fingerprint. */
     consent: (args: PluginConsentRequest) => Promise<PluginHostListEntry[]>

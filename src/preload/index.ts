@@ -559,6 +559,7 @@ const api = {
 
   plugins: {
     list: (): Promise<PluginHostListEntry[]> => ipcRenderer.invoke('plugins:list'),
+    listThemes: () => ipcRenderer.invoke('plugins:listThemes'),
     consent: (args: PluginConsentRequest): Promise<PluginHostListEntry[]> =>
       ipcRenderer.invoke('plugins:consent', args),
     setEnabled: (args: { pluginKey: string; enabled: boolean }): Promise<PluginHostListEntry[]> =>

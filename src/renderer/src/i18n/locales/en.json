@@ -9162,6 +9162,13 @@
           "invalidManifest": "orca-plugin.json is invalid. Fix it, then refresh plugins.",
           "invalidArtifact": "A declared worker or panel file is missing or unsafe. Fix the plugin files, then refresh.",
           "consentChanged": "The plugin changed while you were reviewing it. Close this dialog and review the updated permissions."
+        },
+        "AppearanceInterfaceSection": {
+          "pluginTheme": {
+            "title": "Plugin theme",
+            "description": "Apply a theme from an enabled Orca plugin.",
+            "builtIn": "Use built-in theme"
+          }
         }
       },
       "right": {

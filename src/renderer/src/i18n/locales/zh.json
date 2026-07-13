@@ -9162,6 +9162,13 @@
           "invalidManifest": "orca-plugin.json 无效。请修复后刷新插件。",
           "invalidArtifact": "声明的工作进程或面板文件缺失或不安全。请修复插件文件后刷新。",
           "consentChanged": "插件在你查看时发生了更改。请关闭此对话框并查看更新后的权限。"
+        },
+        "AppearanceInterfaceSection": {
+          "pluginTheme": {
+            "title": "插件主题",
+            "description": "应用已启用的 Orca 插件所提供的主题。",
+            "builtIn": "使用内置主题"
+          }
         }
       },
       "right": {

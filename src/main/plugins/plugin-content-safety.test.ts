@@ -20,7 +20,12 @@ async function tempRoot(): Promise<string> {
   return root
 }
 
-function manifest(overrides: Partial<PluginManifest> = {}): PluginManifest {
+type ManifestOverrides = Omit<Partial<PluginManifest>, 'contributes'> & {
+  contributes?: Partial<PluginManifest['contributes']>
+}
+
+function manifest(overrides: ManifestOverrides = {}): PluginManifest {
+  const { contributes, ...manifestOverrides } = overrides
   return pluginManifestSchema.parse({
     manifestVersion: 1,
     id: 'demo',
@@ -29,9 +34,9 @@ function manifest(overrides: Partial<PluginManifest> = {}): PluginManifest {
     version: '1.0.0',
     engines: { orca: '>=1.0.0' },
     pluginApi: 1,
-    contributes: { panels: [], commands: [], events: [] },
     capabilities: [],
-    ...overrides
+    ...manifestOverrides,
+    contributes
   })
 }
 
@@ -41,6 +46,45 @@ afterEach(async () => {
 })
 
 describe('declared plugin artifacts', () => {
+  it('validates every content-pack file and directory before enablement', async () => {
+    const root = await tempRoot()
+    await Promise.all([
+      mkdir(join(root, 'skills')),
+      mkdir(join(root, 'themes')),
+      mkdir(join(root, 'locales')),
+      mkdir(join(root, 'recipes')),
+      writeFile(join(root, 'icons.json'), '{}'),
+      writeFile(join(root, 'agent.json'), '{}')
+    ])
+    await Promise.all([
+      writeFile(join(root, 'themes', 'nord.json'), '{}'),
+      writeFile(join(root, 'locales', 'pt-BR.json'), '{}'),
+      writeFile(join(root, 'recipes', 'vm.json'), '{}'),
+      writeFile(join(root, 'skills', 'SKILL.md'), '# Demo')
+    ])
+    const pluginManifest = manifest({
+      contributes: {
+        themes: [{ id: 'nord', label: 'Nord', path: 'themes/nord.json' }],
+        iconThemes: [{ id: 'minimal', path: 'icons.json' }],
+        languagePacks: [{ locale: 'pt-BR', path: 'locales/pt-BR.json' }],
+        skills: [{ path: 'skills' }],
+        vmRecipes: [{ path: 'recipes/vm.json' }],
+        agents: [{ path: 'agent.json' }]
+      }
+    })
+
+    await expect(validateDeclaredPluginArtifacts(root, pluginManifest)).resolves.toEqual({
+      ok: true
+    })
+
+    await rm(join(root, 'skills'), { recursive: true })
+    await writeFile(join(root, 'skills'), 'not a directory')
+    await expect(validateDeclaredPluginArtifacts(root, pluginManifest)).resolves.toMatchObject({
+      ok: false,
+      error: expect.stringContaining('is not a directory')
+    })
+  })
+
   it('requires declared files to exist and be regular files', async () => {
     const root = await tempRoot()
     await mkdir(join(root, 'panel.html'))

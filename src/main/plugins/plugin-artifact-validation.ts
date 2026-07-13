@@ -8,19 +8,34 @@ export type PluginArtifactValidationResult = { ok: true } | { ok: false; error: 
 export const PLUGIN_PANEL_ENTRY_MAX_BYTES = 10 * 1024 * 1024
 export const PLUGIN_WORKER_ENTRY_MAX_BYTES = 50 * 1024 * 1024
 const PLUGIN_ICON_MAX_BYTES = 2 * 1024 * 1024
+export const PLUGIN_THEME_MAX_BYTES = 256 * 1024
+const PLUGIN_ICON_THEME_MAX_BYTES = 512 * 1024
+const PLUGIN_LANGUAGE_PACK_MAX_BYTES = 5 * 1024 * 1024
+const PLUGIN_RECIPE_MAX_BYTES = 1024 * 1024
+const PLUGIN_AGENT_PROFILE_MAX_BYTES = 1024 * 1024
 
-function declaredArtifactPaths(
-  manifest: PluginManifest
-): { label: string; path: string; maxBytes: number }[] {
+type DeclaredArtifact =
+  | { label: string; path: string; kind: 'file'; maxBytes: number }
+  | { label: string; path: string; kind: 'directory' }
+
+function declaredArtifactPaths(manifest: PluginManifest): DeclaredArtifact[] {
   return [
     ...(manifest.icon
-      ? [{ label: 'icon', path: manifest.icon, maxBytes: PLUGIN_ICON_MAX_BYTES }]
+      ? [
+          {
+            label: 'icon',
+            path: manifest.icon,
+            kind: 'file' as const,
+            maxBytes: PLUGIN_ICON_MAX_BYTES
+          }
+        ]
       : []),
     ...(manifest.main
       ? [
           {
             label: 'worker entry',
             path: manifest.main,
+            kind: 'file' as const,
             maxBytes: PLUGIN_WORKER_ENTRY_MAX_BYTES
           }
         ]
@@ -28,7 +43,43 @@ function declaredArtifactPaths(
     ...manifest.contributes.panels.map((panel) => ({
       label: `panel "${panel.id}" entry`,
       path: panel.entry,
+      kind: 'file' as const,
       maxBytes: PLUGIN_PANEL_ENTRY_MAX_BYTES
+    })),
+    ...manifest.contributes.themes.map((theme) => ({
+      label: `theme "${theme.id}"`,
+      path: theme.path,
+      kind: 'file' as const,
+      maxBytes: PLUGIN_THEME_MAX_BYTES
+    })),
+    ...manifest.contributes.iconThemes.map((theme) => ({
+      label: `icon theme "${theme.id}"`,
+      path: theme.path,
+      kind: 'file' as const,
+      maxBytes: PLUGIN_ICON_THEME_MAX_BYTES
+    })),
+    ...manifest.contributes.languagePacks.map((languagePack) => ({
+      label: `language pack "${languagePack.locale}"`,
+      path: languagePack.path,
+      kind: 'file' as const,
+      maxBytes: PLUGIN_LANGUAGE_PACK_MAX_BYTES
+    })),
+    ...manifest.contributes.skills.map((skill) => ({
+      label: 'skill directory',
+      path: skill.path,
+      kind: 'directory' as const
+    })),
+    ...manifest.contributes.vmRecipes.map((recipe) => ({
+      label: 'VM recipe',
+      path: recipe.path,
+      kind: 'file' as const,
+      maxBytes: PLUGIN_RECIPE_MAX_BYTES
+    })),
+    ...manifest.contributes.agents.map((agent) => ({
+      label: 'agent profile',
+      path: agent.path,
+      kind: 'file' as const,
+      maxBytes: PLUGIN_AGENT_PROFILE_MAX_BYTES
     }))
   ]
 }
@@ -39,7 +90,15 @@ export async function resolveContainedPluginArtifact(
   maxBytes = PLUGIN_WORKER_ENTRY_MAX_BYTES
 ): Promise<string> {
   const rootReal = await realpath(resolve(rootDir))
-  return resolveArtifactFromRealRoot(rootDir, rootReal, relativePath, maxBytes)
+  return resolvePathFromRealRoot(rootDir, rootReal, relativePath, 'file', maxBytes)
+}
+
+export async function resolveContainedPluginDirectory(
+  rootDir: string,
+  relativePath: string
+): Promise<string> {
+  const rootReal = await realpath(resolve(rootDir))
+  return resolvePathFromRealRoot(rootDir, rootReal, relativePath, 'directory')
 }
 
 export async function readContainedPluginArtifactText(
@@ -61,11 +120,12 @@ export async function readContainedPluginArtifactText(
   return Buffer.concat(chunks, totalBytes).toString('utf8')
 }
 
-async function resolveArtifactFromRealRoot(
+async function resolvePathFromRealRoot(
   rootDir: string,
   rootReal: string,
   relativePath: string,
-  maxBytes: number
+  kind: 'file' | 'directory',
+  maxBytes?: number
 ): Promise<string> {
   const artifactReal = await realpath(resolve(rootDir, ...relativePath.split(/[\\/]/)))
   const fromRoot = relative(rootReal, artifactReal)
@@ -78,10 +138,13 @@ async function resolveArtifactFromRealRoot(
     throw new Error('resolves outside the plugin directory')
   }
   const artifactStat = await stat(artifactReal)
-  if (!artifactStat.isFile()) {
+  if (kind === 'file' && !artifactStat.isFile()) {
     throw new Error('is not a regular file')
   }
-  if (artifactStat.size > maxBytes) {
+  if (kind === 'directory' && !artifactStat.isDirectory()) {
+    throw new Error('is not a directory')
+  }
+  if (kind === 'file' && maxBytes !== undefined && artifactStat.size > maxBytes) {
     throw new Error(`exceeds the ${maxBytes}-byte artifact limit`)
   }
   return artifactReal
@@ -109,7 +172,13 @@ export async function validateDeclaredPluginArtifacts(
     }
     seen.add(artifact.path)
     try {
-      await resolveArtifactFromRealRoot(rootDir, rootReal, artifact.path, artifact.maxBytes)
+      await resolvePathFromRealRoot(
+        rootDir,
+        rootReal,
+        artifact.path,
+        artifact.kind,
+        artifact.kind === 'file' ? artifact.maxBytes : undefined
+      )
     } catch (error) {
       return {
         ok: false,

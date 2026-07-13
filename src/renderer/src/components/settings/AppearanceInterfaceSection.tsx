@@ -31,6 +31,7 @@ import {
 import { translate } from '@/i18n/i18n'
 import type { UiLanguage } from '../../../../shared/ui-language'
 import { matchesSettingsSearch, normalizeSettingsSearchQuery } from './settings-search'
+import { usePluginThemes } from '@/store/plugin-themes'
 
 type AppearanceInterfaceSectionProps = {
   settings: GlobalSettings
@@ -52,6 +53,7 @@ export function AppearanceInterfaceSection({
   forceVisiblePrimary = false
 }: AppearanceInterfaceSectionProps): React.JSX.Element {
   const searchQuery = useAppStore((state) => state.settingsSearchQuery)
+  const pluginThemes = usePluginThemes()
   const isSearching = normalizeSettingsSearchQuery(searchQuery).length > 0
   const zoomInKeyCombos = useShortcutKeyComboDetails('zoom.in')
   const zoomOutKeyCombos = useShortcutKeyComboDetails('zoom.out')
@@ -105,6 +107,61 @@ export function AppearanceInterfaceSection({
           }
         />
       </SearchableSetting>
+
+      {pluginThemes.length > 0 ? (
+        <SearchableSetting
+          title={translate(
+            'auto.components.settings.AppearanceInterfaceSection.pluginTheme.title',
+            'Plugin theme'
+          )}
+          description={translate(
+            'auto.components.settings.AppearanceInterfaceSection.pluginTheme.description',
+            'Apply a theme from an enabled Orca plugin.'
+          )}
+          keywords={['plugin', 'theme', 'appearance']}
+          forceVisible={forceVisiblePrimary}
+        >
+          <SettingsRow
+            label={translate(
+              'auto.components.settings.AppearanceInterfaceSection.pluginTheme.title',
+              'Plugin theme'
+            )}
+            control={
+              <Select
+                value={settings.pluginAppTheme ?? 'built-in'}
+                onValueChange={(value) => {
+                  updateSettings({
+                    pluginAppTheme: value === 'built-in' ? null : (value as `plugin:${string}`)
+                  })
+                }}
+              >
+                <SelectTrigger
+                  className="w-48"
+                  aria-label={translate(
+                    'auto.components.settings.AppearanceInterfaceSection.pluginTheme.title',
+                    'Plugin theme'
+                  )}
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="built-in">
+                    {translate(
+                      'auto.components.settings.AppearanceInterfaceSection.pluginTheme.builtIn',
+                      'Use built-in theme'
+                    )}
+                  </SelectItem>
+                  {pluginThemes.map((theme) => (
+                    <SelectItem key={theme.id} value={theme.id}>
+                      {theme.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            }
+          />
+        </SearchableSetting>
+      ) : null}
 
       <SearchableSetting
         title={translate('auto.components.settings.AppearancePane.5e6d7aba8d', 'UI Zoom')}

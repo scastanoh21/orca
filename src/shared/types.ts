@@ -2513,6 +2513,8 @@ export type GlobalSettings = {
   branchPrefixCustom: string
   enableGitHubAttribution: boolean
   theme: 'system' | 'dark' | 'light'
+  /** Qualified plugin theme id layered over the built-in light/dark preference. */
+  pluginAppTheme?: `plugin:${string}` | null
   /** Controls the left sidebar surface without changing terminal brightness. */
   leftSidebarAppearanceMode: LeftSidebarAppearanceMode
   leftSidebarTintColor?: string

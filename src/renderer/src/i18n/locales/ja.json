@@ -9162,6 +9162,13 @@
           "invalidManifest": "orca-plugin.jsonが無効です。修正してからプラグインを更新してください。",
           "invalidArtifact": "宣言されたワーカーまたはパネルのファイルがないか、安全ではありません。ファイルを修正してから更新してください。",
           "consentChanged": "確認中にプラグインが変更されました。このダイアログを閉じて、更新された権限を確認してください。"
+        },
+        "AppearanceInterfaceSection": {
+          "pluginTheme": {
+            "title": "プラグインテーマ",
+            "description": "有効な Orca プラグインのテーマを適用します。",
+            "builtIn": "組み込みテーマを使用"
+          }
         }
       },
       "right": {
