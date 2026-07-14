@@ -2,7 +2,7 @@
 
 Date created: 2026-07-14<br>
 Last updated: 2026-07-14<br>
-Current phase: Milestone 3 / Work Package 2 target-native runtime assembly — exact-head run 29358223742 isolates 2,879 Windows arm64 linker-emitted 16-byte function thunks whose `adrp`/`add`/`br` control flow is byte-identical and whose unreachable fourth `udf` instruction differs, plus 68 derived `/Brepro` identity bytes; exact-head run 29359948742 then proves MSBuild evaluates Release `LinkIncremental` as empty on both native Windows architectures, so the diagnostic fails closed before staging while all four POSIX controls remain reproducible and upload; this disproves the assumed boolean property oracle and does not authorize `/INCREMENTAL:NO`; the replacement post-build linker-command tracking gate is locally bounded and green under E-M3-WINDOWS-LINK-COMMAND-TRACKING-LOCAL-001, and the next exact-head run must prove its native record shape and allowlisted switch summary before any producer correction; oldest-baseline, native-trust, cross-family remote, and measured-baseline gates remain open; no bundled-runtime path is enabled<br>
+Current phase: Milestone 3 / Work Package 2 target-native runtime assembly — exact-head run 29358223742 isolates 2,879 Windows arm64 linker-emitted 16-byte function thunks whose `adrp`/`add`/`br` control flow is byte-identical and whose unreachable fourth `udf` instruction differs, plus 68 derived `/Brepro` identity bytes; exact-head run 29359948742 then proves MSBuild evaluates Release `LinkIncremental` as empty on both native Windows architectures, so the diagnostic fails closed before staging while all four POSIX controls remain reproducible and upload; this disproves the assumed boolean property oracle and does not authorize `/INCREMENTAL:NO`; exact implementation commit `4a66435b7` replaces it with a locally bounded post-build linker-command tracking gate under E-M3-WINDOWS-LINK-COMMAND-TRACKING-LOCAL-001, and the next exact-head run must prove its native record shape and allowlisted switch summary before any producer correction; oldest-baseline, native-trust, cross-family remote, and measured-baseline gates remain open; no bundled-runtime path is enabled<br>
 Primary design: [SSH relay GitHub Release plan](./2026-07-14-ssh-relay-github-release-plan.html)<br>
 Motivating issues: [#8450](https://github.com/stablyai/orca/issues/8450), [#1693](https://github.com/stablyai/orca/issues/1693)
 
@@ -1313,7 +1313,7 @@ Update status and evidence as work begins. Do not combine these into one large b
 | ------------------------- | ------------------------------------------------------------------------------------------ | --------------------------- | ----------------------------------------------------------- | ----------------------------------------------------------------------- |
 | 0. #8450 legacy fix       | Coherent Node/npm selection and live repro                                                 | Fixes legacy selection only | Complete and CI-green in draft PR #8724                     | E-M0-UNIT-002, E-M0-LIVE-002, E-M0-STATIC-002, E-M0-PR-001, E-M0-CI-001 |
 | 1. Contract and selectors | Manifest schema, identity, platform/libc selection, hostile inputs                         | None                        | Complete and CI-green in draft PR #8728                     | `b9d80a4cb`; E-M2-RED-001, E-M2-CONTRACT-001, E-M2-CI-001               |
-| 2. Runtime builds         | Per-tuple assembly, native smoke, SBOM/provenance/signing                                  | None                        | Draft PR #8741; native linker-command tracking gate pending | `e1a63930b`; E-M3-WINDOWS-LINK-COMMAND-TRACKING-LOCAL-001               |
+| 2. Runtime builds         | Per-tuple assembly, native smoke, SBOM/provenance/signing                                  | None                        | Draft PR #8741; native linker-command tracking gate pending | `4a66435b7`; E-M3-WINDOWS-LINK-COMMAND-TRACKING-LOCAL-001               |
 | 3. Release publication    | Prerequisite DAG, embedded manifest, draft upload/read-back gates                          | Asset-only                  | Not started                                                 | —                                                                       |
 | 4. Desktop resolver/cache | Verified download, extraction, cache, offline behavior                                     | None/forced mode only       | Not started                                                 | —                                                                       |
 | 5. Transfer/install       | Bounded transports, structured sentinel, bundled launch behind per-target Beta/forced mode | Per-target opt-in only      | Not started                                                 | —                                                                       |
@@ -5165,9 +5165,9 @@ configuration` before runtime staging, verification, smoke, comparison, or diagn
 ### E-M3-WINDOWS-LINK-COMMAND-TRACKING-LOCAL-001 — Bounded native linker-command gate
 
 - Date: 2026-07-14
-- Commit SHA / PR: implementation and ledger are in the current artifact-only checkpoint; record
-  the exact implementation SHA in the immediate documentation evidence head after commit; stacked
-  draft PR [#8741](https://github.com/stablyai/orca/pull/8741), target-native execution pending
+- Commit SHA / PR: exact implementation commit
+  `4a66435b71b158624645c614543d139a9ea45d51`; stacked draft
+  PR [#8741](https://github.com/stablyai/orca/pull/8741), target-native execution pending
 - Runner: macOS 26.2 build 25C56, native Apple M4 arm64; Node v26.0.0 and pnpm 10.24.0. This runner
   cannot generate the native MSBuild tracking file, so Windows x64/arm64 jobs remain authoritative.
 - Remote and transport: none; bounded local file/parser and builder-ordering contracts only
@@ -5313,11 +5313,11 @@ The project is not complete until every applicable item below is checked with ev
 
 ## Next Required Action
 
-Commit and push the bounded, purpose-tested post-build MSBuild linker-command tracking gate, then
-rerun both Windows architectures and all four POSIX controls at the exact head. Require both
-Windows clean builds to report the same allowlisted switch summary. Only if that target-native
-evidence classifies the 2,879 function thunks may one copied-artifact producer correction be
-considered; retain strict comparison and rejected-output no-upload.
+Push exact implementation commit `4a66435b7` plus its evidence-ledger head, then rerun both Windows
+architectures and all four POSIX controls at the exact head. Require both Windows clean builds to
+report the same allowlisted switch summary. Only if that target-native evidence classifies the
+2,879 function thunks may one copied-artifact producer correction be considered; retain strict
+comparison and rejected-output no-upload.
 Cross-family Layer B targets, the protected manifest-signing environment,
 oldest-baseline/native-trust cells, and the paired legacy performance baseline remain
 release/default-path blockers; no publication, desktop resolver, SSH transfer/install, per-target
