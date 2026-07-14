@@ -2,7 +2,7 @@
 
 Date created: 2026-07-14<br>
 Last updated: 2026-07-14<br>
-Current phase: Milestone 0 / Work Package 0 — draft PR #8724 open; GitHub Actions verification in progress; Milestone 1 runner and per-target Beta rollout policies recorded<br>
+Current phase: Milestone 1 decision closure — Work Package 0 is CI-green in draft PR #8724; no bundled-runtime path is enabled; runner and per-target Beta rollout policies are recorded<br>
 Primary design: [SSH relay GitHub Release plan](./2026-07-14-ssh-relay-github-release-plan.html)<br>
 Motivating issues: [#8450](https://github.com/stablyai/orca/issues/8450), [#1693](https://github.com/stablyai/orca/issues/1693)
 
@@ -48,8 +48,10 @@ same change as the work it records.
 ## Current Status
 
 - Implementation status: Work Package 0 is committed at `c4259d94f` on current `main`, with refreshed
-  focused, static, full-lint, and live #8450 SSH/PTY proof (E-M0-UNIT-002, E-M0-STATIC-002,
-  E-M0-LIVE-002). Draft PR [#8724](https://github.com/stablyai/orca/pull/8724) is open; CI is running.
+  focused, static, full-lint, live #8450 SSH/PTY, and GitHub Actions proof (E-M0-UNIT-002,
+  E-M0-STATIC-002, E-M0-LIVE-002, E-M0-CI-001). Draft PR
+  [#8724](https://github.com/stablyai/orca/pull/8724) is open and CI-green at implementation head
+  `94e58d83e`.
 - Production behavior: unchanged; Orca embeds relay JavaScript and installs `node-pty` plus
   `@parcel/watcher` with remote npm.
 - New runtime assets published: none.
@@ -60,9 +62,9 @@ same change as the work it records.
 - Rollout control: existing per-SSH-target configuration; legacy is the default and the bundled
   runtime is an explicit per-target Beta opt-in under E-M1-ROLLOUT-DECISION-001.
 - Legacy fallback removal: not authorized.
-- Next required action: collect and record every required PR #8724 check. Do not add Work Package 1
-  implementation to this PR. After the WP0 CI boundary is green, continue closing Milestone 1
-  decisions and begin the next contract-only package on its own branch/PR boundary.
+- Next required action: close the remaining Milestone 1 baselines, provenance/trust, numeric-budget,
+  and concrete runner/remote decisions. Begin the contract-only package on its own branch/PR
+  boundary; do not add Work Package 1 implementation to PR #8724.
 
 ## Non-Negotiable Invariants
 
@@ -117,9 +119,6 @@ coherent Node/npm resolver.
 Work Package 0 implementation evidence was completed on 2026-07-14 by the Codex implementation
 owner. No relay artifact-distribution behavior is included.
 
-**In progress — 2026-07-14, Codex implementation owner:** collect GitHub Actions evidence for draft
-PR #8724 and keep Work Package 1 implementation outside this branch/PR.
-
 - [x] Confirm the #8450 implementation selects Node and npm from the same bin directory on POSIX.
       (E-M0-UNIT-001, E-M0-UNIT-002, E-M0-LIVE-002)
 - [x] Confirm Windows selects `node.exe` and `npm.cmd` from one toolchain directory.
@@ -155,6 +154,10 @@ link.
 No production implementation begins until every blocking item has an owner and decision record.
 
 ### Supported runtime baselines
+
+**In progress — 2026-07-14, Codex implementation owner:** resolve the baseline, provenance, trust,
+runner/remote, and numeric-budget decisions with authoritative evidence before starting Work Package
+1 implementation on a separate branch/PR boundary.
 
 - [ ] Define the oldest supported glibc version.
 - [ ] Define the oldest supported libstdc++/C++ ABI level.
@@ -923,16 +926,16 @@ Baseline measurements must be captured before product behavior changes.
 
 Update status and evidence as work begins. Do not combine these into one large behavior switch.
 
-| Work package              | Scope                                                                                      | Default behavior change     | Status                                                                       | PR/evidence                                                  |
-| ------------------------- | ------------------------------------------------------------------------------------------ | --------------------------- | ---------------------------------------------------------------------------- | ------------------------------------------------------------ |
-| 0. #8450 legacy fix       | Coherent Node/npm selection and live repro                                                 | Fixes legacy selection only | Implementation/live proof complete; commit/PR boundary and full lint pending | E-M0-UNIT-001, E-M0-LIVE-001, E-M0-STATIC-001, E-M0-LINT-001 |
-| 1. Contract and selectors | Manifest schema, identity, platform/libc selection, hostile inputs                         | None                        | Not started                                                                  | —                                                            |
-| 2. Runtime builds         | Per-tuple assembly, native smoke, SBOM/provenance/signing                                  | None                        | Not started                                                                  | —                                                            |
-| 3. Release publication    | Prerequisite DAG, embedded manifest, draft upload/read-back gates                          | Asset-only                  | Not started                                                                  | —                                                            |
-| 4. Desktop resolver/cache | Verified download, extraction, cache, offline behavior                                     | None/forced mode only       | Not started                                                                  | —                                                            |
-| 5. Transfer/install       | Bounded transports, structured sentinel, bundled launch behind per-target Beta/forced mode | Per-target opt-in only      | Not started                                                                  | —                                                            |
-| 6. Fallback/diagnostics   | Abort-and-join state machine, mode isolation, reason codes, target-mode configuration/UI   | Per-target Beta only        | Not started                                                                  | —                                                            |
-| 7. Live gates/rollout     | Matrix, security, performance, release promotion                                           | Per-tuple staged            | Not started                                                                  | —                                                            |
+| Work package              | Scope                                                                                      | Default behavior change     | Status                                  | PR/evidence                                                             |
+| ------------------------- | ------------------------------------------------------------------------------------------ | --------------------------- | --------------------------------------- | ----------------------------------------------------------------------- |
+| 0. #8450 legacy fix       | Coherent Node/npm selection and live repro                                                 | Fixes legacy selection only | Complete and CI-green in draft PR #8724 | E-M0-UNIT-002, E-M0-LIVE-002, E-M0-STATIC-002, E-M0-PR-001, E-M0-CI-001 |
+| 1. Contract and selectors | Manifest schema, identity, platform/libc selection, hostile inputs                         | None                        | Not started                             | —                                                                       |
+| 2. Runtime builds         | Per-tuple assembly, native smoke, SBOM/provenance/signing                                  | None                        | Not started                             | —                                                                       |
+| 3. Release publication    | Prerequisite DAG, embedded manifest, draft upload/read-back gates                          | Asset-only                  | Not started                             | —                                                                       |
+| 4. Desktop resolver/cache | Verified download, extraction, cache, offline behavior                                     | None/forced mode only       | Not started                             | —                                                                       |
+| 5. Transfer/install       | Bounded transports, structured sentinel, bundled launch behind per-target Beta/forced mode | Per-target opt-in only      | Not started                             | —                                                                       |
+| 6. Fallback/diagnostics   | Abort-and-join state machine, mode isolation, reason codes, target-mode configuration/UI   | Per-target Beta only        | Not started                             | —                                                                       |
+| 7. Live gates/rollout     | Matrix, security, performance, release promotion                                           | Per-tuple staged            | Not started                             | —                                                                       |
 
 Every PR must document:
 
@@ -965,15 +968,9 @@ focused commands as their scripts/tests are introduced.
 - [ ] `node config/scripts/relay-watcher-fault-harness.mjs`
 - [ ] `pnpm run test:e2e:ssh-docker-watcher-isolation`
 - [ ] `pnpm run test:e2e:ssh-docker-perf`
-- [x] `pnpm run typecheck` (E-M0-STATIC-001)
-- [ ] `pnpm run lint`
-- [x] `pnpm run check:max-lines-ratchet` (E-M0-STATIC-001)
-
-BLOCKED: `pnpm run lint` reaches the untouched
-`src/renderer/src/components/tab-bar/TerminalTabLeadingIcon.tsx:31` and fails the type-aware
-switch-exhaustiveness gate for missing `active | inactive` cases (E-M0-LINT-001). The unblock
-condition is a separately owned fix or explicit reviewed baseline for that existing failure; WP0
-must not absorb the unrelated renderer change.
+- [x] `pnpm run typecheck` (E-M0-STATIC-001, E-M0-STATIC-002, E-M0-CI-001)
+- [x] `pnpm run lint` (E-M0-STATIC-002, E-M0-CI-001)
+- [x] `pnpm run check:max-lines-ratchet` (E-M0-STATIC-001, E-M0-STATIC-002, E-M0-CI-001)
 
 ### Milestone 0 commands added
 
@@ -1387,7 +1384,53 @@ fragmentLinks=9`.
 - Does not prove: CI success, reviewer approval, mergeability after later base changes, or any bundled
   runtime behavior.
 - Checklist items satisfied: Milestone 0 separate commit/PR boundary.
-- Follow-up: append GitHub-hosted runner/check details as E-M0-CI-001 only after completion.
+- Follow-up: GitHub-hosted runner/check details were appended as E-M0-CI-001 after completion.
+
+### E-M0-CI-001 — Draft PR full regression and packaged-app checks
+
+- Date: 2026-07-14
+- Commit SHA / PR: `94e58d83eabfba30b90e9714e91485ba5e3cf8d7`; draft PR
+  [#8724](https://github.com/stablyai/orca/pull/8724)
+- Runner: GitHub-hosted native runners:
+  - `ubuntu-latest` resolved to x64 `ubuntu-24.04` image `20260705.232.1` for verify and Linux
+    golden jobs; runner image provisioner `20260624.560`
+  - `macos-15` resolved to arm64 `macos-15-arm64` image `20260706.0213.1` for the macOS golden job;
+    runner image provisioner `20260624.560`
+- Remote: not applicable; these workflows did not provision or connect to an SSH server
+- Transport/network: GitHub Actions checkout/package-network traffic only; no built-in SFTP or
+  system-SSH relay transport was exercised
+- Exact command:
+
+  ```sh
+  gh run watch 29325885071 --repo stablyai/orca --exit-status
+  gh pr view 8724 --repo stablyai/orca --json url,state,isDraft,headRefOid,baseRefOid,mergeStateStatus,statusCheckRollup
+  gh api repos/stablyai/orca/actions/jobs/87061960266
+  gh api repos/stablyai/orca/actions/jobs/87061960006
+  gh api repos/stablyai/orca/actions/jobs/87061960091
+  gh run view 29325885071 --repo stablyai/orca --job 87061960266 --log
+  gh run view 29325884997 --repo stablyai/orca --job 87061960006 --log
+  gh run view 29325884997 --repo stablyai/orca --job 87061960091 --log
+  ```
+
+- Result: PASS; `verify`, `golden e2e linux experiment`, and `golden e2e mac experiment` all
+  completed successfully on the expected PR head
+- Duration and resource metrics: verify job 13m13s; Linux golden job 4m23s; macOS golden job 5m57s;
+  verify configured a 4 GiB Node heap ceiling but the workflows did not report peak process memory,
+  channels, or file counts
+- Artifact/log/trace link:
+  - verify run/job: https://github.com/stablyai/orca/actions/runs/29325885071/job/87061960266
+  - golden Linux job: https://github.com/stablyai/orca/actions/runs/29325884997/job/87061960006
+  - golden macOS job: https://github.com/stablyai/orca/actions/runs/29325884997/job/87061960091
+- Oracle proved: the PR head passes repository lint, reliability and max-lines gates, typecheck, Git
+  2.25 compatibility, full tests, unpacked-app packaging, packaged CLI smoke, and the existing Linux
+  and macOS golden Electron suites.
+- Does not prove: live SSH, Windows, Linux arm64, musl, system SSH, SFTP bootstrap transfer,
+  `MaxSessions=1`, no-egress remotes, full-size runtime transfer, cancellation/resource budgets, or
+  any bundled-runtime behavior. E-M0-LIVE-002 remains the only live SSH claim for WP0.
+- Checklist items satisfied: Work Package 0 required PR checks, full repository lint, and independent
+  CI boundary.
+- Follow-up: keep PR #8724 limited to WP0; use separate work-package branches and purpose-built SSH
+  workflows for all later tuple claims.
 
 ### E-M1-RUNNER-DECISION-001 — GitHub Actions validation topology decision
 
