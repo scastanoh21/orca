@@ -3333,15 +3333,32 @@ export function connectPanePty(
   // the last frame stays painted — the pane looks healthy and eats input
   // (issue #8104 class). None of the dead-session reconciles cover it because
   // the PTY is live; recover by remounting the tab over the live PTY.
+  let transportConnectInFlight = false
   const requestRecoveryForUndeliverableInput = (): void => {
     if (transport.isConnected() && transport.getPtyId() !== null) {
       return
     }
+    // Why: input rejected while a connect/reattach is still settling is "not
+    // deliverable YET", not a dead binding. Remounting here destroys the
+    // unbound transport, and pty-transport's destroyed check then kills the
+    // PTY the in-flight reattach resolves to — the live shell recovery exists
+    // to preserve. The fossil case this detector targets has no pending
+    // connect, so it still recovers. Same for a late async reject landing
+    // after dispose: the successor pane owns the tab now.
+    if (transportConnectInFlight || disposed) {
+      return
+    }
     const storePtyId = useAppStore.getState().ptyIdsByTabId?.[deps.tabId]?.[0] ?? null
+    const undeliverablePtyId = transport.getPtyId() ?? storePtyId
     void requestTerminalPaneRecovery({
       tabId: deps.tabId,
-      ptyId: transport.getPtyId() ?? storePtyId,
-      reason: 'input-undeliverable'
+      ptyId: undeliverablePtyId,
+      reason: 'input-undeliverable',
+      // Why: pty:hasPty answers null for ids the local registry doesn't own,
+      // and a disconnected remote pane would otherwise remount-churn on every
+      // cooldown window while typing. Local panes keep the lenient gate.
+      requireAuthoritativeLiveness:
+        Boolean(transport.getConnectionId?.()) || isRemoteRuntimePtyId(undeliverablePtyId)
     })
   }
   // Why: the write-pipeline health watch (scheduler stall probe, replay-guard
@@ -4350,6 +4367,7 @@ export function connectPanePty(
         ? Promise.resolve(null)
         : window.api.pty.declarePendingPaneSerializer(cacheKey).catch(() => null)
 
+      transportConnectInFlight = true
       const spawnedRaw = transport.connect({
         url: '',
         cols,
@@ -4369,6 +4387,11 @@ export function connectPanePty(
         }
       })
 
+      void Promise.resolve(spawnedRaw)
+        .catch(() => null)
+        .finally(() => {
+          transportConnectInFlight = false
+        })
       const trackedPromise: Promise<string | null> = Promise.resolve(spawnedRaw)
         .then(async (spawnedPtyId) => {
           const resolvedPtyId =
@@ -6917,6 +6940,7 @@ export function connectPanePty(
             const coldRestoreStartup = buildColdRestoreAgentResumeStartup()
             clearPaneMode2031State()
             clearHiddenOutputRestoreState()
+            transportConnectInFlight = true
             const reattachPromise = transport.connect({
               url: '',
               cols,
@@ -6946,6 +6970,11 @@ export function connectPanePty(
                 }
               }
             })
+            void Promise.resolve(reattachPromise)
+              .catch(() => null)
+              .finally(() => {
+                transportConnectInFlight = false
+              })
             void Promise.resolve(reattachPromise)
               .then(async (result) => {
                 console.warn(
@@ -7103,6 +7132,7 @@ export function connectPanePty(
 
       let expiredReattachError = false
       const coldRestoreStartup = buildColdRestoreAgentResumeStartup()
+      transportConnectInFlight = true
       const reattachPromise = transport.connect({
         url: '',
         cols,
@@ -7131,6 +7161,11 @@ export function connectPanePty(
         }
       })
 
+      void Promise.resolve(reattachPromise)
+        .catch(() => null)
+        .finally(() => {
+          transportConnectInFlight = false
+        })
       void Promise.resolve(reattachPromise)
         .then(async (result) => {
           if (!result && expiredReattachError) {

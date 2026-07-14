@@ -149,6 +149,48 @@ describe('requestTerminalPaneRecovery', () => {
     expect(mocks.remountTerminalTabForRecovery).not.toHaveBeenCalled()
   })
 
+  it('requires authoritative liveness for remote panes (null hasPty blocks recovery)', async () => {
+    mocks.hasPty.mockResolvedValue(null)
+
+    const result = await requestTerminalPaneRecovery({
+      tabId: 'tab-1',
+      ptyId: 'remote:pty-1',
+      reason: 'input-undeliverable',
+      requireAuthoritativeLiveness: true
+    })
+
+    expect(result).toBe(false)
+    expect(mocks.remountTerminalTabForRecovery).not.toHaveBeenCalled()
+  })
+
+  it('recovers a remote pane when liveness is authoritative true', async () => {
+    mocks.hasPty.mockResolvedValue(true)
+
+    const result = await requestTerminalPaneRecovery({
+      tabId: 'tab-1',
+      ptyId: 'remote:pty-1',
+      reason: 'input-undeliverable',
+      requireAuthoritativeLiveness: true
+    })
+
+    expect(result).toBe(true)
+    expect(mocks.remountTerminalTabForRecovery).toHaveBeenCalledWith('tab-1')
+  })
+
+  it('blocks remote recovery when the liveness probe throws', async () => {
+    mocks.hasPty.mockRejectedValue(new Error('runtime unreachable'))
+
+    const result = await requestTerminalPaneRecovery({
+      tabId: 'tab-1',
+      ptyId: 'remote:pty-1',
+      reason: 'input-undeliverable',
+      requireAuthoritativeLiveness: true
+    })
+
+    expect(result).toBe(false)
+    expect(mocks.remountTerminalTabForRecovery).not.toHaveBeenCalled()
+  })
+
   it('never throws when the store surface is partial (timer/callback contexts)', async () => {
     // Regression: recovery fires from stall-watch timers and write callbacks;
     // an environment with a partial store (mocked suites, teardown races) must

@@ -18,6 +18,11 @@ type RecoveryRequest = {
   tabId: string
   ptyId: string | null
   reason: TerminalPaneRecoveryReason
+  /** Remote panes (runtime mirrors, app-SSH) must prove the PTY alive before
+   *  an input-undeliverable remount: pty:hasPty answers null for ids the local
+   *  registry doesn't own, and treating null as "proceed" would let a
+   *  disconnected remote pane churn reconnects on every cooldown window. */
+  requireAuthoritativeLiveness?: boolean
 }
 
 // Why a cap exists: recovery must never loop. If the remounted pane wedges
@@ -68,9 +73,16 @@ export async function requestTerminalPaneRecovery(request: RecoveryRequest): Pro
       if (live === false) {
         return false
       }
+      if (request.requireAuthoritativeLiveness && live !== true) {
+        return false
+      }
     } catch {
-      // Liveness unknown (IPC hiccup): proceed — a remount over a dead PTY
-      // degrades to the existing dead-pane rendering, not a broken state.
+      if (request.requireAuthoritativeLiveness) {
+        return false
+      }
+      // Liveness unknown (IPC hiccup) on a local pane: proceed — a remount
+      // over a dead PTY degrades to the existing dead-pane rendering, not a
+      // broken state.
     }
     // Re-check the budget across the await: a concurrent detector may have
     // already consumed it for this tab.
