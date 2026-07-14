@@ -1080,6 +1080,16 @@ export default function SessionScreen() {
   // the row) without any window-dim change. Tracking the measured width lets the
   // refit hook re-fit the PTY on those resizes — see terminal-viewport-refit.ts.
   const [terminalFrameWidth, setTerminalFrameWidth] = useState(0)
+  // Why: a freshly-created agent terminal's first fit can run before the
+  // accessory/live-input dock has laid out, so the frame is briefly taller and
+  // the PTY is fit to too many rows. When the dock settles the frame shrinks,
+  // but height-only changes used to be ignored, so the PTY kept the taller row
+  // count and an agent TUI's bottom-pinned input box rendered behind the dock
+  // (leaving and re-entering re-measured and fixed it). Track the measured
+  // height so the refit hook re-fits on that settle. Keyboard open/close does
+  // not change this height (edge-to-edge IME overlays instead of resizing — see
+  // keyboardHeight above), so this never reflows the PTY while typing.
+  const [terminalFrameHeight, setTerminalFrameHeight] = useState(0)
 
   const activeSessionTab = sessionTabs.find((tab) => tab.id === activeSessionTabId) ?? null
   const {
@@ -2602,6 +2612,7 @@ export default function SessionScreen() {
     tabStripVisible: terminals.length > 1,
     textScale: terminalTextScale,
     terminalFrameWidth,
+    terminalFrameHeight,
     unsubscribeTerminal,
     subscribeToTerminal
   })
@@ -4831,10 +4842,16 @@ export default function SessionScreen() {
                 style={styles.terminalFrame}
                 onLayout={(e) => {
                   terminalFrameHeightRef.current = e.nativeEvent.layout.height
-                  // Trigger a refit only when the width actually changes (sidebar
-                  // resize, fold, rotation) — avoids churn on height-only changes.
+                  // Re-fit on width OR height changes. Width changes on sidebar
+                  // resize/fold/rotation; height changes when the accessory/
+                  // live-input dock settles after a new agent terminal's first
+                  // fit — refitting then stops the PTY from staying over-tall and
+                  // hiding the agent's bottom-pinned input box behind the dock.
+                  // The refit's row-count guard makes sub-row jitter a no-op.
                   const nextWidth = Math.round(e.nativeEvent.layout.width)
+                  const nextHeight = Math.round(e.nativeEvent.layout.height)
                   setTerminalFrameWidth((prev) => (prev === nextWidth ? prev : nextWidth))
+                  setTerminalFrameHeight((prev) => (prev === nextHeight ? prev : nextHeight))
                 }}
               >
                 {terminals.map((terminal) => (
