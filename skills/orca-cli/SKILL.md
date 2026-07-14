@@ -23,38 +23,33 @@ Use plain shell tools when Orca state does not matter.
 
 ## Start Here
 
-```bash
-# Reuse an explicit WSL/session choice first. Dev terminals export their repo
-# identity; outside managed Linux terminals, prefer orca-ide over bare orca.
-if [ -n "${ORCA_CLI_COMMAND:-}" ]; then
-  ORCA_BIN="$ORCA_CLI_COMMAND"
-elif [ -n "${ORCA_DEV_REPO_ROOT:-}" ] && command -v orca-dev >/dev/null 2>&1; then
-  ORCA_BIN=orca-dev
-elif command -v orca-ide >/dev/null 2>&1; then
-  ORCA_BIN=orca-ide
-elif command -v orca >/dev/null 2>&1; then
-  ORCA_BIN=orca
-else
-  echo "Orca CLI is not installed or not on PATH." >&2
-  exit 1
-fi
-command -v "$ORCA_BIN" >/dev/null 2>&1 || {
-  echo "Selected Orca CLI '$ORCA_BIN' is not on PATH." >&2
-  exit 1
-}
-"$ORCA_BIN" status --json
-"$ORCA_BIN" worktree ps --json
-"$ORCA_BIN" terminal list --json
+Choose the executable once for the current session:
+
+- If the `ORCA_CLI_COMMAND` environment variable is set, use its value. Orca exports this
+  for managed WSL sessions.
+- Otherwise, in a dev checkout whose session exposes `ORCA_DEV_REPO_ROOT`, use `orca-dev`.
+- Otherwise, on Linux outside an Orca-managed terminal, use `orca-ide`. Never use bare
+  `orca` there because it normally resolves to the GNOME screen reader.
+- Otherwise, use `orca`.
+
+In every command block, `ORCA` is a documentation placeholder. Replace it with the chosen
+executable before running the command; do not create a shell variable or run `ORCA`
+literally. This substitution works the same way in POSIX shells, PowerShell, and cmd.exe.
+
+```text
+ORCA status --json
+ORCA worktree ps --json
+ORCA terminal list --json
 ```
 
-Keep `ORCA_BIN` for every later command in this guide so dev sessions do not reach a
+Keep using that same executable for every later command so dev sessions do not reach a
 production CLI and Linux never falls through to the GNOME screen reader.
 
 If Orca is not running, start it:
 
-```bash
-"$ORCA_BIN" open --json
-"$ORCA_BIN" status --json
+```text
+ORCA open --json
+ORCA status --json
 ```
 
 Prefer `--json` for agent-driven calls. If the CLI is missing, say so explicitly instead of inspecting source files first.
@@ -67,8 +62,8 @@ Do not use `orca orchestration task-create`, `orca orchestration dispatch --inje
 
 Independent new-worktree handoff:
 
-```bash
-"$ORCA_BIN" worktree create --name <task-name> --no-parent --agent codex --prompt "<task brief>" --json
+```text
+ORCA worktree create --name <task-name> --no-parent --agent codex --prompt "<task brief>" --json
 ```
 
 Use `--no-parent` and omit `--base-branch` for independent top-level handoffs unless the user explicitly asks for stacked work, "branch from current", or a specific base. Put any current-branch context in the prompt.
@@ -81,17 +76,17 @@ Custom Codex model/effort handoff:
 
 The create result's `worktree.id` already contains both pieces Orca needs: `<repoId>::<worktreePath>`. Copy that whole value into the next command; do not shorten it to the repo id.
 
-```bash
-"$ORCA_BIN" worktree create --name <task-name> --no-parent --json
-"$ORCA_BIN" terminal create --worktree id:<repoId>::<newWorktreePath> --title <task-name> --command 'codex --model gpt-5.5 -c model_reasoning_effort="xhigh"' --json
-"$ORCA_BIN" terminal wait --terminal <handle> --for tui-idle --timeout-ms 60000 --json
-"$ORCA_BIN" terminal send --terminal <handle> --text "<task brief>" --enter --json
+```text
+ORCA worktree create --name <task-name> --no-parent --json
+ORCA terminal create --worktree id:<repoId>::<newWorktreePath> --title <task-name> --command 'codex --model gpt-5.5 -c model_reasoning_effort="xhigh"' --json
+ORCA terminal wait --terminal <handle> --for tui-idle --timeout-ms 60000 --json
+ORCA terminal send --terminal <handle> --text "<task brief>" --enter --json
 ```
 
 Existing-terminal handoff:
 
-```bash
-"$ORCA_BIN" terminal send --terminal <handle> --text "<task brief>" --enter --json
+```text
+ORCA terminal send --terminal <handle> --text "<task brief>" --enter --json
 ```
 
 ## Worktrees
@@ -102,25 +97,25 @@ Think of its id as a two-part address: `<repoId>::<worktreePath>`. For example, 
 
 Common commands:
 
-```bash
-"$ORCA_BIN" repo list --json
-"$ORCA_BIN" repo show --repo id:<repoId> --json
-"$ORCA_BIN" repo add --path /abs/repo --json
-"$ORCA_BIN" repo set-base-ref --repo id:<repoId> --ref origin/main --json
-"$ORCA_BIN" repo search-refs --repo id:<repoId> --query main --limit 10 --json
-"$ORCA_BIN" worktree list --repo id:<repoId> --json
-"$ORCA_BIN" worktree ps --json
-"$ORCA_BIN" worktree current --json
-"$ORCA_BIN" worktree show --worktree <selector> --json
-"$ORCA_BIN" worktree create --repo id:<repoId> --name related-task --json
-"$ORCA_BIN" worktree create --repo id:<repoId> --name related-task --parent-worktree active --json
-"$ORCA_BIN" worktree create --repo id:<repoId> --name folder-child --parent-worktree folder:<folderId> --json
-"$ORCA_BIN" worktree create --name child-task --agent codex --prompt "hi" --json
-"$ORCA_BIN" worktree create --name independent-task --no-parent --json
-"$ORCA_BIN" worktree set --worktree id:<repoId>::<worktreePath> --display-name "My Task" --json
-"$ORCA_BIN" worktree set --worktree active --comment "reproduced bug; testing fix" --json
-"$ORCA_BIN" worktree set --worktree active --workspace-status in-review --json
-"$ORCA_BIN" worktree rm --worktree id:<repoId>::<worktreePath> --force --json
+```text
+ORCA repo list --json
+ORCA repo show --repo id:<repoId> --json
+ORCA repo add --path /abs/repo --json
+ORCA repo set-base-ref --repo id:<repoId> --ref origin/main --json
+ORCA repo search-refs --repo id:<repoId> --query main --limit 10 --json
+ORCA worktree list --repo id:<repoId> --json
+ORCA worktree ps --json
+ORCA worktree current --json
+ORCA worktree show --worktree <selector> --json
+ORCA worktree create --repo id:<repoId> --name related-task --json
+ORCA worktree create --repo id:<repoId> --name related-task --parent-worktree active --json
+ORCA worktree create --repo id:<repoId> --name folder-child --parent-worktree folder:<folderId> --json
+ORCA worktree create --name child-task --agent codex --prompt "hi" --json
+ORCA worktree create --name independent-task --no-parent --json
+ORCA worktree set --worktree id:<repoId>::<worktreePath> --display-name "My Task" --json
+ORCA worktree set --worktree active --comment "reproduced bug; testing fix" --json
+ORCA worktree set --worktree active --workspace-status in-review --json
+ORCA worktree rm --worktree id:<repoId>::<worktreePath> --force --json
 ```
 
 Selectors:
@@ -141,11 +136,11 @@ Lineage rules:
 
 Agent/setup flags:
 
-```bash
-"$ORCA_BIN" worktree create --name task --agent codex --prompt "hi" --json
-"$ORCA_BIN" worktree create --name task --agent claude --setup run --json
-"$ORCA_BIN" worktree create --name task --setup skip --json
-"$ORCA_BIN" worktree create --name task --run-hooks --json
+```text
+ORCA worktree create --name task --agent codex --prompt "hi" --json
+ORCA worktree create --name task --agent claude --setup run --json
+ORCA worktree create --name task --setup skip --json
+ORCA worktree create --name task --run-hooks --json
 ```
 
 - `--agent <id>` launches that agent **in the first terminal** (Orca docs: *"`--agent` launches the selected agent in the first terminal"*); `--prompt <text>` sends initial work to it. Known ids include `claude`, `codex`, `omp`, `pi`, `grok`, and other installed TUI agents.
@@ -164,8 +159,8 @@ A worktree comment is the short status text shown in Orca's workspace list/card 
 
 Coding agents should update the active worktree comment at meaningful checkpoints:
 
-```bash
-"$ORCA_BIN" worktree set --worktree active --comment "fix implemented; running integration tests" --json
+```text
+ORCA worktree set --worktree active --comment "fix implemented; running integration tests" --json
 ```
 
 Update after meaningful state changes such as repro, fix, validation, handoff, or blocker. Keep comments short/current; failures are best-effort unless Orca state was requested.
@@ -176,25 +171,25 @@ Card status uses `--workspace-status <id>`; defaults are `todo`, `in-progress`, 
 
 Common commands:
 
-```bash
-"$ORCA_BIN" terminal list --worktree id:<repoId>::<worktreePath> --json
-"$ORCA_BIN" terminal show --terminal <handle> --json
-"$ORCA_BIN" terminal read --terminal <handle> --json
-"$ORCA_BIN" terminal read --terminal <handle> --cursor <cursor> --limit 1000 --json
-"$ORCA_BIN" terminal read --json
-"$ORCA_BIN" terminal send --terminal <handle> --text "continue" --enter --json
-"$ORCA_BIN" terminal send --text "echo hello" --enter --json
-"$ORCA_BIN" terminal wait --terminal <handle> --for exit --timeout-ms 5000 --json
-"$ORCA_BIN" terminal wait --terminal <handle> --for tui-idle --timeout-ms 300000 --json
-"$ORCA_BIN" terminal stop --worktree id:<repoId>::<worktreePath> --json
-"$ORCA_BIN" terminal create --json
-"$ORCA_BIN" terminal create --title "Worker" --json
-"$ORCA_BIN" terminal create --worktree active --command "codex" --json
-"$ORCA_BIN" terminal split --terminal <handle> --direction vertical --json
-"$ORCA_BIN" terminal split --terminal <handle> --direction horizontal --command "npm test" --json
-"$ORCA_BIN" terminal rename --terminal <handle> --title "New Name" --json
-"$ORCA_BIN" terminal switch --terminal <handle> --json
-"$ORCA_BIN" terminal close --terminal <handle> --json
+```text
+ORCA terminal list --worktree id:<repoId>::<worktreePath> --json
+ORCA terminal show --terminal <handle> --json
+ORCA terminal read --terminal <handle> --json
+ORCA terminal read --terminal <handle> --cursor <cursor> --limit 1000 --json
+ORCA terminal read --json
+ORCA terminal send --terminal <handle> --text "continue" --enter --json
+ORCA terminal send --text "echo hello" --enter --json
+ORCA terminal wait --terminal <handle> --for exit --timeout-ms 5000 --json
+ORCA terminal wait --terminal <handle> --for tui-idle --timeout-ms 300000 --json
+ORCA terminal stop --worktree id:<repoId>::<worktreePath> --json
+ORCA terminal create --json
+ORCA terminal create --title "Worker" --json
+ORCA terminal create --worktree active --command "codex" --json
+ORCA terminal split --terminal <handle> --direction vertical --json
+ORCA terminal split --terminal <handle> --direction horizontal --command "npm test" --json
+ORCA terminal rename --terminal <handle> --title "New Name" --json
+ORCA terminal switch --terminal <handle> --json
+ORCA terminal close --terminal <handle> --json
 ```
 
 Terminal rules:
@@ -213,16 +208,16 @@ Terminal rules:
 
 An automation is a scheduled Orca prompt run by a chosen provider against either a repo-created worktree or an existing workspace.
 
-```bash
-"$ORCA_BIN" automations list --json
-"$ORCA_BIN" automations show <automationId> --json
-"$ORCA_BIN" automations create --name "Daily review" --trigger daily --time 09:00 --prompt "Review open changes" --provider codex --repo id:<repoId> --json
-"$ORCA_BIN" automations create --name "Weekday triage" --trigger "0 9 * * 1-5" --prompt "Triage issues" --provider claude --repo path:/abs/repo --disabled --json
-"$ORCA_BIN" automations create --name "Inbox digest" --trigger hourly --prompt "Summarize unread mail" --provider codex --workspace active --reuse-session --json
-"$ORCA_BIN" automations edit <automationId> --trigger weekdays --time 09:30 --fresh-session --json
-"$ORCA_BIN" automations run <automationId> --json
-"$ORCA_BIN" automations runs --id <automationId> --json
-"$ORCA_BIN" automations remove <automationId> --json
+```text
+ORCA automations list --json
+ORCA automations show <automationId> --json
+ORCA automations create --name "Daily review" --trigger daily --time 09:00 --prompt "Review open changes" --provider codex --repo id:<repoId> --json
+ORCA automations create --name "Weekday triage" --trigger "0 9 * * 1-5" --prompt "Triage issues" --provider claude --repo path:/abs/repo --disabled --json
+ORCA automations create --name "Inbox digest" --trigger hourly --prompt "Summarize unread mail" --provider codex --workspace active --reuse-session --json
+ORCA automations edit <automationId> --trigger weekdays --time 09:30 --fresh-session --json
+ORCA automations run <automationId> --json
+ORCA automations runs --id <automationId> --json
+ORCA automations remove <automationId> --json
 ```
 
 Schedules accept `hourly`, `daily`, `weekdays`, `weekly`, 5-field cron, or RRULE. Use `--time <HH:MM>` with `daily`/`weekdays`/`weekly`, and `--day <0-6>` only with `weekly` where Sunday is `0`.
@@ -237,47 +232,47 @@ These commands control only Orca's embedded browser tabs. For external Chrome/Sa
 
 Use a snapshot-interact-re-snapshot loop:
 
-```bash
-"$ORCA_BIN" goto --url https://example.com --json
-"$ORCA_BIN" snapshot --json
-"$ORCA_BIN" click --element @e3 --json
-"$ORCA_BIN" snapshot --json
+```text
+ORCA goto --url https://example.com --json
+ORCA snapshot --json
+ORCA click --element @e3 --json
+ORCA snapshot --json
 ```
 
 Common commands:
 
-```bash
-"$ORCA_BIN" goto --url <url> --json
-"$ORCA_BIN" back --json
-"$ORCA_BIN" reload --json
-"$ORCA_BIN" snapshot --json
-"$ORCA_BIN" screenshot --json
-"$ORCA_BIN" full-screenshot --json
-"$ORCA_BIN" pdf --json
-"$ORCA_BIN" click --element <ref> --json
-"$ORCA_BIN" fill --element <ref> --value <text> --json
-"$ORCA_BIN" type --input <text> --json
-"$ORCA_BIN" select --element <ref> --value <value> --json
-"$ORCA_BIN" check --element <ref> --json
-"$ORCA_BIN" scroll --direction down --amount 1000 --json
-"$ORCA_BIN" hover --element <ref> --json
-"$ORCA_BIN" focus --element <ref> --json
-"$ORCA_BIN" keypress --key Enter --json
-"$ORCA_BIN" upload --element <ref> --files <paths> --json
-"$ORCA_BIN" wait --text <text> --json
-"$ORCA_BIN" wait --url <substring> --json
-"$ORCA_BIN" wait --selector <css> --json
-"$ORCA_BIN" wait --load networkidle --json
-"$ORCA_BIN" eval --expression <js> --json
-"$ORCA_BIN" tab list --json
-"$ORCA_BIN" tab create --url <url> --json
-"$ORCA_BIN" tab switch --index <n> --json
-"$ORCA_BIN" tab close --index <n> --json
-"$ORCA_BIN" cookie get --json
-"$ORCA_BIN" capture start --json
-"$ORCA_BIN" console --limit 50 --json
-"$ORCA_BIN" network --limit 50 --json
-"$ORCA_BIN" exec --command "help" --json
+```text
+ORCA goto --url <url> --json
+ORCA back --json
+ORCA reload --json
+ORCA snapshot --json
+ORCA screenshot --json
+ORCA full-screenshot --json
+ORCA pdf --json
+ORCA click --element <ref> --json
+ORCA fill --element <ref> --value <text> --json
+ORCA type --input <text> --json
+ORCA select --element <ref> --value <value> --json
+ORCA check --element <ref> --json
+ORCA scroll --direction down --amount 1000 --json
+ORCA hover --element <ref> --json
+ORCA focus --element <ref> --json
+ORCA keypress --key Enter --json
+ORCA upload --element <ref> --files <paths> --json
+ORCA wait --text <text> --json
+ORCA wait --url <substring> --json
+ORCA wait --selector <css> --json
+ORCA wait --load networkidle --json
+ORCA eval --expression <js> --json
+ORCA tab list --json
+ORCA tab create --url <url> --json
+ORCA tab switch --index <n> --json
+ORCA tab close --index <n> --json
+ORCA cookie get --json
+ORCA capture start --json
+ORCA console --limit 50 --json
+ORCA network --limit 50 --json
+ORCA exec --command "help" --json
 ```
 
 Browser rules:
@@ -310,15 +305,15 @@ See the dedicated `orca-emulator` skill for the full table (tap/type/gesture/but
 
 Common:
 
-```sh
-"$ORCA_BIN" emulator list --json
-"$ORCA_BIN" emulator attach "iPhone 17 Pro" --json
-"$ORCA_BIN" emulator tap 0.5 0.7 --json
-"$ORCA_BIN" emulator type "hello" --json
-"$ORCA_BIN" emulator gesture '[{"type":"begin","x":0.5,"y":0.8},{"type":"move","x":0.5,"y":0.4},{"type":"end","x":0.5,"y":0.2}]' --json
-"$ORCA_BIN" emulator button home --json
-"$ORCA_BIN" emulator exec --command "tap 0.5 0.7" --json   # no "serve-sim" in the command string
-"$ORCA_BIN" emulator kill --json
+```text
+ORCA emulator list --json
+ORCA emulator attach "iPhone 17 Pro" --json
+ORCA emulator tap 0.5 0.7 --json
+ORCA emulator type "hello" --json
+ORCA emulator gesture '[{"type":"begin","x":0.5,"y":0.8},{"type":"move","x":0.5,"y":0.4},{"type":"end","x":0.5,"y":0.2}]' --json
+ORCA emulator button home --json
+ORCA emulator exec --command "tap 0.5 0.7" --json   # no "serve-sim" in the command string
+ORCA emulator kill --json
 ```
 
 Rules (mirror browser):

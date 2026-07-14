@@ -63,16 +63,21 @@ describe('bundled skill guide generator', () => {
     }
   })
 
-  it('keeps every orca-cli example bound to the session-selected executable', async () => {
-    const source = await readFile(path.join(projectDir, 'skill-guides', 'orca-cli.md'), 'utf8')
+  it('keeps CLI guide examples safe across shells and Linux command names', async () => {
+    for (const name of ['orca-cli', 'computer-use']) {
+      const source = await readFile(path.join(projectDir, 'skill-guides', `${name}.md`), 'utf8')
 
-    expect(source).toContain('ORCA_BIN="$ORCA_CLI_COMMAND"')
-    expect(source).toContain('ORCA_BIN=orca-dev')
-    expect(source).toContain('ORCA_BIN=orca-ide')
-    expect(source).toContain('ORCA_BIN=orca')
-    expect(source).toContain('"$ORCA_BIN" status --json')
-    // Why: a later bare command could launch GNOME Orca or escape a dev session.
-    expect(source).not.toMatch(/^orca /mu)
+      expect(source).toContain('ORCA_CLI_COMMAND')
+      expect(source).toContain('orca-dev')
+      expect(source).toContain('orca-ide')
+      expect(source).toContain('PowerShell')
+      expect(source).toContain('cmd.exe')
+      expect(source).toMatch(/^ORCA .+--json$/mu)
+      // Why: bare command lines can launch GNOME Orca, while shell variables make
+      // the same guide unusable from PowerShell and cmd.exe.
+      expect(source).not.toMatch(/^orca /mu)
+      expect(source).not.toMatch(/\$ORCA(?:_|\b)/u)
+    }
   })
 
   it('builds deterministic artifacts and verifies the checked-in outputs', async () => {
