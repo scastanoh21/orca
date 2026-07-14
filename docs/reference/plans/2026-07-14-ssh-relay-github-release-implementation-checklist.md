@@ -2,7 +2,7 @@
 
 Date created: 2026-07-14<br>
 Last updated: 2026-07-14<br>
-Current phase: Milestone 3 / Work Package 2 target-native runtime assembly — completed exact-head diagnostic run 29348424235 keeps Linux x64/arm64 green and isolates native drift to macOS `pty.node` and Windows `conpty_console_list.node`; canonical clean-work paths plus platform-native reproducible-link corrections are locally green at `3e433b343` and await a new six-runner exact-head proof; oldest-baseline, native-trust, cross-family remote, and measured-baseline gates remain open; no bundled-runtime path is enabled<br>
+Current phase: Milestone 3 / Work Package 2 target-native runtime assembly — exact-head run 29350639822 proves the canonical-work/linker correction on Linux x64/arm64 and macOS x64/arm64, while both Windows jobs stop safely before inputs/build/upload because the imported builder retains an unused Unix shebang; the bounded shebang/syntax-gate correction is locally green and awaits exact-head commit plus a new six-runner proof; oldest-baseline, native-trust, cross-family remote, and measured-baseline gates remain open; no bundled-runtime path is enabled<br>
 Primary design: [SSH relay GitHub Release plan](./2026-07-14-ssh-relay-github-release-plan.html)<br>
 Motivating issues: [#8450](https://github.com/stablyai/orca/issues/8450), [#1693](https://github.com/stablyai/orca/issues/1693)
 
@@ -101,9 +101,12 @@ same change as the work it records.
   Windows builds first differ at `conpty_console_list.node`. The bounded correction in
   `a09b02ec4` makes macOS retain a reproducible loadable UUID, applies `/Brepro` only to copied
   Windows artifact source, and requires exclusive caller-owned work paths; `3e433b343` makes the CI
-  path canonical across runs. E-M3-REPRODUCIBILITY-LINKER-LOCAL-001 is green, but a new exact-head
-  six-runner proof remains mandatory. Oldest-baseline, native-trust, SSH, and musl cells remain
-  open.
+  path canonical across runs. E-M3-REPRODUCIBILITY-LINKER-CI-RED-001 proves both Linux and macOS
+  architectures now build, verify, smoke, compare exactly, and upload, but both Windows jobs fail
+  closed in contract collection because `ssh-relay-runtime-build.test.mjs` imports a builder with an
+  unused Unix shebang. The active correction removes only that shebang and adds explicit POSIX and
+  Windows `node --check` gates before Vitest. Native Windows `/Brepro` equality remains mandatory.
+  Oldest-baseline, native-trust, SSH, and musl cells remain open.
 - Windows input correction: E-M3-WINDOWS-INPUT-GAP-001 proved the official Windows ZIP lacks headers
   and `node.lib`. Both artifacts now require the exact signed headers archive and tuple import
   library as explicit inputs. The schema, signed-checksum verifier, bounded ZIP/header extraction,
@@ -143,11 +146,12 @@ same change as the work it records.
   per-target opt-in selects bundled-preferred behavior, and implementing the setting does not
   authorize default-on rollout or legacy removal (E-M1-ROLLOUT-DECISION-001).
 - Legacy fallback removal: not authorized.
-- Next required action: push exact correction head `3e433b343` and rerun all six target-native jobs.
-  Require Linux to remain equal, macOS to retain loadable `LC_UUID` values while comparing equal,
-  and Windows `/Brepro` outputs to compare equal before upload. Keep oldest-baseline, cross-family
-  remote infrastructure, signing/trust, and measured legacy baseline gates open; do not introduce
-  publication, resolver, transfer, rollout, tuple enablement, or default behavior.
+- Next required action: finish exact local gates for the bounded builder-shebang/syntax correction,
+  commit it separately from this evidence record, push both commits, and rerun all six target-native
+  jobs. Require Linux and macOS to remain equal and Windows `/Brepro` outputs to build, smoke,
+  compare equal, and upload. Keep oldest-baseline, cross-family remote infrastructure,
+  signing/trust, and measured legacy baseline gates open; do not introduce publication, resolver,
+  transfer, rollout, tuple enablement, or default behavior.
 
 ## Non-Negotiable Invariants
 
@@ -630,9 +634,12 @@ links macOS native outputs with `-Wl,-reproducible` while retaining the required
 adds `/Brepro` only to the copied Windows node-pty source with an exact-source fail-closed guard.
 Follow-up `3e433b343` removes the run ID from the work path so separate CI runs use one canonical
 runner-local location while their outputs remain run-scoped. E-M3-REPRODUCIBILITY-LINKER-LOCAL-001
-proves two clean macOS passes plus a separate repeat session are byte-identical and loadable. Native
-Windows proof and the new six-runner equality gate remain open; no tuple or production consumer is
-enabled.
+proves two clean macOS passes plus a separate repeat session are byte-identical and loadable.
+E-M3-REPRODUCIBILITY-LINKER-CI-RED-001 proves Linux and macOS x64/arm64 equality on exact head
+`54df2cb99`; Windows stopped before artifact inputs because Vitest imported the builder's unused Unix
+shebang. The active bounded correction removes only that shebang and syntax-checks the builder and
+its test on POSIX and Windows before contract collection. Native Windows proof and the six-runner
+equality gate remain open; no tuple or production consumer is enabled.
 
 Each runtime must contain only the executable closure required by the relay.
 
@@ -1232,16 +1239,16 @@ Baseline measurements must be captured before product behavior changes.
 
 Update status and evidence as work begins. Do not combine these into one large behavior switch.
 
-| Work package              | Scope                                                                                      | Default behavior change     | Status                                                         | PR/evidence                                                                          |
-| ------------------------- | ------------------------------------------------------------------------------------------ | --------------------------- | -------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
-| 0. #8450 legacy fix       | Coherent Node/npm selection and live repro                                                 | Fixes legacy selection only | Complete and CI-green in draft PR #8724                        | E-M0-UNIT-002, E-M0-LIVE-002, E-M0-STATIC-002, E-M0-PR-001, E-M0-CI-001              |
-| 1. Contract and selectors | Manifest schema, identity, platform/libc selection, hostile inputs                         | None                        | Complete and CI-green in draft PR #8728                        | `b9d80a4cb`; E-M2-RED-001, E-M2-CONTRACT-001, E-M2-CI-001                            |
-| 2. Runtime builds         | Per-tuple assembly, native smoke, SBOM/provenance/signing                                  | None                        | Draft PR #8741; corrected native reproducibility rerun pending | `3e433b343`; E-M3-REPRODUCIBILITY-LINKER-LOCAL-001, E-M3-CI-001, E-M3-WINDOWS-CI-001 |
-| 3. Release publication    | Prerequisite DAG, embedded manifest, draft upload/read-back gates                          | Asset-only                  | Not started                                                    | —                                                                                    |
-| 4. Desktop resolver/cache | Verified download, extraction, cache, offline behavior                                     | None/forced mode only       | Not started                                                    | —                                                                                    |
-| 5. Transfer/install       | Bounded transports, structured sentinel, bundled launch behind per-target Beta/forced mode | Per-target opt-in only      | Not started                                                    | —                                                                                    |
-| 6. Fallback/diagnostics   | Abort-and-join state machine, mode isolation, reason codes, target-mode configuration/UI   | Per-target Beta only        | Not started                                                    | —                                                                                    |
-| 7. Live gates/rollout     | Matrix, security, performance, release promotion                                           | Per-tuple staged            | Not started                                                    | —                                                                                    |
+| Work package              | Scope                                                                                      | Default behavior change     | Status                                                  | PR/evidence                                                                           |
+| ------------------------- | ------------------------------------------------------------------------------------------ | --------------------------- | ------------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| 0. #8450 legacy fix       | Coherent Node/npm selection and live repro                                                 | Fixes legacy selection only | Complete and CI-green in draft PR #8724                 | E-M0-UNIT-002, E-M0-LIVE-002, E-M0-STATIC-002, E-M0-PR-001, E-M0-CI-001               |
+| 1. Contract and selectors | Manifest schema, identity, platform/libc selection, hostile inputs                         | None                        | Complete and CI-green in draft PR #8728                 | `b9d80a4cb`; E-M2-RED-001, E-M2-CONTRACT-001, E-M2-CI-001                             |
+| 2. Runtime builds         | Per-tuple assembly, native smoke, SBOM/provenance/signing                                  | None                        | Draft PR #8741; Windows parser correction/rerun pending | `54df2cb99`; E-M3-REPRODUCIBILITY-LINKER-CI-RED-001, E-M3-CI-001, E-M3-WINDOWS-CI-001 |
+| 3. Release publication    | Prerequisite DAG, embedded manifest, draft upload/read-back gates                          | Asset-only                  | Not started                                             | —                                                                                     |
+| 4. Desktop resolver/cache | Verified download, extraction, cache, offline behavior                                     | None/forced mode only       | Not started                                             | —                                                                                     |
+| 5. Transfer/install       | Bounded transports, structured sentinel, bundled launch behind per-target Beta/forced mode | Per-target opt-in only      | Not started                                             | —                                                                                     |
+| 6. Fallback/diagnostics   | Abort-and-join state machine, mode isolation, reason codes, target-mode configuration/UI   | Per-target Beta only        | Not started                                             | —                                                                                     |
+| 7. Live gates/rollout     | Matrix, security, performance, release promotion                                           | Per-tuple staged            | Not started                                             | —                                                                                     |
 
 Every PR must document:
 
@@ -3925,23 +3932,83 @@ or unexpected token`; the first logs did not identify a source location.
 - Follow-up: push `3e433b343`, run all six target-native jobs, and require complete equality plus
   upload in each cell without weakening the comparator.
 
+### E-M3-REPRODUCIBILITY-LINKER-CI-RED-001 — POSIX equality and Windows builder parser boundary
+
+- Date: 2026-07-14
+- Commit SHA / PR: exact head `54df2cb998ae564c1a19cf32a8c93bf28770d07a`; stacked draft PR
+  [#8741](https://github.com/stablyai/orca/pull/8741)
+- Run and jobs: [run 29350639822](https://github.com/stablyai/orca/actions/runs/29350639822),
+  conclusion `failure`; Linux x64 `87145674443`, Linux arm64 `87145674440`, macOS arm64
+  `87145674422`, macOS x64 `87145674490`, Windows x64 `87145674413`, and Windows arm64
+  `87145674455`
+- Runners: `ubuntu-24.04` x64 image `20260705.232.1`, `ubuntu-24.04-arm` arm64 image
+  `20260706.52.2`, `macos-15` arm64 image `20260706.0213.1`, `macos-15-intel` x64 image
+  `20260629.0276.1`, `windows-2022` x64 image `20260706.237.1`, and `windows-11-arm` arm64
+  image `20260706.102.1`; all native, runner `2.335.1`, provisioner `20260624.560`, and Node
+  v24.18.0. Windows x64 was Server 2022 build 20348; arm64 was Windows Enterprise build 26200.
+- Remote and transport: none; target-native artifact assembly/execution and unpublished Actions
+  artifact upload only
+- Exact evidence commands:
+
+  ```sh
+  gh run view 29350639822 --repo stablyai/orca \
+    --json databaseId,headSha,headBranch,status,conclusion,url,createdAt,updatedAt,jobs
+  gh api repos/stablyai/orca/actions/jobs/<job-id>/logs
+  gh api 'repos/stablyai/orca/actions/runs/29350639822/artifacts?per_page=100'
+  ```
+
+- Result: FAIL as an evidence-producing six-runner gate. Linux x64/arm64 and macOS x64/arm64 each
+  passed 47/47 contracts, authenticated exact Node inputs, performed two exclusive native builds,
+  fully inspected and smoked both outputs, compared the runtime tree/archive/identity/SPDX/
+  provenance byte-for-byte, and uploaded only the first equal output. Windows x64/arm64 each passed
+  42 tests and skipped three POSIX-only tests across 13 suites, then failed while collecting
+  `ssh-relay-runtime-build.test.mjs` with `SyntaxError: Invalid or unexpected token`: that test
+  imports `build-ssh-relay-runtime.mjs`, whose first line was an unused Unix shebang. Input download,
+  native build, verification, comparison, and upload were all skipped on both Windows jobs.
+- Equal-output and upload details:
+
+  | Tuple               | Content ID / runtime archive SHA-256                                                                                                    | Archive / expanded / files    | Build 1 / build 2 / max smoke RSS     | Actions artifact                                                                                               |
+  | ------------------- | --------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------- | ------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+  | `linux-x64-glibc`   | `960546cd96c67fcf9bb0a61e96ecdbecbffd9104d3a495578f8bb19dd810649a` / `1881a082b5c8ab1caf28801e42a8f62601b0275096ec67468498d1a370c4af3b` | 29,266,692 / 124,846,502 / 34 | 67,504 / 65,510 ms / 56,438,784 bytes | [8318063540](https://github.com/stablyai/orca/actions/runs/29350639822/artifacts/8318063540), 29,282,697 bytes |
+  | `linux-arm64-glibc` | `aa3aa8ae8b42334ba7b0dbe5c43fd1184e36b3f4f4a9bec0e990e9b78f090756` / `909a8f69acf9edb294e5d74b4323adc399821e049f0cba933206621f75c3effe` | 28,197,220 / 122,865,172 / 34 | 67,457 / 65,054 ms / 52,596,736 bytes | [8318072302](https://github.com/stablyai/orca/actions/runs/29350639822/artifacts/8318072302), 28,212,074 bytes |
+  | `darwin-arm64`      | `40ff5d2036784b794e7b09f78596409f63f3145280c530bece5280d40897f6cb` / `132b0b6b3ecd4386ecf72119a950334f54ec34fe46e51c4f871d8c7878247775` | 24,736,104 / 122,027,869 / 35 | 55,320 / 52,391 ms / 51,658,752 bytes | [8318052438](https://github.com/stablyai/orca/actions/runs/29350639822/artifacts/8318052438), 24,749,047 bytes |
+  | `darwin-x64`        | `585ea6034cdd07487d8667059f975a877c795a45dc0d6eeee1617f2e3749faa2` / `b47ed8b464989b1638a2024ac5980a45a494ff33f9a3dbe648c8f7974efb1e33` | 26,373,464 / 124,316,655 / 35 | 88,815 / 78,961 ms / 40,665,088 bytes | [8318098409](https://github.com/stablyai/orca/actions/runs/29350639822/artifacts/8318098409), 26,388,039 bytes |
+
+- Duration and resource metrics: total jobs were 3m12s Linux x64, 3m28s Linux arm64, 2m50s macOS
+  arm64, 4m28s macOS x64, 1m19s Windows x64, and 3m42s Windows arm64. Windows contract collection
+  took 1.97s and 2.76s. POSIX comparison scanned 54/55 entries and 146.8–154.1 MB in 285–895 ms.
+  Build peak RSS, open files/channels, and cancellation settlement were not instrumented.
+- Artifact/log/trace link: run/job links and four unpublished seven-day artifacts above; Windows
+  correctly produced no artifact
+- Oracle proved: the canonical clean-work directory plus `-Wl,-reproducible` makes both native
+  macOS architectures byte-identical while retaining successful bundled-Node/native PTY/watcher
+  execution; both Linux controls remain equal; failed contract collection prevents Windows inputs,
+  execution, and upload. The parser boundary is the imported builder shebang, not `/Brepro` output.
+- Does not prove: Windows builder parsing after correction, native `/Brepro` equality, a six-job
+  pass, cross-run identity, oldest baselines, native trust/signing, SSH, transfer, publication,
+  resolver/cache, fallback, UI, or an enabled tuple.
+- Checklist items satisfied: native macOS linker reproducibility evidence only; native
+  reproducibility remains open until all six same-head jobs pass together.
+- Follow-up: remove only the unused builder shebang, syntax-check the builder and its test on POSIX
+  and Windows before Vitest, rerun local gates, then require a new six-runner exact-head pass.
+
 ## Accepted Gaps
 
 No product gap is accepted merely because it appears in this list. Each entry requires explicit
 owner and promotion condition.
 
-| Gap                                        | Current behavior                                                                        | Risk                                           | Owner                                                   | Promotion/removal condition                                                    | Status       |
-| ------------------------------------------ | --------------------------------------------------------------------------------------- | ---------------------------------------------- | ------------------------------------------------------- | ------------------------------------------------------------------------------ | ------------ |
-| Bundled runtime only partially implemented | Six unpublished native artifact proofs; no production consumer                          | #8450/#1693 environment failures remain        | Codex implementation owner                              | Complete Work Packages 2–7 plus Milestones 3–14                                | Open         |
-| No bundled tuple enabled                   | Every target's default and effective mode remains legacy                                | No bundled support claim can be made           | Codex implementation owner                              | Complete target-native build/trust and both required live-evidence layers      | Open         |
-| Windows runtime smoke incomplete           | Native x64/arm64 smoke settles and uploads exact evidence                               | Historical blocker is closed                   | Codex implementation owner                              | Met by E-M3-WINDOWS-CI-001                                                     | CLOSED       |
-| Native clean-rebuild identity unproved     | Linux x64/arm64 pass; macOS and Windows native drift is locally corrected but not rerun | Toolchain drift may change native content IDs  | Codex implementation owner                              | All six same-head, same-runner clean builds match without weakening the oracle | Open         |
-| Cross-family Layer B remotes unavailable   | GitHub native runner labels exist; no approved reachable target pool                    | Client/remote integration gaps may escape      | Repository release administrator + implementation owner | Approve provider/snapshots/credentials/egress/teardown/cost owner              | BLOCKED      |
-| Musl has no accepted official Node binary  | Musl is deliberately legacy-only                                                        | Unofficial binary would break provenance trust | Codex implementation owner                              | Orca-owned target-native source build, signing, provenance, and live gates     | ACCEPTED GAP |
-| Native arm64 live matrices incomplete      | Hosted Linux/Windows arm64 labels exist; full SSH/runtime cells do not                  | Cross-build or unit tests may hide native bugs | Codex implementation owner                              | Full native archive, trust, SFTP/system-SSH, RPC, and baseline evidence        | Open         |
-| Legacy performance baseline unmeasured     | Numeric budgets exist; paired cold/warm measurements do not                             | Regression thresholds lack a measured baseline | Codex implementation owner                              | Purpose-built paired harness with ten samples on pinned runner classes         | Open         |
-| Manifest signing environment unprovisioned | Ed25519/key-rotation policy exists; no protected runtime signing secret                 | Runtime assets cannot be safely published      | Repository release administrator                        | Protected environment, reviewers, two test keys, rehearsals, and access audit  | BLOCKED      |
-| Bootstrap primitives lack full live proof  | POSIX/Windows contracts exist; bounded SSH implementations do not                       | Hidden dependency or transfer corruption       | Codex implementation owner                              | Purpose-named full-size SFTP/POSIX/Windows system-SSH live suites              | Open         |
+| Gap                                        | Current behavior                                                        | Risk                                           | Owner                                                   | Promotion/removal condition                                                    | Status       |
+| ------------------------------------------ | ----------------------------------------------------------------------- | ---------------------------------------------- | ------------------------------------------------------- | ------------------------------------------------------------------------------ | ------------ |
+| Bundled runtime only partially implemented | Six unpublished native artifact proofs; no production consumer          | #8450/#1693 environment failures remain        | Codex implementation owner                              | Complete Work Packages 2–7 plus Milestones 3–14                                | Open         |
+| No bundled tuple enabled                   | Every target's default and effective mode remains legacy                | No bundled support claim can be made           | Codex implementation owner                              | Complete target-native build/trust and both required live-evidence layers      | Open         |
+| Windows runtime smoke incomplete           | Native x64/arm64 smoke settles and uploads exact evidence               | Historical blocker is closed                   | Codex implementation owner                              | Met by E-M3-WINDOWS-CI-001                                                     | CLOSED       |
+| Native clean-rebuild identity unproved     | Linux/macOS x64/arm64 pass; Windows parser correction awaits rerun      | Toolchain drift may change native content IDs  | Codex implementation owner                              | All six same-head, same-runner clean builds match without weakening the oracle | Open         |
+| Cross-family Layer B remotes unavailable   | GitHub native runner labels exist; no approved reachable target pool    | Client/remote integration gaps may escape      | Repository release administrator + implementation owner | Approve provider/snapshots/credentials/egress/teardown/cost owner              | BLOCKED      |
+| Musl has no accepted official Node binary  | Musl is deliberately legacy-only                                        | Unofficial binary would break provenance trust | Codex implementation owner                              | Orca-owned target-native source build, signing, provenance, and live gates     | ACCEPTED GAP |
+| Native arm64 live matrices incomplete      | Hosted Linux/Windows arm64 labels exist; full SSH/runtime cells do not  | Cross-build or unit tests may hide native bugs | Codex implementation owner                              | Full native archive, trust, SFTP/system-SSH, RPC, and baseline evidence        | Open         |
+| Legacy performance baseline unmeasured     | Numeric budgets exist; paired cold/warm measurements do not             | Regression thresholds lack a measured baseline | Codex implementation owner                              | Purpose-built paired harness with ten samples on pinned runner classes         | Open         |
+| Manifest signing environment unprovisioned | Ed25519/key-rotation policy exists; no protected runtime signing secret | Runtime assets cannot be safely published      | Repository release administrator                        | Protected environment, reviewers, two test keys, rehearsals, and access audit  | BLOCKED      |
+| Bootstrap primitives lack full live proof  | POSIX/Windows contracts exist; bounded SSH implementations do not       | Hidden dependency or transfer corruption       | Codex implementation owner                              | Purpose-named full-size SFTP/POSIX/Windows system-SSH live suites              | Open         |
 
 ## Final Definition of Done
 
@@ -3982,12 +4049,13 @@ The project is not complete until every applicable item below is checked with ev
 
 ## Next Required Action
 
-Push exact correction head `3e433b343` to draft PR #8741 and run all six target-native jobs. Each
-job must build, verify, and smoke two exclusive outputs at the canonical work path, compare every
-runtime-tree/archive/identity/SPDX/provenance entry, and upload only after equality. macOS must
-retain loadable `LC_UUID` values; Windows must prove `/Brepro` natively; Linux must remain green.
-Record exact paths and fields for any new red without weakening the oracle. Cross-family Layer B
-targets, the protected manifest-signing environment, oldest-baseline/native-trust cells, and the
-paired legacy performance baseline remain release/default-path blockers; no publication, desktop
-resolver, SSH transfer/install, per-target Beta, fallback, tuple enablement, or default behavior may
-be connected by this package.
+Run the complete local artifact/static gates for the bounded builder-shebang/syntax correction,
+commit it separately from E-M3-REPRODUCIBILITY-LINKER-CI-RED-001, push both commits to draft PR
+#8741, and run all six target-native jobs. Each job must build, verify, and smoke two exclusive
+outputs at the canonical work path, compare every runtime-tree/archive/identity/SPDX/provenance
+entry, and upload only after equality. macOS must retain loadable `LC_UUID` values; Windows must
+prove `/Brepro` natively; Linux must remain green. Record exact paths and fields for any new red
+without weakening the oracle. Cross-family Layer B targets, the protected manifest-signing
+environment, oldest-baseline/native-trust cells, and the paired legacy performance baseline remain
+release/default-path blockers; no publication, desktop resolver, SSH transfer/install, per-target
+Beta, fallback, tuple enablement, or default behavior may be connected by this package.
