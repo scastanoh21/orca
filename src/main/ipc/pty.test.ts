@@ -3549,7 +3549,8 @@ describe('registerPtyHandlers', () => {
       },
       markSshRemotePtyShutdownRequested: () => {
         throw new Error('SSH intent disk full')
-      }
+      },
+      markSshRemotePtyLease: vi.fn()
     } as never)
 
     try {
@@ -3573,6 +3574,42 @@ describe('registerPtyHandlers', () => {
       unregisterSshPtyProvider('ssh-persist-fail')
       releasePendingSshShutdownsForTarget('ssh-persist-fail')
     }
+  })
+
+  it('retries durable local intent removal without repeating provider shutdown', async () => {
+    vi.useFakeTimers()
+    const shutdown = vi.fn().mockResolvedValue(undefined)
+    const remove = vi
+      .fn()
+      .mockImplementationOnce(() => {
+        throw new Error('intent removal disk full')
+      })
+      .mockReturnValue(undefined)
+    setLocalPtyProvider({
+      shutdown,
+      onData: vi.fn(() => () => {}),
+      onReplay: vi.fn(() => () => {}),
+      onExit: vi.fn(() => () => {})
+    } as never)
+    handlers.clear()
+    registerPtyHandlers(mainWindow as never, undefined, undefined, undefined, undefined, {
+      getPendingLocalPtyShutdowns: () => [],
+      upsertPendingLocalPtyShutdown: vi.fn(),
+      removePendingLocalPtyShutdown: remove
+    } as never)
+
+    await expect(handlers.get('pty:kill')!(null, { id: 'local-remove-fail' })).rejects.toThrow(
+      'intent removal disk full'
+    )
+    expect(shutdown).toHaveBeenCalledOnce()
+    expect(remove).toHaveBeenCalledOnce()
+    await vi.advanceTimersByTimeAsync(250)
+
+    expect(shutdown).toHaveBeenCalledOnce()
+    expect(remove).toHaveBeenCalledTimes(2)
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(shutdown).toHaveBeenCalledOnce()
+    expect(remove).toHaveBeenCalledTimes(2)
   })
 
   it('keeps accepted local kills until provider readback proves physical exit', async () => {
@@ -3994,6 +4031,9 @@ describe('registerPtyHandlers', () => {
     const fallbackShutdown = vi.fn().mockResolvedValue(undefined)
     const daemonShutdown = vi.fn().mockResolvedValue(undefined)
     const removePendingLocalPtyShutdown = vi.fn()
+    const upsertPendingLocalPtyShutdown = vi.fn(() => {
+      throw new Error('startup replay must not rewrite durable intent')
+    })
     setLocalPtyProvider(makeProvider(fallbackShutdown))
     handlers.clear()
     registerPtyHandlers(
@@ -4004,7 +4044,7 @@ describe('registerPtyHandlers', () => {
       undefined,
       {
         getPendingLocalPtyShutdowns: () => [{ ptyId: 'daemon-pty', requestedAt: 1 }],
-        upsertPendingLocalPtyShutdown: vi.fn(),
+        upsertPendingLocalPtyShutdown,
         removePendingLocalPtyShutdown
       } as never,
       { awaitLocalPtyStartup: () => startup.promise }
@@ -4017,6 +4057,7 @@ describe('registerPtyHandlers', () => {
     await vi.advanceTimersByTimeAsync(0)
 
     expect(fallbackShutdown).not.toHaveBeenCalled()
+    expect(upsertPendingLocalPtyShutdown).not.toHaveBeenCalled()
     expect(daemonShutdown).toHaveBeenCalledOnce()
     expect(removePendingLocalPtyShutdown).toHaveBeenCalledWith('daemon-pty')
     await vi.advanceTimersByTimeAsync(30_000)

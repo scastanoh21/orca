@@ -184,6 +184,8 @@ type RetainedPtyShutdown = {
   durable: boolean
   attempts: number
   shutdownAccepted: boolean
+  providerShutdownComplete: boolean
+  providerExitObserved: boolean
   requireExitProof: boolean
   nextRetryAt: number
   inFlight: Promise<void> | null
@@ -593,7 +595,7 @@ function finishPtyShutdown(
 ): void {
   clearProviderPtyState(id)
   if (connectionId) {
-    store?.markSshRemotePtyLease(connectionId, id, 'terminated')
+    store?.markSshRemotePtyLease?.(connectionId, id, 'terminated')
   }
   ptyOwnership.delete(id)
   markClaudePtyExited(id)
@@ -643,11 +645,11 @@ function completeRetainedPtyShutdown(
   if (ownerMap.get(retained.id) !== retained) {
     return
   }
-  ownerMap.delete(retained.id)
-  finishPtyShutdown(retained.id, retained.connectionId, retained.store ?? undefined)
   if (!retained.connectionId) {
     retained.store?.removePendingLocalPtyShutdown?.(retained.id)
   }
+  finishPtyShutdown(retained.id, retained.connectionId, retained.store ?? undefined)
+  ownerMap.delete(retained.id)
   if (!providerExitObserved) {
     notifyRetainedPtyExit?.(retained.id)
   }
@@ -688,6 +690,10 @@ function attemptRetainedPtyShutdown(retained: RetainedPtyShutdown): Promise<void
   retained.provider = currentProvider
   retained.lastError = null
   const attempt = (async () => {
+    if (retained.providerShutdownComplete) {
+      completeRetainedPtyShutdown(retained, retained.providerExitObserved)
+      return
+    }
     if (retained.shutdownAccepted) {
       const stopped = await verifyPtyStopped(currentProvider, retained.id, retained.options)
       if (retained.provider !== currentProvider) {
@@ -697,6 +703,8 @@ function attemptRetainedPtyShutdown(retained: RetainedPtyShutdown): Promise<void
         deferRetainedPtyShutdownRetry(retained)
         return
       }
+      retained.providerShutdownComplete = true
+      retained.providerExitObserved = false
       completeRetainedPtyShutdown(retained, false)
       return
     }
@@ -719,6 +727,8 @@ function attemptRetainedPtyShutdown(retained: RetainedPtyShutdown): Promise<void
       return
     }
     if (providerAlreadyGone) {
+      retained.providerShutdownComplete = true
+      retained.providerExitObserved = false
       completeRetainedPtyShutdown(retained, false)
       return
     }
@@ -740,6 +750,8 @@ function attemptRetainedPtyShutdown(retained: RetainedPtyShutdown): Promise<void
         return
       }
     }
+    retained.providerShutdownComplete = true
+    retained.providerExitObserved = providerExitObserved
     completeRetainedPtyShutdown(retained, providerExitObserved)
   })()
     .catch((error: unknown) => {
@@ -868,7 +880,8 @@ function retainLocalPtyShutdown(
   id: string,
   options: PtyShutdownOptions,
   attempts = 0,
-  deferUntilProviderReady = false
+  deferUntilProviderReady = false,
+  persist = true
 ): RetainedPtyShutdown {
   let retained = pendingLocalShutdownRetries.get(id)
   if (!retained || ptyShutdownIdentityConflicts(retained.options, options)) {
@@ -883,6 +896,8 @@ function retainLocalPtyShutdown(
       durable: true,
       attempts,
       shutdownAccepted: false,
+      providerShutdownComplete: false,
+      providerExitObserved: false,
       requireExitProof: false,
       nextRetryAt: deferUntilProviderReady
         ? Number.POSITIVE_INFINITY
@@ -899,7 +914,7 @@ function retainLocalPtyShutdown(
   // Why: disk failure must not strand the live process merely because its
   // crash-durable intent could not be refreshed.
   scheduleRetainedShutdownRetries()
-  if (typeof activePtyStore?.upsertPendingLocalPtyShutdown === 'function') {
+  if (persist && typeof activePtyStore?.upsertPendingLocalPtyShutdown === 'function') {
     activePtyStore.upsertPendingLocalPtyShutdown({
       ptyId: id,
       ...(retained.options.expectedPaneKey
@@ -942,6 +957,8 @@ function retainSshPtyShutdown(
       durable: persisted,
       attempts: 0,
       shutdownAccepted: false,
+      providerShutdownComplete: false,
+      providerExitObserved: false,
       requireExitProof: false,
       nextRetryAt: provider ? 0 : Number.POSITIVE_INFINITY,
       inFlight: null,
@@ -1621,6 +1638,8 @@ function retryPersistedSshShutdowns(connectionId: string, provider: IPtyProvider
         durable: true,
         attempts: 0,
         shutdownAccepted: false,
+        providerShutdownComplete: false,
+        providerExitObserved: false,
         requireExitProof: false,
         nextRetryAt: 0,
         inFlight: null,
@@ -2097,7 +2116,8 @@ export function registerPtyHandlers(
         ...(request.expectedTabId ? { expectedTabId: request.expectedTabId } : {})
       },
       0,
-      Boolean(startupReady)
+      Boolean(startupReady),
+      false
     )
     const retryWithReadyProvider = (): void => {
       if (pendingLocalShutdownRetries.get(retained.id) !== retained) {

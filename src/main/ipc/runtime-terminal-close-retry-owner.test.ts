@@ -206,4 +206,79 @@ describe('runtime terminal close retry ownership', () => {
     expect(remove).toHaveBeenCalledWith('environment-1', 'terminal-1')
     expect(vi.getTimerCount()).toBe(0)
   })
+
+  it('hydrates persisted closes without rewriting their durable intent', async () => {
+    vi.useFakeTimers()
+    const upsert = vi.fn(() => {
+      throw new Error('startup replay must not rewrite durable intent')
+    })
+    initializeRuntimeTerminalCloseRetryOwner(
+      {
+        getPendingRuntimeTerminalCloses: () => [
+          { environmentId: 'environment-1', handle: 'terminal-1', runtimeId: 'runtime-a' }
+        ],
+        upsertPendingRuntimeTerminalClose: upsert,
+        removePendingRuntimeTerminalClose: vi.fn()
+      } as never,
+      '/tmp/orca-runtime-owner-test'
+    )
+    getRuntimeEnvironmentStatusMock.mockResolvedValue({
+      id: 'status-a',
+      ok: true,
+      result: { runtimeId: 'runtime-a' },
+      _meta: { runtimeId: 'runtime-a' }
+    })
+    callRuntimeEnvironmentMock.mockResolvedValue({
+      id: 'close-a',
+      ok: true,
+      result: { close: true },
+      _meta: { runtimeId: 'runtime-a' }
+    })
+
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(upsert).not.toHaveBeenCalled()
+    expect(callRuntimeEnvironmentMock).toHaveBeenCalledOnce()
+  })
+
+  it('retries durable removal without repeating an accepted runtime close', async () => {
+    vi.useFakeTimers()
+    const remove = vi
+      .fn()
+      .mockImplementationOnce(() => {
+        throw new Error('runtime removal disk full')
+      })
+      .mockReturnValue(undefined)
+    initializeRuntimeTerminalCloseRetryOwner(
+      {
+        getPendingRuntimeTerminalCloses: () => [],
+        upsertPendingRuntimeTerminalClose: vi.fn(),
+        removePendingRuntimeTerminalClose: remove
+      } as never,
+      '/tmp/orca-runtime-owner-test'
+    )
+    getRuntimeEnvironmentStatusMock.mockResolvedValue({
+      id: 'status-a',
+      ok: true,
+      result: { runtimeId: 'runtime-a' },
+      _meta: { runtimeId: 'runtime-a' }
+    })
+    callRuntimeEnvironmentMock.mockResolvedValue({
+      id: 'close-a',
+      ok: true,
+      result: { close: true },
+      _meta: { runtimeId: 'runtime-a' }
+    })
+
+    await expect(
+      closeRuntimeTerminalWithRetryOwnership('environment-1', 'terminal-1', 'runtime-a')
+    ).rejects.toThrow('runtime removal disk full')
+    expect(callRuntimeEnvironmentMock).toHaveBeenCalledOnce()
+    expect(remove).toHaveBeenCalledOnce()
+    await vi.advanceTimersByTimeAsync(250)
+
+    expect(callRuntimeEnvironmentMock).toHaveBeenCalledOnce()
+    expect(remove).toHaveBeenCalledTimes(2)
+    expect(vi.getTimerCount()).toBe(0)
+  })
 })

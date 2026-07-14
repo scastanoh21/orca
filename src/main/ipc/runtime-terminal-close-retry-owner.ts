@@ -12,6 +12,7 @@ type RetainedTerminalClose = {
   handle: string
   runtimeId: string | null
   attempts: number
+  closeComplete: boolean
   nextRetryAt: number
   inFlight: Promise<RuntimeRpcResponse<unknown>> | null
 }
@@ -38,8 +39,9 @@ function release(close: RetainedTerminalClose): void {
   if (!isCurrentOwner(close)) {
     return
   }
-  retainedCloses.delete(key(close.environmentId, close.handle))
+  close.closeComplete = true
   store?.removePendingRuntimeTerminalClose?.(close.environmentId, close.handle)
+  retainedCloses.delete(key(close.environmentId, close.handle))
   schedule()
 }
 
@@ -88,38 +90,40 @@ function attempt(close: RetainedTerminalClose): Promise<RuntimeRpcResponse<unkno
     result: { close: false, reason },
     _meta: { runtimeId: runtimeId ?? close.runtimeId ?? 'unknown-runtime' }
   })
-  const request = getRuntimeEnvironmentStatus(userDataPath, close.environmentId)
-    .then((status) => {
-      if (!isCurrentOwner(close)) {
-        return noOpResponse(status._meta?.runtimeId)
-      }
-      if (!status.ok) {
-        throw Object.assign(new Error(status.error.message), { response: status })
-      }
-      const currentRuntimeId = status._meta.runtimeId
-      if (close.runtimeId && close.runtimeId !== currentRuntimeId) {
-        release(close)
-        return {
-          id: 'terminal.close',
-          ok: true as const,
-          result: { close: false, reason: 'runtime_replaced' },
-          _meta: { runtimeId: currentRuntimeId }
+  const closeAttempt = close.closeComplete
+    ? Promise.resolve(noOpResponse(close.runtimeId))
+    : getRuntimeEnvironmentStatus(userDataPath, close.environmentId).then((status) => {
+        if (!isCurrentOwner(close)) {
+          return noOpResponse(status._meta?.runtimeId)
         }
-      }
-      if (!close.runtimeId) {
-        close.runtimeId = currentRuntimeId
-        store?.upsertPendingRuntimeTerminalClose?.({
-          environmentId: close.environmentId,
-          handle: close.handle,
-          runtimeId: currentRuntimeId,
-          requestedAt: Date.now()
+        if (!status.ok) {
+          throw Object.assign(new Error(status.error.message), { response: status })
+        }
+        const currentRuntimeId = status._meta.runtimeId
+        if (close.runtimeId && close.runtimeId !== currentRuntimeId) {
+          release(close)
+          return {
+            id: 'terminal.close',
+            ok: true as const,
+            result: { close: false, reason: 'runtime_replaced' },
+            _meta: { runtimeId: currentRuntimeId }
+          }
+        }
+        if (!close.runtimeId) {
+          close.runtimeId = currentRuntimeId
+          store?.upsertPendingRuntimeTerminalClose?.({
+            environmentId: close.environmentId,
+            handle: close.handle,
+            runtimeId: currentRuntimeId,
+            requestedAt: Date.now()
+          })
+        }
+        return callRuntimeEnvironment(userDataPath, close.environmentId, 'terminal.close', {
+          terminal: close.handle,
+          expectedRuntimeId: close.runtimeId
         })
-      }
-      return callRuntimeEnvironment(userDataPath, close.environmentId, 'terminal.close', {
-        terminal: close.handle,
-        expectedRuntimeId: close.runtimeId
       })
-    })
+  const request = closeAttempt
     .then((response) => {
       if (!isCurrentOwner(close)) {
         return noOpResponse(response._meta?.runtimeId)
@@ -187,7 +191,8 @@ function attempt(close: RetainedTerminalClose): Promise<RuntimeRpcResponse<unkno
 function retain(
   environmentId: string,
   handle: string,
-  runtimeId?: string | null
+  runtimeId?: string | null,
+  persist = true
 ): RetainedTerminalClose {
   const closeKey = key(environmentId, handle)
   const incomingRuntimeId = runtimeId ?? null
@@ -204,11 +209,12 @@ function retain(
       handle,
       runtimeId: incomingRuntimeId,
       attempts: 0,
+      closeComplete: false,
       nextRetryAt: 0,
       inFlight: null
     }
     retainedCloses.set(closeKey, close)
-    if (typeof store?.upsertPendingRuntimeTerminalClose === 'function') {
+    if (persist && typeof store?.upsertPendingRuntimeTerminalClose === 'function') {
       try {
         store.upsertPendingRuntimeTerminalClose({
           environmentId,
@@ -257,7 +263,7 @@ export function initializeRuntimeTerminalCloseRetryOwner(
       ? store.getPendingRuntimeTerminalCloses()
       : []
   for (const close of persisted) {
-    retain(close.environmentId, close.handle, close.runtimeId)
+    retain(close.environmentId, close.handle, close.runtimeId, false)
   }
   schedule()
 }
