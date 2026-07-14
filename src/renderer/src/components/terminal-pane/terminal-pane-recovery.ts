@@ -23,9 +23,12 @@ type RecoveryRequest = {
   tabId: string
   ptyId: string | null
   reason: TerminalPaneRecoveryReason
-  /** Identifies the xterm generation making the request. A replaced xterm
-   *  must not schedule or complete recovery for its successor. */
+  /** Identifies the tab recovery epoch making the request. A successful
+   *  recovery must immediately invalidate every pre-remount request. */
   terminalRecoveryGeneration?: number
+  /** Identifies the concrete mounted xterm making the request. Disposal
+   *  invalidates delayed work even when the tab's recovery epoch is unchanged. */
+  terminalRecoveryInstanceId?: number
   /** Remote panes (runtime mirrors, app-SSH) must prove the PTY alive before
    *  an input-undeliverable remount: pty:hasPty answers null for ids the local
    *  registry doesn't own, and treating null as "proceed" would let a
@@ -46,7 +49,15 @@ const RECOVERY_COOLDOWN_MS = 15_000
 
 const recoveryTimestampsByTabId = new Map<string, number[]>()
 const recoveryGenerationByTabId = new Map<string, number>()
-const pendingRetryTimerByTabId = new Map<string, ReturnType<typeof setTimeout>>()
+const activeTerminalRecoveryInstanceIds = new Set<number>()
+const pendingRetryByTabId = new Map<
+  string,
+  {
+    timer: ReturnType<typeof setTimeout>
+    requestsByInstanceId: Map<number | undefined, RecoveryRequest>
+  }
+>()
+let nextTerminalRecoveryInstanceId = 0
 
 type RecoveryBudget =
   | { allowed: true }
@@ -81,38 +92,73 @@ export function captureTerminalPaneRecoveryGeneration(tabId: string): number {
   return recoveryGenerationByTabId.get(tabId) ?? 0
 }
 
-function requestBelongsToCurrentRecoveryGeneration(request: RecoveryRequest): boolean {
+export function registerTerminalPaneRecoveryInstance(tabId: string): {
+  id: number
+  unregister: () => void
+} {
+  const id = ++nextTerminalRecoveryInstanceId
+  activeTerminalRecoveryInstanceIds.add(id)
+  return {
+    id,
+    unregister: () => {
+      activeTerminalRecoveryInstanceIds.delete(id)
+      const pendingRetry = pendingRetryByTabId.get(tabId)
+      pendingRetry?.requestsByInstanceId.delete(id)
+      if (pendingRetry?.requestsByInstanceId.size === 0) {
+        cancelPendingRecoveryRetry(tabId)
+      }
+    }
+  }
+}
+
+function isCurrentTerminalRecoveryRequest(request: RecoveryRequest): boolean {
   return (
-    request.terminalRecoveryGeneration === undefined ||
-    request.terminalRecoveryGeneration === captureTerminalPaneRecoveryGeneration(request.tabId)
+    (request.terminalRecoveryGeneration === undefined ||
+      request.terminalRecoveryGeneration ===
+        captureTerminalPaneRecoveryGeneration(request.tabId)) &&
+    (request.terminalRecoveryInstanceId === undefined ||
+      activeTerminalRecoveryInstanceIds.has(request.terminalRecoveryInstanceId))
   )
 }
 
 function scheduleRecoveryRetry(request: RecoveryRequest, delayMs: number): void {
-  if (!requestBelongsToCurrentRecoveryGeneration(request)) {
+  if (!isCurrentTerminalRecoveryRequest(request)) {
     return
   }
-  if (pendingRetryTimerByTabId.has(request.tabId)) {
+  const pendingRetry = pendingRetryByTabId.get(request.tabId)
+  if (pendingRetry) {
+    // Multiple split panes share a tab-wide remount. Keep one request per
+    // concrete xterm so disposing one pane cannot cancel a sibling's heal.
+    pendingRetry.requestsByInstanceId.set(request.terminalRecoveryInstanceId, request)
     return
   }
+  const requestsByInstanceId = new Map<number | undefined, RecoveryRequest>([
+    [request.terminalRecoveryInstanceId, request]
+  ])
   const timer = setTimeout(
     () => {
-      pendingRetryTimerByTabId.delete(request.tabId)
-      if (!requestBelongsToCurrentRecoveryGeneration(request)) {
+      pendingRetryByTabId.delete(request.tabId)
+      const currentRequest = [...requestsByInstanceId.values()].find(
+        isCurrentTerminalRecoveryRequest
+      )
+      if (!currentRequest) {
         return
       }
-      void requestTerminalPaneRecovery(request)
+      void requestTerminalPaneRecovery(currentRequest)
     },
     Math.max(delayMs, 1_000)
   )
-  pendingRetryTimerByTabId.set(request.tabId, timer)
+  pendingRetryByTabId.set(request.tabId, {
+    timer,
+    requestsByInstanceId
+  })
 }
 
 function cancelPendingRecoveryRetry(tabId: string): void {
-  const timer = pendingRetryTimerByTabId.get(tabId)
-  if (timer !== undefined) {
-    clearTimeout(timer)
-    pendingRetryTimerByTabId.delete(tabId)
+  const pendingRetry = pendingRetryByTabId.get(tabId)
+  if (pendingRetry !== undefined) {
+    clearTimeout(pendingRetry.timer)
+    pendingRetryByTabId.delete(tabId)
   }
 }
 
@@ -125,7 +171,7 @@ function cancelPendingRecoveryRetry(tabId: string): void {
  * exited"), and remounting there would race it.
  */
 export async function requestTerminalPaneRecovery(request: RecoveryRequest): Promise<boolean> {
-  if (!requestBelongsToCurrentRecoveryGeneration(request)) {
+  if (!isCurrentTerminalRecoveryRequest(request)) {
     return false
   }
   const budget = recoveryBudget(request.tabId, Date.now())
@@ -160,7 +206,7 @@ export async function requestTerminalPaneRecovery(request: RecoveryRequest): Pro
     }
     // Re-check the budget across the await: a concurrent detector may have
     // already consumed it for this tab.
-    if (!requestBelongsToCurrentRecoveryGeneration(request)) {
+    if (!isCurrentTerminalRecoveryRequest(request)) {
       return false
     }
     const recheck = recoveryBudget(request.tabId, Date.now())
@@ -223,8 +269,10 @@ export async function requestTerminalPaneRecovery(request: RecoveryRequest): Pro
 export function _resetTerminalPaneRecoveryForTests(): void {
   recoveryTimestampsByTabId.clear()
   recoveryGenerationByTabId.clear()
-  for (const timer of pendingRetryTimerByTabId.values()) {
-    clearTimeout(timer)
+  activeTerminalRecoveryInstanceIds.clear()
+  nextTerminalRecoveryInstanceId = 0
+  for (const pendingRetry of pendingRetryByTabId.values()) {
+    clearTimeout(pendingRetry.timer)
   }
-  pendingRetryTimerByTabId.clear()
+  pendingRetryByTabId.clear()
 }

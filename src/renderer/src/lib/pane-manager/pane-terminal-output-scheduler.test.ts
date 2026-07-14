@@ -249,6 +249,22 @@ describe('pane terminal output scheduler', () => {
       }
     })
 
+    it('does not probe a certified terminal while waiting for parsed output', async () => {
+      const { waitForTerminalOutputParsed } = await loadScheduler()
+      const { _resetWritePipelineHealthForTests, notifyUndeliverableWrite } =
+        await import('./terminal-write-pipeline-health')
+      const terminal = createTerminal()
+      try {
+        notifyUndeliverableWrite(terminal, 'replay-wedged')
+
+        await waitForTerminalOutputParsed(terminal)
+
+        expect(terminal.write).not.toHaveBeenCalled()
+      } finally {
+        _resetWritePipelineHealthForTests(terminal)
+      }
+    })
+
     it('credits an empty write immediately', async () => {
       const { writeTerminalOutput } = await loadScheduler()
       const terminal = createTerminal()

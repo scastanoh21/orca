@@ -1484,6 +1484,11 @@ export function registerTerminalBacklogRecovery(
 
 export function waitForTerminalOutputParsed(terminal: TerminalOutputTarget): Promise<void> {
   flushTerminalOutput(terminal)
+  if (isTerminalWritePipelineCertifiedDead(terminal)) {
+    // A dead pipeline cannot settle; recovery owns it and serializers must not
+    // enqueue probe writes while a bounded remount retry is pending.
+    return Promise.resolve()
+  }
 
   return new Promise((resolve) => {
     let settled = false

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   _resetTerminalPaneRecoveryForTests,
   captureTerminalPaneRecoveryGeneration,
+  registerTerminalPaneRecoveryInstance,
   requestTerminalPaneRecovery
 } from './terminal-pane-recovery'
 
@@ -235,6 +236,69 @@ describe('requestTerminalPaneRecovery', () => {
     await Promise.resolve()
 
     expect(mocks.remountTerminalTabForRecovery).toHaveBeenCalledTimes(2)
+  })
+
+  it('cancels a retry when a non-recovery lifecycle replaces its xterm', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(0)
+    const originalInstance = registerTerminalPaneRecoveryInstance('tab-1')
+    await requestTerminalPaneRecovery({
+      tabId: 'tab-1',
+      ptyId: 'pty-1',
+      reason: 'write-stalled',
+      terminalRecoveryGeneration: captureTerminalPaneRecoveryGeneration('tab-1'),
+      terminalRecoveryInstanceId: originalInstance.id
+    })
+    originalInstance.unregister()
+
+    const wedgedReplacement = registerTerminalPaneRecoveryInstance('tab-1')
+    await requestTerminalPaneRecovery({
+      tabId: 'tab-1',
+      ptyId: 'pty-1',
+      reason: 'replay-wedged',
+      terminalRecoveryGeneration: captureTerminalPaneRecoveryGeneration('tab-1'),
+      terminalRecoveryInstanceId: wedgedReplacement.id
+    })
+    expect(vi.getTimerCount()).toBe(1)
+
+    // Cold parking, SSH reconnect, and ordinary remounts dispose the binding
+    // without changing the recovery epoch; disposal owns timer invalidation.
+    wedgedReplacement.unregister()
+    const healthySuccessor = registerTerminalPaneRecoveryInstance('tab-1')
+    expect(vi.getTimerCount()).toBe(0)
+    await vi.advanceTimersByTimeAsync(600_000)
+
+    expect(mocks.remountTerminalTabForRecovery).toHaveBeenCalledTimes(1)
+    healthySuccessor.unregister()
+  })
+
+  it('keeps a sibling pane retry when the first requesting split is disposed', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(0)
+    await requestTerminalPaneRecovery({
+      tabId: 'tab-1',
+      ptyId: 'pty-1',
+      reason: 'write-stalled'
+    })
+    const recoveryGeneration = captureTerminalPaneRecoveryGeneration('tab-1')
+    const firstSplit = registerTerminalPaneRecoveryInstance('tab-1')
+    const secondSplit = registerTerminalPaneRecoveryInstance('tab-1')
+    for (const instance of [firstSplit, secondSplit]) {
+      await requestTerminalPaneRecovery({
+        tabId: 'tab-1',
+        ptyId: `pty-${instance.id}`,
+        reason: 'replay-wedged',
+        terminalRecoveryGeneration: recoveryGeneration,
+        terminalRecoveryInstanceId: instance.id
+      })
+    }
+
+    firstSplit.unregister()
+    expect(vi.getTimerCount()).toBe(1)
+    await vi.advanceTimersByTimeAsync(15_000)
+
+    expect(mocks.remountTerminalTabForRecovery).toHaveBeenCalledTimes(2)
+    secondSplit.unregister()
   })
 
   it('budgets tabs independently', async () => {

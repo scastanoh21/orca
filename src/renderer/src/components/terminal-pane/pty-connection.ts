@@ -56,6 +56,7 @@ import {
 } from '@/lib/pane-manager/terminal-write-pipeline-health'
 import {
   captureTerminalPaneRecoveryGeneration,
+  registerTerminalPaneRecoveryInstance,
   requestTerminalPaneRecovery
 } from './terminal-pane-recovery'
 import {
@@ -954,6 +955,7 @@ export function connectPanePty(
   // Why: recovery ownership belongs to this xterm instance. A request that
   // settles after remount must not remount its already-replaced successor.
   const terminalRecoveryGeneration = captureTerminalPaneRecoveryGeneration(deps.tabId)
+  const terminalRecoveryInstance = registerTerminalPaneRecoveryInstance(deps.tabId)
   exposeE2eTerminalPtyOutputDebug()
   let disposed = false
   let connectFrame: number | null = null
@@ -3375,6 +3377,7 @@ export function connectPanePty(
       ptyId: undeliverablePtyId,
       reason: 'input-undeliverable',
       terminalRecoveryGeneration,
+      terminalRecoveryInstanceId: terminalRecoveryInstance.id,
       // Why: pty:hasPty answers null for ids the local registry doesn't own,
       // and a disconnected remote pane would otherwise remount-churn on every
       // cooldown window while typing. Local panes keep the lenient gate.
@@ -3397,7 +3400,8 @@ export function connectPanePty(
         tabId: deps.tabId,
         ptyId: transport.getPtyId() ?? storePtyId,
         reason,
-        terminalRecoveryGeneration
+        terminalRecoveryGeneration,
+        terminalRecoveryInstanceId: terminalRecoveryInstance.id
       })
     }
   )
@@ -3945,7 +3949,15 @@ export function connectPanePty(
         ptyId,
         async (opts) => {
           try {
+            if (isTerminalWritePipelineCertifiedDead(pane.terminal)) {
+              return null
+            }
             await waitForTerminalOutputParsed(pane.terminal)
+            // Certification can land while the serializer waits for an older
+            // write; never publish a fossil frame from a dead renderer.
+            if (isTerminalWritePipelineCertifiedDead(pane.terminal)) {
+              return null
+            }
             // Why: alt-screen TUIs (vim, claude-code) hold transient state in
             // the alternate screen. The hydration path requests
             // altScreenForcesZeroRows so normal-buffer scrollback isn't bled
@@ -6179,7 +6191,8 @@ export function connectPanePty(
             tabId: deps.tabId,
             ptyId: transport.getPtyId() ?? storePtyId,
             reason: 'restore-blocked',
-            terminalRecoveryGeneration
+            terminalRecoveryGeneration,
+            terminalRecoveryInstanceId: terminalRecoveryInstance.id
           })
         }
         return false
@@ -7544,6 +7557,9 @@ export function connectPanePty(
     reconcileIfSessionMissing,
     dispose() {
       disposed = true
+      // A normal park/reconnect/remount does not advance the recovery epoch;
+      // invalidate this concrete xterm so its delayed retry cannot hit the next.
+      terminalRecoveryInstance.unregister()
       unregisterUndeliverableWriteHandler()
       // Why: the post-spawn reconcile polls across frames; cancel its pending
       // rAF so a torn-down pane cannot keep fitting/resizing after disposal.

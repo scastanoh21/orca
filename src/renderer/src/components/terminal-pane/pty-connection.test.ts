@@ -863,6 +863,7 @@ describe('connectPanePty', () => {
           ackColdRestore: vi.fn(),
           onClearBufferRequest: vi.fn(() => vi.fn()),
           onSerializeBufferRequest: vi.fn(() => vi.fn()),
+          sendSerializedBuffer: vi.fn(),
           declarePendingPaneSerializer: vi.fn().mockResolvedValue(1),
           settlePaneSerializer: vi.fn().mockResolvedValue(undefined),
           clearPendingPaneSerializer: vi.fn().mockResolvedValue(undefined)
@@ -5637,7 +5638,7 @@ describe('connectPanePty', () => {
     expect(transport.resize).toHaveBeenLastCalledWith(65, 63)
   })
 
-  it('adopts a still-live background PTY via attach instead of reattaching when an eager buffer exists', async () => {
+  it('adopts a live eager PTY and withholds snapshots after its renderer dies', async () => {
     // Why: background automation tabs spawn the agent PTY eagerly and register an
     // eager buffer, then never mount until opened. On first mount the restored
     // ptyId equals the tab ptyId, so without this guard the pane mis-routes into
@@ -5681,6 +5682,19 @@ describe('connectPanePty', () => {
     )
     const { hasPtySerializer } = await import('./pty-buffer-serializer')
     expect(hasPtySerializer(eagerPtyId)).toBe(true)
+
+    const serializeRequestHandler = (
+      window.api.pty.onSerializeBufferRequest as unknown as {
+        mock: { calls: [[(request: { requestId: string; ptyId: string }) => void]] }
+      }
+    ).mock.calls[0]?.[0]
+    const { notifyUndeliverableWrite } =
+      await import('@/lib/pane-manager/terminal-write-pipeline-health')
+    notifyUndeliverableWrite(pane.terminal, 'replay-wedged')
+    serializeRequestHandler?.({ requestId: 'dead-renderer', ptyId: eagerPtyId })
+    await flushAsyncTicks()
+
+    expect(window.api.pty.sendSerializedBuffer).toHaveBeenCalledWith('dead-renderer', null)
   })
 
   it('does not adopt another tab live eager PTY from a stale restored leaf binding', async () => {
