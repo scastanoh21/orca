@@ -101,7 +101,8 @@ import {
   buildTerminalTabRetirementPlan,
   isTerminalTabPresent,
   removeSleepingAgentSessionsForTab,
-  type TerminalTabCloseReason
+  type TerminalTabCloseReason,
+  type TerminalTabRetirementPlan
 } from './terminal-tab-retirement'
 
 function getNextTerminalOrdinal(tabs: TerminalTab[]): number {
@@ -609,6 +610,7 @@ export type TerminalSlice = {
       reason?: TerminalTabCloseReason
       remoteCloseOwnedByHost?: boolean
       localPtyTeardownOwnedExternally?: boolean
+      precomputedRetirementPlan?: TerminalTabRetirementPlan
     }
   ) => void
   reorderTabs: (worktreeId: string, tabIds: string[]) => void
@@ -1216,7 +1218,10 @@ export const createTerminalSlice: StateCreator<AppState, [], [], TerminalSlice> 
   closeTab: (tabId, opts) => {
     const closeReason = opts?.reason ?? 'user'
     const retiresSession = closeReason === 'user' || closeReason === 'cleanup'
-    const retirementPlan = buildTerminalTabRetirementPlan(get(), tabId)
+    const retirementPlan =
+      opts?.precomputedRetirementPlan?.tabId === tabId
+        ? opts.precomputedRetirementPlan
+        : buildTerminalTabRetirementPlan(get(), tabId)
     let closingWorktreeId: string | null = null
 
     // Why: a parked tab has no mounted TerminalPane cleanup. Retirement must

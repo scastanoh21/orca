@@ -130,6 +130,7 @@ const HYDRATE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000
 // session (it is otherwise only cleared at app quit).
 export const CLOSED_AGENT_STATUS_TAB_IDS_MAX = 1024
 export const CLOSED_AGENT_STATUS_PANE_KEYS_MAX = 1024
+export const PANE_KEY_ALIASES_MAX = 1024
 
 type LastStatusFile = {
   version: number
@@ -167,7 +168,9 @@ function equivalentInterruptAgentType(
 // Why: paneKey is `${tabId}:${leafUuid}` — validate the durable leaf suffix
 // at write/hydrate time so legacy numeric rows fail closed.
 export function isValidPaneKey(value: unknown): value is string {
-  return typeof value === 'string' && parsePaneKey(value) !== null
+  return (
+    typeof value === 'string' && value.length <= MAX_PANE_KEY_LEN && parsePaneKey(value) !== null
+  )
 }
 
 function sanitizeHydratedEntry(
@@ -959,6 +962,51 @@ export class AgentHookServer {
     this.paneKeyAliasPersistenceListener?.(this.getPersistedPaneKeyAliases())
   }
 
+  private boundPaneKeyAliases(): void {
+    while (this.legacyPaneKeyAliases.size > PANE_KEY_ALIASES_MAX) {
+      // Why: renderer-originated aliases are untrusted process-lifetime state;
+      // insertion-order eviction bounds both memory and per-message cleanup.
+      const oldestKey = this.legacyPaneKeyAliases.keys().next().value
+      if (!oldestKey) {
+        break
+      }
+      this.legacyPaneKeyAliases.delete(oldestKey)
+    }
+  }
+
+  private getPhysicalPaneKeyForAuthority(paneKey: string, ptyId?: string): string {
+    const ownerPaneKey = this.resolvePaneKeyAlias(paneKey)
+    for (const [physicalPaneKey, entry] of this.legacyPaneKeyAliases) {
+      if (
+        entry.stablePaneKey === ownerPaneKey &&
+        (!ptyId || !entry.ptyId || entry.ptyId === ptyId)
+      ) {
+        return physicalPaneKey
+      }
+    }
+    return paneKey
+  }
+
+  canTransferPaneAuthority(
+    fromPaneKey: string,
+    ptyId: string | undefined,
+    ownsPty: (physicalPaneKey: string, ptyId: string) => boolean
+  ): boolean {
+    if (!isValidPaneKey(fromPaneKey)) {
+      return false
+    }
+    const physicalPaneKey = this.getPhysicalPaneKeyForAuthority(fromPaneKey, ptyId)
+    const alias = this.legacyPaneKeyAliases.get(physicalPaneKey)
+    if (ptyId) {
+      return alias?.ptyId === ptyId || ownsPty(physicalPaneKey, ptyId)
+    }
+    // Why: an ID-less move may update existing hook state, but it must not mint
+    // authority for a pane main has never observed.
+    return (
+      Boolean(alias) || this.state.lastStatusByPaneKey.has(this.resolvePaneKeyAlias(fromPaneKey))
+    )
+  }
+
   registerPaneKeyAlias(
     legacyPaneKey: string,
     stablePaneKey: string,
@@ -967,7 +1015,7 @@ export class AgentHookServer {
     options?: { overwriteExisting?: boolean }
   ): void {
     const legacy = parseLegacyNumericPaneKey(legacyPaneKey)
-    const stable = parsePaneKey(stablePaneKey)
+    const stable = isValidPaneKey(stablePaneKey) ? parsePaneKey(stablePaneKey) : null
     if (!legacy || !stable || legacy.tabId !== stable.tabId) {
       return
     }
@@ -992,6 +1040,7 @@ export class AgentHookServer {
       ptyId: normalizedPtyId ?? null,
       updatedAt: normalizedUpdatedAt
     })
+    this.boundPaneKeyAliases()
     if (normalizedPtyId) {
       this.notifyPaneKeyAliasPersistenceListener()
     }
@@ -1003,20 +1052,11 @@ export class AgentHookServer {
     ptyId?: string,
     updatedAt = Date.now()
   ): void {
-    if (!parsePaneKey(fromPaneKey) || !parsePaneKey(toPaneKey)) {
+    if (!isValidPaneKey(fromPaneKey) || !isValidPaneKey(toPaneKey)) {
       return
     }
     const previousOwnerPaneKey = this.resolvePaneKeyAlias(fromPaneKey)
-    let physicalPaneKey = fromPaneKey
-    for (const [candidatePhysicalPaneKey, entry] of this.legacyPaneKeyAliases) {
-      if (
-        entry.stablePaneKey === previousOwnerPaneKey &&
-        (!ptyId || !entry.ptyId || entry.ptyId === ptyId)
-      ) {
-        physicalPaneKey = candidatePhysicalPaneKey
-        break
-      }
-    }
+    const physicalPaneKey = this.getPhysicalPaneKeyForAuthority(fromPaneKey, ptyId)
     const existing = this.legacyPaneKeyAliases.get(physicalPaneKey)
     const normalizedPtyId = ptyId?.trim() || existing?.ptyId || null
     const hadStatus = this.state.lastStatusByPaneKey.has(previousOwnerPaneKey)
@@ -1048,6 +1088,7 @@ export class AgentHookServer {
       ptyId: normalizedPtyId,
       updatedAt
     })
+    this.boundPaneKeyAliases()
     this.closedAgentStatusPaneKeys.delete(toPaneKey)
     this.notifyPaneKeyAliasPersistenceListener()
     if (hadStatus) {

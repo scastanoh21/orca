@@ -30,6 +30,10 @@ function state(overrides: Partial<KillAllTerminalSurfaceState> = {}): KillAllTer
     tabsByWorktree: {},
     unifiedTabsByWorktree: {},
     ptyIdsByTabId: {},
+    terminalLayoutsByTabId: {},
+    lastKnownRelayPtyIdByTabId: {},
+    deferredSshSessionIdsByTabId: {},
+    pendingReconnectPtyIdByTabId: {},
     ...overrides
   }
 }
@@ -121,7 +125,7 @@ describe('runKillAllTerminalSurfaces', () => {
     const targetIds = snapshotKillAllTerminalSurfaceIds(current)
     const calls: string[] = []
     const killDaemonSessions = vi.fn(() => management.promise)
-    const closeSurface = vi.fn((targetId: string) => {
+    const closeSurface = vi.fn((targetId: string, _options: unknown) => {
       calls.push(`close:${targetId}`)
       removeSurface(current, targetId)
     })
@@ -167,10 +171,10 @@ describe('runKillAllTerminalSurfaces', () => {
         'wt-new-active': [unified('later-visible', 'later-tab', 'wt-new-active')]
       },
       ptyIdsByTabId: {
-        'background-target': ['pty-shared', 'remote:runtime-only'],
+        'background-target': ['pty-shared', 'pty-external', 'remote:runtime-only'],
         'unified-only-target': ['pty-unified', 'pty-shared'],
         'moved-target': ['ssh:host@@pty-last', 'pty-shared'],
-        'later-tab': ['pty-later']
+        'later-tab': ['pty-later', 'pty-external']
       }
     })
     ;(
@@ -178,16 +182,30 @@ describe('runKillAllTerminalSurfaces', () => {
         terminalLayoutsByTabId: Record<string, { ptyIdsByLeafId: Record<string, string> }>
       }
     ).terminalLayoutsByTabId = {
-      'moved-target': { ptyIdsByLeafId: { leaf: 'layout-restore-hint' } }
+      'moved-target': {
+        root: null,
+        activeLeafId: null,
+        expandedLeafId: null,
+        ptyIdsByLeafId: { leaf: 'layout-restore-hint' }
+      }
     }
     management.resolve({ killedCount: 2, remainingCount: 1 })
-    await vi.waitFor(() => expect(killPty).toHaveBeenCalledTimes(3))
+    await vi.waitFor(() => expect(killPty).toHaveBeenCalledTimes(5))
 
-    expect(closeSurface.mock.calls).toEqual([
-      ['background-target', { force: true, localPtyTeardownOwnedExternally: true }],
-      ['unified-only-target', { force: true, localPtyTeardownOwnedExternally: true }],
-      ['moved-target', { force: true, localPtyTeardownOwnedExternally: true }]
+    expect(closeSurface.mock.calls.map(([targetId]) => targetId)).toEqual([
+      'background-target',
+      'unified-only-target',
+      'moved-target'
     ])
+    for (const [, options] of closeSurface.mock.calls) {
+      expect(options).toEqual(
+        expect.objectContaining({
+          force: true,
+          localPtyTeardownOwnedExternally: true,
+          precomputedRetirementPlan: expect.any(Object)
+        })
+      )
+    }
     expect(calls.slice(0, 3)).toEqual([
       'close:background-target',
       'close:unified-only-target',
@@ -198,9 +216,10 @@ describe('runKillAllTerminalSurfaces', () => {
     expect(killPty).toHaveBeenCalledWith('ssh:host@@pty-last')
     expect(killPty).not.toHaveBeenCalledWith('remote:runtime-only')
     expect(killPty).not.toHaveBeenCalledWith('pty-later')
+    expect(killPty).not.toHaveBeenCalledWith('pty-external')
     expect(killPty).not.toHaveBeenCalledWith('stale-pty')
-    expect(killPty).not.toHaveBeenCalledWith('tab-restore-hint')
-    expect(killPty).not.toHaveBeenCalledWith('layout-restore-hint')
+    expect(killPty).toHaveBeenCalledWith('tab-restore-hint')
+    expect(killPty).toHaveBeenCalledWith('layout-restore-hint')
     expect(snapshotKillAllTerminalSurfaceIds(current)).toEqual(['later-tab'])
 
     let settled = false
@@ -216,7 +235,7 @@ describe('runKillAllTerminalSurfaces', () => {
       closeAttemptCount: 3,
       absentTargetCount: 4,
       failedCloseAttemptCount: 0,
-      exactKillAcceptedCount: 2,
+      exactKillAcceptedCount: 4,
       exactKillRejectedCount: 1,
       daemon: { status: 'fulfilled', killedCount: 2, remainingCount: 1 }
     })
@@ -241,10 +260,15 @@ describe('runKillAllTerminalSurfaces', () => {
 
     expect(summary.daemon).toEqual({ status: 'rejected' })
     expect(summary.absentTargetCount).toBe(1)
-    expect(closeSurface).toHaveBeenCalledWith('target', {
-      force: true,
-      localPtyTeardownOwnedExternally: true
-    })
+    expect(closeSurface).toHaveBeenCalledWith(
+      'target',
+      expect.objectContaining({
+        force: true,
+        localPtyTeardownOwnedExternally: true,
+        precomputedRetirementPlan: expect.any(Object),
+        precomputedCloseState: expect.any(Object)
+      })
+    )
     expect(killPty).toHaveBeenCalledWith('local-pty')
     expect(snapshotKillAllTerminalSurfaceIds(current)).toEqual(['later'])
   })

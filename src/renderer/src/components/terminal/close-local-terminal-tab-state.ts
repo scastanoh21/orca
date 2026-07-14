@@ -1,5 +1,8 @@
 import { useAppStore } from '@/store'
-import type { TerminalTabCloseReason } from '@/store/slices/terminal-tab-retirement'
+import type {
+  TerminalTabCloseReason,
+  TerminalTabRetirementPlan
+} from '@/store/slices/terminal-tab-retirement'
 
 export function closeLocalTerminalTabState(
   terminalTabId: string,
@@ -7,16 +10,19 @@ export function closeLocalTerminalTabState(
     reason?: TerminalTabCloseReason
     remoteCloseOwnedByHost?: boolean
     localPtyTeardownOwnedExternally?: boolean
+    precomputedRetirementPlan?: TerminalTabRetirementPlan
   }
 ): void {
   const state = useAppStore.getState()
   if (
+    options?.precomputedRetirementPlan?.tabId === terminalTabId ||
     Object.values(state.tabsByWorktree).some((tabs) => tabs.some((tab) => tab.id === terminalTabId))
   ) {
     if (
       options?.reason ||
       options?.remoteCloseOwnedByHost ||
-      options?.localPtyTeardownOwnedExternally
+      options?.localPtyTeardownOwnedExternally ||
+      options?.precomputedRetirementPlan
     ) {
       state.closeTab(terminalTabId, options)
     } else {

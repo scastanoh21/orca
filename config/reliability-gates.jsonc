@@ -409,7 +409,7 @@
             "current exact PTY bindings are deduplicated, remote runtime IDs and stale/late bindings are excluded, and all per-PTY settlements finish before completion",
             "the production dependency path calls daemon management exactly once and never invokes listSessions for a post-kill sweep",
             "management rejection and per-close/provider failures do not stop remaining cleanup and produce bounded count/latency diagnostics",
-            "a real 100-tab Zustand fixture records 100 close attempts and exact kills, at least 100 writes, 49 event-loop yields, and no close batch over 50 ms"
+            "a real 100-tab Zustand fixture records 100 close attempts and exact kills, at least 100 writes, and 49 event-loop yields; a planner operation-count test proves the live-owner stores are indexed once"
           ]
         },
         {
@@ -462,7 +462,7 @@
       },
       "performanceBudget": {
         "required": true,
-        "evidence": "The coordinator performs one management sweep, one state close per present unique target with local PTY teardown delegated to the exact phase, and at most one exact kill per unique current non-runtime PTY not already settled by daemon management. A real 100-tab Zustand fixture asserts 100 close attempts, 100 total local kill calls, at least 100 store writes, and 49 event-loop yields; a deterministic clock proves each batch contains at most two closes without a machine-load-sensitive wall-clock oracle."
+        "evidence": "The coordinator performs one management sweep, builds one live-owner index, closes each present unique target once, and sends at most one exact kill per unique current non-runtime PTY not already settled by daemon management. A real 100-tab Zustand fixture asserts 100 close attempts, 100 total local kill calls, at least 100 store writes, and 49 event-loop yields; a separate operation-count test proves terminal and unified ownership stores are each scanned once. Production diagnostics still report measured close-batch duration, but the deterministic gate deliberately makes no machine-load-sensitive latency claim."
       },
       "promotionCriteria": [
         "Run the focused gate for at least 100 consecutive passes or 14 days across required CI platforms.",
@@ -476,7 +476,7 @@
         "Runtime-host terminal close is best-effort because closeTerminalTab still discards the existing async host result and its close-intent lifetime is shorter than the possible RPC flow.",
         "Daemon adapter listing failures remain suppressed by the existing management API, so reported daemon counts are not authoritative verification of every process."
       ],
-      "demotionRule": "Keep experimental or demote to protection none if the gate flakes, permits a late-created tab or unrelated PTY to close, or exceeds the 50 ms maximum close-batch budget without a tracked product or harness bug."
+      "demotionRule": "Keep experimental or demote to protection none if the gate flakes, permits a late-created tab or unrelated PTY to close, duplicates provider shutdown, or regresses the one-snapshot ownership-index invariant."
     },
     {
       "id": "terminal-session.explicit-close-retirement",
@@ -518,12 +518,13 @@
       "invariant": "Close permanently removes the owned provider session and resume authority even when no TerminalPane is mounted; detach and park preserve both; aliases prevent a detached agent's immutable physical pane key from being retired with its former tab.",
       "oracle": "Capture the exact PTY before parking, prove it remains listed while the view is absent, close through the product state boundary, and poll the provider inventory until that exact ID disappears; unit tests assert canonical owner dedupe, one teardown owner, exact pane tombstones, chained detach transfer, and restart alias restoration.",
       "commands": [
-        "pnpm dlx node@24 ./node_modules/vitest/vitest.mjs run --config config/vitest.config.ts src/main/agent-hooks/server-pane-authority.test.ts src/main/ipc/agent-hooks.test.ts src/main/ipc/pty-management.test.ts src/main/persistence.test.ts src/renderer/src/store/slices/agent-pane-authority.test.ts src/renderer/src/store/slices/terminal-pane-detach-agent-identity.test.ts src/renderer/src/store/slices/terminal-tab-retirement.test.ts src/renderer/src/store/slices/terminal-tab-retirement-store.test.ts src/renderer/src/components/shared/kill-all-terminal-surfaces.test.ts",
-        "SKIP_BUILD=1 pnpm run test:e2e -- tests/e2e/terminal-parked-close-retirement.spec.ts --workers=1"
+        "pnpm dlx node@24 ./node_modules/vitest/vitest.mjs run --config config/vitest.config.ts src/main/agent-hooks/server-pane-authority.test.ts src/main/ipc/agent-hooks.test.ts src/main/ipc/agent-pane-authority-ownership.test.ts src/main/ipc/pty-management.test.ts src/main/persistence.test.ts src/renderer/src/store/slices/agent-pane-authority.test.ts src/renderer/src/store/slices/terminal-pane-detach-agent-identity.test.ts src/renderer/src/store/slices/terminal-tab-retirement.test.ts src/renderer/src/store/slices/terminal-tab-retirement-store.test.ts src/renderer/src/components/shared/kill-all-terminal-surfaces.test.ts",
+        "pnpm exec electron-vite build --mode e2e && SKIP_BUILD=1 pnpm run test:e2e -- tests/e2e/terminal-parked-close-retirement.spec.ts --workers=1"
       ],
       "testFiles": [
         "src/main/agent-hooks/server-pane-authority.test.ts",
         "src/main/ipc/agent-hooks.test.ts",
+        "src/main/ipc/agent-pane-authority-ownership.test.ts",
         "src/main/ipc/pty-management.test.ts",
         "src/main/persistence.test.ts",
         "src/renderer/src/store/slices/agent-pane-authority.test.ts",
@@ -542,6 +543,12 @@
           ]
         },
         {
+          "file": "src/main/ipc/agent-pane-authority-ownership.test.ts",
+          "assertions": [
+            "pane authority transfer accepts only the PTY bound to the physical local pane or the canonical legacy/scoped runtime handle"
+          ]
+        },
+        {
           "file": "src/renderer/src/store/slices/agent-pane-authority.test.ts",
           "assertions": [
             "exact pane retirement removes resume and launch authority while preserving siblings",
@@ -554,7 +561,7 @@
           "date": "2026-07-13",
           "runner": "local",
           "platform": "macos",
-          "command": "SKIP_BUILD=1 pnpm run test:e2e -- tests/e2e/terminal-parked-close-retirement.spec.ts --workers=1",
+          "command": "pnpm exec electron-vite build --mode e2e && SKIP_BUILD=1 pnpm run test:e2e -- tests/e2e/terminal-parked-close-retirement.spec.ts --workers=1",
           "result": "passed",
           "durationSeconds": 6.8,
           "summary": "The isolated Electron profile parked a live terminal, closed it through closeTab, and observed its exact PTY disappear."

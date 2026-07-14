@@ -11,6 +11,7 @@ const dropStatusEntry = vi.fn()
 const dropStatusEntriesByTabPrefix = vi.fn()
 const retirePaneAuthority = vi.fn()
 const transferPaneAuthority = vi.fn()
+const canTransferPaneAuthority = vi.fn(() => true)
 const getStatusSnapshot = vi.fn()
 const inferInterrupt = vi.fn()
 const clearMigrationUnsupportedPtysByTabPrefix = vi.fn()
@@ -46,6 +47,7 @@ vi.mock('../agent-hooks/server', async () => {
       dropStatusEntriesByTabPrefix,
       retirePaneAuthority,
       transferPaneAuthority,
+      canTransferPaneAuthority,
       getStatusSnapshot,
       inferInterrupt
     }
@@ -106,6 +108,8 @@ beforeEach(() => {
   dropStatusEntriesByTabPrefix.mockReset()
   retirePaneAuthority.mockReset()
   transferPaneAuthority.mockReset()
+  canTransferPaneAuthority.mockReset()
+  canTransferPaneAuthority.mockReturnValue(true)
   getStatusSnapshot.mockReset()
   inferInterrupt.mockReset()
   clearMigrationUnsupportedPtysByTabPrefix.mockReset()
@@ -430,5 +434,26 @@ describe('agent pane authority IPC', () => {
     expect(transferPaneAuthority).not.toHaveBeenCalled()
     expect(removeAllListeners).toHaveBeenCalledWith('agentStatus:retirePaneAuthority')
     expect(removeAllListeners).toHaveBeenCalledWith('agentStatus:transferPaneAuthority')
+  })
+
+  it('rejects unowned and oversized pane authority transfers', async () => {
+    const { registerAgentHookHandlers } = await import('./agent-hooks')
+    registerAgentHookHandlers()
+    const transfer = onHandlers.get('agentStatus:transferPaneAuthority')!
+
+    canTransferPaneAuthority.mockReturnValue(false)
+    transfer({}, { fromPaneKey: PANE_KEY, toPaneKey: CHILD_PANE_KEY, ptyId: 'forged-pty' })
+    canTransferPaneAuthority.mockReturnValue(true)
+    transfer({}, { fromPaneKey: PANE_KEY, toPaneKey: CHILD_PANE_KEY, ptyId: 'x'.repeat(513) })
+    transfer(
+      {},
+      {
+        fromPaneKey: `${'x'.repeat(180)}:11111111-1111-4111-8111-111111111111`,
+        toPaneKey: CHILD_PANE_KEY,
+        ptyId: 'pty-1'
+      }
+    )
+
+    expect(transferPaneAuthority).not.toHaveBeenCalled()
   })
 })

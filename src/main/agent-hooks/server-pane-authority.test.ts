@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { makePaneKey } from '../../shared/stable-pane-id'
-import { AgentHookServer } from './server'
+import { AgentHookServer, PANE_KEY_ALIASES_MAX } from './server'
 
 const SOURCE = makePaneKey('tab-source', '11111111-1111-4111-8111-111111111111')
 const TARGET = makePaneKey('tab-target', '22222222-2222-4222-8222-222222222222')
@@ -69,5 +69,44 @@ describe('AgentHookServer pane authority', () => {
         updatedAt: 20
       }
     ])
+  })
+
+  it('requires live PTY ownership for a first transfer and trusts the chained alias afterward', () => {
+    const server = new AgentHookServer()
+
+    expect(server.canTransferPaneAuthority(SOURCE, 'pty-1', () => false)).toBe(false)
+    expect(
+      server.canTransferPaneAuthority(SOURCE, 'pty-1', (paneKey, ptyId) => {
+        return paneKey === SOURCE && ptyId === 'pty-1'
+      })
+    ).toBe(true)
+
+    server.transferPaneAuthority(SOURCE, TARGET, 'pty-1')
+    expect(server.canTransferPaneAuthority(TARGET, 'pty-1', () => false)).toBe(true)
+    expect(server.canTransferPaneAuthority(TARGET, 'other-pty', () => false)).toBe(false)
+  })
+
+  it('bounds persisted aliases by evicting the oldest authority', () => {
+    const server = new AgentHookServer()
+    const listener = vi.fn()
+    server.setPaneKeyAliasPersistenceListener(listener)
+
+    for (let index = 0; index <= PANE_KEY_ALIASES_MAX; index += 1) {
+      const suffix = index.toString(16).padStart(12, '0')
+      server.transferPaneAuthority(
+        makePaneKey(`source-${index}`, `00000000-0000-4000-8000-${suffix}`),
+        makePaneKey(`target-${index}`, `10000000-0000-4000-8000-${suffix}`),
+        `pty-${index}`,
+        index + 1
+      )
+    }
+
+    const persisted = listener.mock.calls.at(-1)?.[0]
+    expect(persisted).toHaveLength(PANE_KEY_ALIASES_MAX)
+    expect(persisted).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ legacyPaneKey: expect.stringContaining('source-0:') })
+      ])
+    )
   })
 })

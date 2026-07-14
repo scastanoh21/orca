@@ -3,6 +3,7 @@ import type { SleepingAgentSessionRecord } from '../../../../shared/agent-sessio
 import type { TerminalTab } from '../../../../shared/types'
 import {
   buildTerminalTabRetirementPlan,
+  buildTerminalTabRetirementPlans,
   isTerminalTabPresent,
   removeSleepingAgentSessionsForTab
 } from './terminal-tab-retirement'
@@ -181,6 +182,72 @@ describe('terminal tab retirement planning', () => {
     expect(plan.unroutablePtyIds).toEqual([malformedRemote])
     expect(plan.localOrSshPtyIds).toEqual(['pty-live'])
     expect(plan.sharedPtyIds).toEqual([])
+  })
+
+  it('deduplicates batch-owned PTYs while protecting owners outside the close set', () => {
+    const state = makeState({
+      tabsByWorktree: {
+        'wt-1': [
+          makeTab('tab-1', 'wt-1', 'pty-batch'),
+          makeTab('tab-2', 'wt-1', 'pty-batch'),
+          makeTab('later-tab', 'wt-1', 'pty-external')
+        ]
+      },
+      ptyIdsByTabId: {
+        'tab-1': ['pty-batch', 'pty-external'],
+        'tab-2': ['pty-batch'],
+        'later-tab': ['pty-external']
+      }
+    })
+
+    const plans = buildTerminalTabRetirementPlans(state, ['tab-1', 'tab-2'])
+
+    expect(plans.get('tab-1')).toMatchObject({
+      localOrSshPtyIds: ['pty-batch'],
+      sharedPtyIds: ['pty-external']
+    })
+    expect(plans.get('tab-2')).toMatchObject({
+      localOrSshPtyIds: [],
+      sharedPtyIds: []
+    })
+  })
+
+  it('indexes live owners once for a 100-tab batch', () => {
+    const tabs = Array.from({ length: 100 }, (_, index) =>
+      makeTab(`tab-${index}`, 'wt-1', `pty-${index}`)
+    )
+    let terminalStoreScans = 0
+    let unifiedStoreScans = 0
+    const state = makeState({
+      tabsByWorktree: new Proxy(
+        { 'wt-1': tabs },
+        {
+          ownKeys(target) {
+            terminalStoreScans += 1
+            return Reflect.ownKeys(target)
+          }
+        }
+      ),
+      unifiedTabsByWorktree: new Proxy(
+        {},
+        {
+          ownKeys(target) {
+            unifiedStoreScans += 1
+            return Reflect.ownKeys(target)
+          }
+        }
+      ),
+      ptyIdsByTabId: Object.fromEntries(tabs.map((tab, index) => [tab.id, [`pty-${index}`]]))
+    })
+
+    const plans = buildTerminalTabRetirementPlans(
+      state,
+      tabs.map((tab) => tab.id)
+    )
+
+    expect(plans).toHaveLength(100)
+    expect(terminalStoreScans).toBe(1)
+    expect(unifiedStoreScans).toBe(1)
   })
 })
 

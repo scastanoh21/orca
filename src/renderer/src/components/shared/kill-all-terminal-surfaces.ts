@@ -1,5 +1,13 @@
 import { useAppStore, type AppState } from '@/store'
-import { closeTerminalTab } from '../terminal/terminal-tab-actions'
+import {
+  closeTerminalTab,
+  type PrecomputedTerminalCloseState
+} from '../terminal/terminal-tab-actions'
+import {
+  buildTerminalTabRetirementPlans,
+  type TerminalTabRetirementPlan,
+  type TerminalTabRetirementState
+} from '@/store/slices/terminal-tab-retirement'
 
 const CLOSE_BATCH_SIZE = 2
 
@@ -9,10 +17,8 @@ type DaemonKillAllResult = {
   killedSessionIds?: string[]
 }
 
-export type KillAllTerminalSurfaceState = Pick<
-  AppState,
-  'activeWorktreeId' | 'ptyIdsByTabId' | 'tabsByWorktree' | 'unifiedTabsByWorktree'
->
+export type KillAllTerminalSurfaceState = TerminalTabRetirementState &
+  Pick<AppState, 'activeWorktreeId'>
 
 export type KillAllTerminalSurfacesSummary = {
   targetCount: number
@@ -37,7 +43,12 @@ type KillAllTerminalSurfaceDependencies = {
   killDaemonSessions: () => Promise<DaemonKillAllResult>
   closeSurface: (
     tabId: string,
-    options: { force: true; localPtyTeardownOwnedExternally: true }
+    options: {
+      force: true
+      localPtyTeardownOwnedExternally: true
+      precomputedRetirementPlan: TerminalTabRetirementPlan
+      precomputedCloseState: PrecomputedTerminalCloseState
+    }
   ) => void
   killPty: (ptyId: string) => Promise<void>
   now: () => number
@@ -64,20 +75,31 @@ export function snapshotKillAllTerminalSurfaceIds(
   return [...targetIds]
 }
 
-function getTargetOwners(
+function getTargetIndex(
   state: KillAllTerminalSurfaceState,
   targetIds: ReadonlySet<string>
-): Map<string, string> {
+): {
+  ownerByTargetId: Map<string, string>
+  terminalIdsByWorktree: Map<string, Set<string>>
+} {
   const ownerByTargetId = new Map<string, string>()
+  const terminalIdsByWorktree = new Map<string, Set<string>>()
   for (const [worktreeId, tabs] of Object.entries(state.tabsByWorktree)) {
+    const ids = terminalIdsByWorktree.get(worktreeId) ?? new Set<string>()
     for (const tab of tabs) {
+      ids.add(tab.id)
       if (targetIds.has(tab.id) && !ownerByTargetId.has(tab.id)) {
         ownerByTargetId.set(tab.id, worktreeId)
       }
     }
+    terminalIdsByWorktree.set(worktreeId, ids)
   }
   for (const [worktreeId, tabs] of Object.entries(state.unifiedTabsByWorktree)) {
+    const ids = terminalIdsByWorktree.get(worktreeId) ?? new Set<string>()
     for (const tab of tabs) {
+      if (tab.contentType === 'terminal') {
+        ids.add(tab.entityId)
+      }
       if (
         tab.contentType === 'terminal' &&
         targetIds.has(tab.entityId) &&
@@ -86,12 +108,18 @@ function getTargetOwners(
         ownerByTargetId.set(tab.entityId, worktreeId)
       }
     }
+    terminalIdsByWorktree.set(worktreeId, ids)
   }
-  return ownerByTargetId
+  return { ownerByTargetId, terminalIdsByWorktree }
 }
 
-function isTargetPresent(state: KillAllTerminalSurfaceState, targetId: string): boolean {
-  return snapshotKillAllTerminalSurfaceIds(state).includes(targetId)
+function getNextTerminalId(ids: ReadonlySet<string>, closingId: string): string | null {
+  for (const id of ids) {
+    if (id !== closingId) {
+      return id
+    }
+  }
+  return null
 }
 
 function createDefaultDependencies(): KillAllTerminalSurfaceDependencies {
@@ -131,8 +159,9 @@ export async function runKillAllTerminalSurfaces(
   }
 
   const cleanupState = deps.getState()
-  const ownerByTargetId = getTargetOwners(cleanupState, targetIdSet)
+  const { ownerByTargetId, terminalIdsByWorktree } = getTargetIndex(cleanupState, targetIdSet)
   const presentTargetIds = targetIds.filter((targetId) => ownerByTargetId.has(targetId))
+  const retirementPlans = buildTerminalTabRetirementPlans(cleanupState, presentTargetIds)
   const activeWorktreeId = cleanupState.activeWorktreeId
   // Why: keeping the active worktree until its targets close lets the existing
   // tab action choose editor/browser/deactivation without spawning a replacement.
@@ -142,35 +171,37 @@ export async function runKillAllTerminalSurfaces(
   ]
 
   const exactPtyIds = new Set<string>()
-  for (const targetId of presentTargetIds) {
-    for (const ptyId of cleanupState.ptyIdsByTabId[targetId] ?? []) {
-      if (ptyId.length > 0 && !ptyId.startsWith('remote:')) {
-        exactPtyIds.add(ptyId)
-      }
+  for (const plan of retirementPlans.values()) {
+    for (const ptyId of plan.localOrSshPtyIds) {
+      exactPtyIds.add(ptyId)
     }
   }
 
-  let failedCloseAttemptCount = 0
+  const failedCloseTargetIds = new Set<string>()
   const closeStartedAt = deps.now()
   let closeBatchStartedAt = closeStartedAt
   let maxCloseBatchDurationMs = 0
   let closeYieldCount = 0
   for (let index = 0; index < closeOrder.length; index += 1) {
     const targetId = closeOrder[index]
-    let failed = false
+    const owningWorktreeId = ownerByTargetId.get(targetId)!
+    const remainingTerminalIds = terminalIdsByWorktree.get(owningWorktreeId) ?? new Set<string>()
+    const nextTerminalTabId = getNextTerminalId(remainingTerminalIds, targetId)
     try {
-      deps.closeSurface(targetId, { force: true, localPtyTeardownOwnedExternally: true })
+      deps.closeSurface(targetId, {
+        force: true,
+        localPtyTeardownOwnedExternally: true,
+        precomputedRetirementPlan: retirementPlans.get(targetId)!,
+        precomputedCloseState: {
+          owningWorktreeId,
+          terminalCountBeforeClose: remainingTerminalIds.size,
+          nextTerminalTabId
+        }
+      })
     } catch {
-      failed = true
+      failedCloseTargetIds.add(targetId)
     }
-    try {
-      failed ||= isTargetPresent(deps.getState(), targetId)
-    } catch {
-      failed = true
-    }
-    if (failed) {
-      failedCloseAttemptCount += 1
-    }
+    remainingTerminalIds.delete(targetId)
     const isBatchEnd = (index + 1) % CLOSE_BATCH_SIZE === 0 || index + 1 === closeOrder.length
     if (isBatchEnd) {
       maxCloseBatchDurationMs = Math.max(maxCloseBatchDurationMs, deps.now() - closeBatchStartedAt)
@@ -204,6 +235,9 @@ export async function runKillAllTerminalSurfaces(
   ).length
   const finalTargetIds = new Set(snapshotKillAllTerminalSurfaceIds(deps.getState()))
   const absentTargetCount = targetIds.filter((targetId) => !finalTargetIds.has(targetId)).length
+  const failedCloseAttemptCount = closeOrder.filter(
+    (targetId) => failedCloseTargetIds.has(targetId) || finalTargetIds.has(targetId)
+  ).length
   const summary: KillAllTerminalSurfacesSummary = {
     targetCount: targetIds.length,
     closeAttemptCount: closeOrder.length,

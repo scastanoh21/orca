@@ -459,15 +459,9 @@ export function shouldDetachPaneTransportOnUnmount(args: {
   ptyId: string | null
   worktreeTabs: readonly TerminalTab[] | undefined
 }): boolean {
-  if (!args.ptyId) {
-    return false
-  }
-  if (args.tabStillExists) {
-    return true
-  }
-  return Boolean(
-    args.worktreeTabs?.some((tab) => tab.id !== args.tabId && tab.ptyId === args.ptyId)
-  )
+  // Why: mounted transport teardown is renderer-only; closeTab or the pane-close
+  // action already owns provider shutdown. Destroy only pending, ID-less spawns.
+  return Boolean(args.ptyId)
 }
 
 /**
