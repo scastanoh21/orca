@@ -30,11 +30,14 @@ describe('SSH relay runtime build provenance', () => {
 
   it('selects a bounded Windows linker file version', () => {
     expect(
-      selectSshRelayRuntimeToolVersion({ stdout: '14.44.35228.0\r\n' }, /^\d+(?:\.\d+){2,3}$/)
-    ).toBe('14.44.35228.0')
+      selectSshRelayRuntimeToolVersion(
+        { stdout: '14.44.35228.0 built by release pipeline\r\n' },
+        /^\d+(?:\.\d+){2,3}(?:\s.*)?$/
+      )
+    ).toBe('14.44.35228.0 built by release pipeline')
   })
 
-  it('passes the resolved linker path as a non-interpolated PowerShell argument', () => {
+  it('passes the resolved linker path through a non-interpolated environment value', () => {
     const path = String.raw`C:\Program Files\Microsoft Visual Studio\link.exe`
     expect(sshRelayRuntimeWindowsFileVersionInvocation(path)).toEqual({
       command: 'pwsh.exe',
@@ -43,10 +46,16 @@ describe('SSH relay runtime build provenance', () => {
         '-NoProfile',
         '-NonInteractive',
         '-Command',
-        '[System.Diagnostics.FileVersionInfo]::GetVersionInfo($args[0]).FileVersion',
-        path
-      ]
+        "[System.Diagnostics.FileVersionInfo]::GetVersionInfo([Environment]::GetEnvironmentVariable('ORCA_SSH_RELAY_TOOL_PATH')).FileVersion"
+      ],
+      options: { env: { ORCA_SSH_RELAY_TOOL_PATH: path } }
     })
+  })
+
+  it('bounds failed version diagnostics', () => {
+    expect(() =>
+      selectSshRelayRuntimeToolVersion({ stderr: `unexpected ${'x'.repeat(1_000)}` }, /version/i)
+    ).toThrow(/^Runtime build tool did not report a bounded version line: unexpected x{490}/)
   })
 
   it('pins GitHub builder identity to the exact source commit', () => {

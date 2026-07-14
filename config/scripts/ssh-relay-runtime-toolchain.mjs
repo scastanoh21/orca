@@ -26,10 +26,11 @@ async function sha256File(path) {
   return `sha256:${hash.digest('hex')}`
 }
 
-async function capture(command, args) {
+async function capture(command, args, { env } = {}) {
   try {
     return await execFileAsync(command, args, {
       encoding: 'utf8',
+      ...(env ? { env: { ...process.env, ...env } } : {}),
       maxBuffer: TOOL_OUTPUT_BYTES,
       timeout: TOOL_TIMEOUT_MS,
       windowsHide: true
@@ -49,7 +50,8 @@ export function selectSshRelayRuntimeToolVersion({ stdout = '', stderr = '' }, p
     .filter(Boolean)
   const version = pattern ? lines.find((line) => pattern.test(line)) : lines[0]
   if (!version || Buffer.byteLength(version) > 512) {
-    throw new Error('Runtime build tool did not report a bounded version line')
+    const diagnostic = lines.slice(0, 3).join(' | ').slice(0, 512) || '<empty>'
+    throw new Error(`Runtime build tool did not report a bounded version line: ${diagnostic}`)
   }
   return version
 }
@@ -87,7 +89,7 @@ async function executableRecord({
   const invocation = windowsFileVersion
     ? sshRelayRuntimeWindowsFileVersionInvocation(path)
     : { command: versionCommand ?? path, args: versionArgs ?? args }
-  const result = await capture(invocation.command, invocation.args)
+  const result = await capture(invocation.command, invocation.args, invocation.options)
   return {
     version: selectSshRelayRuntimeToolVersion(result, versionPattern),
     sha256: await sha256File(path)
@@ -193,9 +195,9 @@ export function sshRelayRuntimeWindowsFileVersionInvocation(path) {
       '-NoProfile',
       '-NonInteractive',
       '-Command',
-      '[System.Diagnostics.FileVersionInfo]::GetVersionInfo($args[0]).FileVersion',
-      path
-    ]
+      "[System.Diagnostics.FileVersionInfo]::GetVersionInfo([Environment]::GetEnvironmentVariable('ORCA_SSH_RELAY_TOOL_PATH')).FileVersion"
+    ],
+    options: { env: { ORCA_SSH_RELAY_TOOL_PATH: path } }
   }
 }
 
@@ -243,9 +245,9 @@ export async function collectSshRelayRuntimeToolchain(nodePath) {
       linker: await executableRecord({
         command: 'link.exe',
         args: [],
-        // Why: hosted link.exe is silent when piped; authenticated PE metadata gives its real version.
+        // Why: hosted link.exe is pipe-silent; authenticated PE metadata gives its real version.
         windowsFileVersion: true,
-        versionPattern: /^\d+(?:\.\d+){2,3}$/
+        versionPattern: /^\d+(?:\.\d+){2,3}(?:\s.*)?$/
       }),
       buildSystem: await executableRecord({
         command: 'msbuild.exe',
