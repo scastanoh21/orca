@@ -606,6 +606,64 @@ describe('local filesystem watcher unsubscribe cleanup', () => {
     )
   })
 
+  it('refuses an aborted pre-shutdown joiner after a different root reopens watching', async () => {
+    vi.mocked(stat).mockResolvedValue({ isDirectory: () => true } as never)
+    const installs = new Map<
+      string,
+      {
+        signal: AbortSignal | undefined
+        resolve: (subscription: { unsubscribe: () => void }) => void
+      }
+    >()
+    const install = (
+      rootPath: string,
+      _callback: unknown,
+      _options: unknown,
+      hooks?: { signal?: AbortSignal }
+    ) =>
+      new Promise((resolve) => {
+        installs.set(rootPath, { signal: hooks?.signal, resolve })
+      })
+    vi.mocked(subscribeViaWatcherProcess)
+      .mockImplementationOnce(install as never)
+      .mockImplementationOnce(install as never)
+    const lateUnsubscribe = vi.fn()
+    const firstSender = { isDestroyed: () => false, send: vi.fn(), once: vi.fn(), id: 1 }
+    const joinerSender = { isDestroyed: () => false, send: vi.fn(), once: vi.fn(), id: 2 }
+    const reopenSender = { isDestroyed: () => false, send: vi.fn(), once: vi.fn(), id: 3 }
+    const first = handlers['fs:watchWorktree'](
+      { sender: firstSender },
+      { worktreePath: '/tmp/repo' }
+    ) as Promise<unknown>
+
+    await vi.waitFor(() => expect(subscribeViaWatcherProcess).toHaveBeenCalledTimes(1))
+    handlers['fs:unwatchWorktree']({ sender: firstSender }, { worktreePath: '/tmp/repo' })
+    expect(installs.get('/tmp/repo')?.signal?.aborted).toBe(true)
+
+    const joiner = handlers['fs:watchWorktree'](
+      { sender: joinerSender },
+      { worktreePath: '/tmp/repo' }
+    ) as Promise<unknown>
+    await closeAllWatchers()
+    const reopen = handlers['fs:watchWorktree'](
+      { sender: reopenSender },
+      { worktreePath: '/tmp/other' }
+    ) as Promise<unknown>
+    await vi.waitFor(() => expect(subscribeViaWatcherProcess).toHaveBeenCalledTimes(2))
+
+    installs.get('/tmp/repo')?.resolve({ unsubscribe: lateUnsubscribe })
+    installs.get('/tmp/other')?.resolve({ unsubscribe: vi.fn() })
+    await Promise.all([first, joiner, reopen])
+
+    expect(subscribeViaWatcherProcess).toHaveBeenCalledTimes(2)
+    expect(
+      vi
+        .mocked(subscribeViaWatcherProcess)
+        .mock.calls.filter(([rootPath]) => rootPath.endsWith('/tmp/repo'))
+    ).toHaveLength(1)
+    await vi.waitFor(() => expect(lateUnsubscribe).toHaveBeenCalledTimes(1))
+  })
+
   it('cancels an opening local watcher for worktree deletion', async () => {
     vi.mocked(stat).mockResolvedValue({ isDirectory: () => true } as never)
     let resolveSubscribe: (subscription: { unsubscribe: () => void }) => void = () => {}
@@ -677,6 +735,32 @@ describe('local filesystem watcher unsubscribe cleanup', () => {
     await handlers['fs:watchWorktree']({ sender }, { worktreePath: '/tmp/repo' })
     await closeLocalWatcherForWorktreePath('/tmp/repo')
     handlers['fs:unwatchWorktree']({ sender }, { worktreePath: '/tmp/repo' })
+    await restoreLocalWatcherAfterFailedRemoval('/tmp/repo')
+
+    expect(firstUnsubscribe).toHaveBeenCalledTimes(1)
+    expect(subscribeParcelWatcher).toHaveBeenCalledTimes(1)
+    expect(sender.send).not.toHaveBeenCalled()
+  })
+
+  it('does not restore a local listener destroyed while deletion is pending', async () => {
+    vi.mocked(stat).mockResolvedValue({ isDirectory: () => true } as never)
+    const firstUnsubscribe = vi.fn()
+    vi.mocked(subscribeParcelWatcher).mockResolvedValue({ unsubscribe: firstUnsubscribe } as never)
+    const destroyedCallbacks: (() => void)[] = []
+    const sender = {
+      isDestroyed: () => false,
+      send: vi.fn(),
+      once: vi.fn((event: string, callback: () => void) => {
+        if (event === 'destroyed') {
+          destroyedCallbacks.push(callback)
+        }
+      }),
+      id: 1
+    }
+
+    await handlers['fs:watchWorktree']({ sender }, { worktreePath: '/tmp/repo' })
+    await closeLocalWatcherForWorktreePath('/tmp/repo')
+    destroyedCallbacks[0]?.()
     await restoreLocalWatcherAfterFailedRemoval('/tmp/repo')
 
     expect(firstUnsubscribe).toHaveBeenCalledTimes(1)

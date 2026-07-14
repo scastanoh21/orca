@@ -441,6 +441,33 @@ describe('registerFilesystemWatcherHandlers', () => {
     expect(sender.send).not.toHaveBeenCalled()
   })
 
+  it('does not restore an SSH listener destroyed while deletion is pending', async () => {
+    const watchMock = vi.fn().mockResolvedValue(vi.fn())
+    const closeWatch = vi.fn().mockResolvedValue(undefined)
+    getSshFilesystemProviderMock.mockReturnValue({ watch: watchMock, closeWatch })
+    const destroyedCallbacks: (() => void)[] = []
+    const sender = {
+      isDestroyed: () => false,
+      send: vi.fn(),
+      once: vi.fn((event: string, callback: () => void) => {
+        if (event === 'destroyed') {
+          destroyedCallbacks.push(callback)
+        }
+      }),
+      id: 1
+    }
+    const args = { worktreePath: '/home/me/repo', connectionId: 'conn-1' }
+
+    await handlers['fs:watchWorktree']({ sender }, args)
+    await closeRemoteWatcherForWorktreePath('conn-1', '/home/me/repo')
+    destroyedCallbacks[0]?.()
+    await restoreRemoteWatcherAfterFailedRemoval('conn-1', '/home/me/repo')
+
+    expect(closeWatch).toHaveBeenCalledWith('/home/me/repo')
+    expect(watchMock).toHaveBeenCalledTimes(1)
+    expect(sender.send).not.toHaveBeenCalled()
+  })
+
   it('preserves remote event routing when acknowledged teardown rejects', async () => {
     const sendOne = vi.fn()
     const sendTwo = vi.fn()
