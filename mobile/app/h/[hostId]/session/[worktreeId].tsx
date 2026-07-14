@@ -1080,16 +1080,13 @@ export default function SessionScreen() {
   // the row) without any window-dim change. Tracking the measured width lets the
   // refit hook re-fit the PTY on those resizes — see terminal-viewport-refit.ts.
   const [terminalFrameWidth, setTerminalFrameWidth] = useState(0)
-  // Why: a freshly-created agent terminal's first fit can run before the
-  // accessory/live-input dock has laid out, so the frame is briefly taller and
-  // the PTY is fit to too many rows. When the dock settles the frame shrinks,
-  // but height-only changes used to be ignored, so the PTY kept the taller row
-  // count and an agent TUI's bottom-pinned input box rendered behind the dock
-  // (leaving and re-entering re-measured and fixed it). Track the measured
-  // height so the refit hook re-fits on that settle. Keyboard open/close does
-  // not change this height (edge-to-edge IME overlays instead of resizing — see
-  // keyboardHeight above), so this never reflows the PTY while typing.
+  // Why: a new agent terminal can fit before the accessory/live-input dock lays
+  // out, over-fitting the PTY so its bottom-pinned input box hides behind the
+  // dock; tracking the settled height lets the refit hook correct it.
   const [terminalFrameHeight, setTerminalFrameHeight] = useState(0)
+  // Why: lets the height refit skip keyboard-driven resizes (never reflow the
+  // PTY per keystroke); mirrors keyboardHeight but readable synchronously.
+  const keyboardVisibleRef = useRef(false)
 
   const activeSessionTab = sessionTabs.find((tab) => tab.id === activeSessionTabId) ?? null
   const {
@@ -2613,15 +2610,18 @@ export default function SessionScreen() {
     textScale: terminalTextScale,
     terminalFrameWidth,
     terminalFrameHeight,
+    keyboardVisibleRef,
     unsubscribeTerminal,
     subscribeToTerminal
   })
 
   useEffect(() => {
     const onShow = (e: KeyboardEvent) => {
+      keyboardVisibleRef.current = true
       setKeyboardHeight(e.endCoordinates?.height ?? 0)
     }
     const onHide = () => {
+      keyboardVisibleRef.current = false
       setKeyboardHeight(0)
     }
     const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow'
@@ -4842,12 +4842,8 @@ export default function SessionScreen() {
                 style={styles.terminalFrame}
                 onLayout={(e) => {
                   terminalFrameHeightRef.current = e.nativeEvent.layout.height
-                  // Re-fit on width OR height changes. Width changes on sidebar
-                  // resize/fold/rotation; height changes when the accessory/
-                  // live-input dock settles after a new agent terminal's first
-                  // fit — refitting then stops the PTY from staying over-tall and
-                  // hiding the agent's bottom-pinned input box behind the dock.
-                  // The refit's row-count guard makes sub-row jitter a no-op.
+                  // Track width AND height so the refit hook re-fits on sidebar/
+                  // fold/rotation (width) and on the dock settling (height).
                   const nextWidth = Math.round(e.nativeEvent.layout.width)
                   const nextHeight = Math.round(e.nativeEvent.layout.height)
                   setTerminalFrameWidth((prev) => (prev === nextWidth ? prev : nextWidth))

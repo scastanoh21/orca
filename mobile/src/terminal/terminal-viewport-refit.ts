@@ -7,7 +7,8 @@ import { shouldRecoverTerminalOnAppStateChange } from './terminal-foreground-rec
 import {
   isTerminalUpdateViewportApplied,
   isTerminalUpdateViewportUpdated,
-  isTerminalViewportRefitTargetCurrent
+  isTerminalViewportRefitTargetCurrent,
+  shouldRefitOnFrameHeightChange
 } from './terminal-viewport-refit-state'
 
 export type TerminalViewportDims = { cols: number; rows: number }
@@ -32,14 +33,12 @@ type TerminalViewportRefitOptions = {
   // tab-strip change. Carries that measured width so those resizes re-fit the PTY;
   // the 150ms debounce coalesces the stream of drag widths into one settle-time refit.
   terminalFrameWidth: number
-  // Why: the terminal's measured frame height shrinks when the accessory/
-  // live-input dock lays out after a freshly-created agent terminal's first
-  // fit. Carrying that measured height re-fits the PTY so it stops rendering
-  // more rows than fit above the dock (the agent's bottom-pinned input box
-  // would otherwise sit behind it). Keyboard open/close does not change this
-  // height — the edge-to-edge IME overlays instead of resizing — so this does
-  // not reflow the PTY while typing.
+  // Why: the frame height settles when the accessory/live-input dock lays out
+  // after a new agent terminal's first fit; carrying it re-fits the PTY so its
+  // rows stop overflowing behind the dock. See shouldRefitOnFrameHeightChange.
   terminalFrameHeight: number
+  // Why: gate the height refit so a keyboard-driven resize never reflows the PTY.
+  keyboardVisibleRef: RefObject<boolean>
   unsubscribeTerminal: (handle: string) => void
   subscribeToTerminal: (handle: string) => void
 }
@@ -65,6 +64,7 @@ export function useTerminalViewportRefit(options: TerminalViewportRefitOptions):
     textScale,
     terminalFrameWidth,
     terminalFrameHeight,
+    keyboardVisibleRef,
     unsubscribeTerminal,
     subscribeToTerminal
   } = options
@@ -235,21 +235,26 @@ export function useTerminalViewportRefit(options: TerminalViewportRefitOptions):
     scheduleViewportRefit()
   }, [terminalFrameWidth, viewportMeasuredRef, scheduleViewportRefit])
 
-  // Why: the measured frame height shrinks when the accessory/live-input dock
-  // lays out after a new agent terminal's first fit. Without re-fitting, the
-  // PTY keeps its taller row count and the agent's bottom-pinned input box
-  // renders behind the dock. Mark un-measured and re-fit; the refit's
-  // row-count guard makes a height change that doesn't change the row count a
-  // no-op, so settled/jitter layouts don't churn the server PTY.
+  // Why: re-fit when the frame height settles after a new agent terminal's
+  // first fit so its rows stop overflowing behind the dock; the keyboard guard
+  // keeps an IME resize from reflowing the PTY. The refit's row-count guard
+  // makes a same-row height change a no-op.
   const prevFrameHeightRef = useRef(terminalFrameHeight)
   useEffect(() => {
-    if (prevFrameHeightRef.current === terminalFrameHeight) {
+    const previousHeight = prevFrameHeightRef.current
+    prevFrameHeightRef.current = terminalFrameHeight
+    if (
+      !shouldRefitOnFrameHeightChange({
+        previousHeight,
+        nextHeight: terminalFrameHeight,
+        keyboardVisible: keyboardVisibleRef.current
+      })
+    ) {
       return
     }
-    prevFrameHeightRef.current = terminalFrameHeight
     viewportMeasuredRef.current = false
     scheduleViewportRefit()
-  }, [terminalFrameHeight, viewportMeasuredRef, scheduleViewportRefit])
+  }, [terminalFrameHeight, keyboardVisibleRef, viewportMeasuredRef, scheduleViewportRefit])
 
   useEffect(() => {
     if (Platform.OS !== 'ios') {

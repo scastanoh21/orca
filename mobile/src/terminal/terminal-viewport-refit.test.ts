@@ -4,7 +4,8 @@ import type { RpcResponse } from '../transport/types'
 import {
   isTerminalUpdateViewportApplied,
   isTerminalUpdateViewportUpdated,
-  isTerminalViewportRefitTargetCurrent
+  isTerminalViewportRefitTargetCurrent,
+  shouldRefitOnFrameHeightChange
 } from './terminal-viewport-refit-state'
 
 const hookSource = readFileSync(new URL('./terminal-viewport-refit.ts', import.meta.url), 'utf8')
@@ -48,23 +49,44 @@ describe('terminal viewport refit', () => {
     expect(textScaleEffect).toContain('[textScale, viewportMeasuredRef, scheduleViewportRefit]')
   })
 
-  it('refits when the terminal frame height settles after the first fit', () => {
-    // Why: a freshly-created agent terminal can fit before the accessory/
-    // live-input dock lays out, so the PTY is over-fit and the agent's
-    // bottom-pinned input box renders behind the dock. When the dock settles
-    // the frame height shrinks; refitting then restores the correct row count
-    // (the fix for the "leave and re-enter fixes it" symptom). Keyboard toggles
-    // do not change this height (edge-to-edge IME overlay), so it never reflows
-    // the PTY while typing.
+  it('refits on a frame-height change only while the keyboard is closed', () => {
+    // The dock settling after a new agent terminal's first fit changes the frame
+    // height; refitting then stops the PTY over-fitting behind the dock. An IME
+    // that resizes the window (Android) must not reflow the PTY while typing.
+    // Height settled, keyboard closed → refit.
+    expect(
+      shouldRefitOnFrameHeightChange({
+        previousHeight: 600,
+        nextHeight: 520,
+        keyboardVisible: false
+      })
+    ).toBe(true)
+    // Unchanged height → no refit (don't churn on unrelated re-layouts).
+    expect(
+      shouldRefitOnFrameHeightChange({
+        previousHeight: 520,
+        nextHeight: 520,
+        keyboardVisible: false
+      })
+    ).toBe(false)
+    // Height changed while the keyboard is up → skip (never reflow while typing).
+    expect(
+      shouldRefitOnFrameHeightChange({
+        previousHeight: 600,
+        nextHeight: 320,
+        keyboardVisible: true
+      })
+    ).toBe(false)
+  })
+
+  it('routes the height effect through the keyboard-guarded decision helper', () => {
     const start = hookSource.indexOf('const prevFrameHeightRef = useRef(terminalFrameHeight)')
     expect(start).toBeGreaterThanOrEqual(0)
-    const heightEffect = hookSource.slice(start, start + 400)
-    expect(heightEffect).toContain('prevFrameHeightRef.current === terminalFrameHeight')
+    const heightEffect = hookSource.slice(start, start + 500)
+    expect(heightEffect).toContain('shouldRefitOnFrameHeightChange({')
+    expect(heightEffect).toContain('keyboardVisible: keyboardVisibleRef.current')
     expect(heightEffect).toContain('viewportMeasuredRef.current = false')
     expect(heightEffect).toContain('scheduleViewportRefit()')
-    expect(heightEffect).toContain(
-      '[terminalFrameHeight, viewportMeasuredRef, scheduleViewportRefit]'
-    )
   })
 
   it('is wired into the session screen', () => {
@@ -72,9 +94,11 @@ describe('terminal viewport refit', () => {
     expect(sessionSource).toContain('tabStripVisible: terminals.length > 1')
     expect(sessionSource).toContain('textScale: terminalTextScale')
     expect(sessionSource).toContain('connState,')
-    // The session must measure and feed the frame height, or the height effect
-    // never sees the dock settle. Both the hook prop and the onLayout setter.
+    // The session must feed the frame height and the keyboard-visible ref, or the
+    // guarded height effect never sees the dock settle / keyboard state.
     expect(sessionSource).toContain('terminalFrameHeight,')
+    expect(sessionSource).toContain('keyboardVisibleRef,')
+    expect(sessionSource).toContain('keyboardVisibleRef.current = true')
     expect(sessionSource).toContain(
       'setTerminalFrameHeight((prev) => (prev === nextHeight ? prev : nextHeight))'
     )
