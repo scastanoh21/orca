@@ -1043,6 +1043,52 @@ function shouldApplyDivergedLinkedPRClear(args: {
   )
 }
 
+// Why: a linked PR is a branch-scoped hint. When a lookup returns the linked
+// OPEN PR while the worktree sits on a different branch — and neither the push
+// target nor the worktree HEAD still points at the PR head — the link is stale
+// (a branch switch whose identity-path clear was missed) and would otherwise
+// pin Checks to the previous branch's PR on every refresh.
+export function shouldClearBranchMismatchedLinkedOpenPR(args: {
+  pr: PRInfo | null
+  linkedPRNumber: number | null
+  branch: string
+  requestHeadOid: string | null
+  pushTargetBranch: string | null
+}): boolean {
+  const { pr, linkedPRNumber, branch, requestHeadOid, pushTargetBranch } = args
+  const headRefName = pr?.headRefName?.trim() ?? ''
+  const currentBranch = branch.replace(/^refs\/heads\//, '').trim()
+  return (
+    linkedPRNumber != null &&
+    pr?.number === linkedPRNumber &&
+    pr.state === 'open' &&
+    headRefName !== '' &&
+    currentBranch !== '' &&
+    headRefName !== currentBranch &&
+    (pushTargetBranch === null || pushTargetBranch !== headRefName) &&
+    // A worktree parked on the PR's own head commit is the same line of work
+    // (e.g. a PR checkout under a renamed local branch); keep the link.
+    !(pr.headSha != null && requestHeadOid !== null && pr.headSha === requestHeadOid)
+  )
+}
+
+function shouldApplyBranchMismatchedLinkedPRClear(args: {
+  worktree: Pick<Worktree, 'linkedPR' | 'branch' | 'isBare' | 'isArchived'> | undefined
+  linkedPRNumber: number
+  branch: string
+}): boolean {
+  const { worktree, linkedPRNumber, branch } = args
+  return (
+    Boolean(worktree) &&
+    worktree?.linkedPR === linkedPRNumber &&
+    // Branch-scoped: only clear while the worktree is still on the branch the
+    // mismatch was computed against; a newer switch gets its own validation.
+    worktree.branch.replace(/^refs\/heads\//, '') === branch.replace(/^refs\/heads\//, '') &&
+    worktree.isBare !== true &&
+    worktree.isArchived !== true
+  )
+}
+
 function buildPRRefreshCandidate(
   state: AppState,
   worktree: Worktree,
@@ -3154,6 +3200,34 @@ export const createGitHubSlice: StateCreator<AppState, [], [], GitHubSlice> = (s
               }
             )
           }
+          if (
+            options?.worktreeId &&
+            linkedPRNumber != null &&
+            shouldClearBranchMismatchedLinkedOpenPR({
+              pr,
+              linkedPRNumber,
+              branch,
+              requestHeadOid,
+              pushTargetBranch:
+                findWorktreeById(get(), options.worktreeId)?.pushTarget?.branchName ?? null
+            })
+          ) {
+            void get().updateWorktreeMeta(
+              options.worktreeId,
+              { linkedPR: null },
+              {
+                shouldApply: (worktree) =>
+                  shouldApplyBranchMismatchedLinkedPRClear({ worktree, linkedPRNumber, branch })
+              }
+            )
+            // Re-resolve by branch right away so visible Checks recover on this
+            // refresh instead of keeping the stale linked PR cached.
+            void get().fetchPRForBranch(repoPath, branch, {
+              force: true,
+              repoId,
+              worktreeId: options.worktreeId
+            })
+          }
         }
         if (
           shouldPreserveExistingPRForFallbackMiss({
@@ -3882,21 +3956,43 @@ export const createGitHubSlice: StateCreator<AppState, [], [], GitHubSlice> = (s
       branch: string
       requestHeadOid: string | null
     }[] = []
+    const branchMismatchedLinkedPRClears: {
+      worktreeId: string
+      linkedPRNumber: number
+      branch: string
+    }[] = []
     if (event.outcome?.kind === 'found') {
       const pr = event.outcome.pr
       for (const alias of event.aliases) {
         const linkedPRNumber = alias.linkedPRNumber ?? null
         const requestHeadOid = alias.currentHeadOid ?? null
-        if (
-          alias.worktreeId &&
-          linkedPRNumber != null &&
-          shouldClearDivergedLinkedMergedPR({ pr, linkedPRNumber, requestHeadOid })
-        ) {
+        if (!alias.worktreeId || linkedPRNumber == null) {
+          continue
+        }
+        if (shouldClearDivergedLinkedMergedPR({ pr, linkedPRNumber, requestHeadOid })) {
           divergedLinkedPRClears.push({
             worktreeId: alias.worktreeId,
             linkedPRNumber,
             branch: alias.branch,
             requestHeadOid
+          })
+        } else if (
+          shouldClearBranchMismatchedLinkedOpenPR({
+            pr,
+            linkedPRNumber,
+            branch: alias.branch,
+            requestHeadOid,
+            pushTargetBranch:
+              findWorktreeById(get(), alias.worktreeId)?.pushTarget?.branchName ?? null
+          })
+        ) {
+          // Why: the background PR coordinator also refreshes with the durable
+          // link; without this clear a stale-linked worktree never re-resolves
+          // by branch on its own.
+          branchMismatchedLinkedPRClears.push({
+            worktreeId: alias.worktreeId,
+            linkedPRNumber,
+            branch: alias.branch
           })
         }
       }
@@ -4108,6 +4204,20 @@ export const createGitHubSlice: StateCreator<AppState, [], [], GitHubSlice> = (s
               linkedPRNumber: clear.linkedPRNumber,
               branch: clear.branch,
               requestHeadOid: clear.requestHeadOid
+            })
+        }
+      )
+    }
+    for (const clear of branchMismatchedLinkedPRClears) {
+      void get().updateWorktreeMeta(
+        clear.worktreeId,
+        { linkedPR: null },
+        {
+          shouldApply: (worktree) =>
+            shouldApplyBranchMismatchedLinkedPRClear({
+              worktree,
+              linkedPRNumber: clear.linkedPRNumber,
+              branch: clear.branch
             })
         }
       )

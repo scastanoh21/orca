@@ -38,6 +38,7 @@ import {
 } from '../../runtime/runtime-rpc-client'
 import { toRuntimeWorktreeSelector } from '../../runtime/runtime-worktree-selector'
 import { getHostedReviewCacheKey, refreshHostedReviewCard } from './hosted-review'
+import { routeListingBranchSwitchesThroughGitIdentity } from './worktree-listing-branch-switch'
 import { isPositiveHostedReviewNumber } from '../../../../shared/hosted-review'
 import { getGitHubPRCacheKey, getLegacyGitHubPRCacheKey } from './github-cache-key'
 import { moveFocusToRendererBeforeFocusedWebviewHidden } from './browser-webview-cleanup'
@@ -2337,11 +2338,15 @@ export const createWorktreeSlice: StateCreator<AppState, [], [], WorktreeSlice> 
       if (options?.requireAuthoritative && !detected.authoritative) {
         return false
       }
+      const incoming = toVisibleWorktrees(detected, hostId, setup)
+      routeListingBranchSwitchesThroughGitIdentity({
+        current: get().worktreesByRepo[repoId],
+        incoming,
+        hasBranchScopedReviewContext: hasBranchScopedHostedReviewContext,
+        updateWorktreeGitIdentity: get().updateWorktreeGitIdentity
+      })
       const current = get().worktreesByRepo[repoId]
-      const worktrees = sanitizeHostedReviewLinksForBranchClears(
-        toVisibleWorktrees(detected, hostId, setup),
-        current
-      )
+      const worktrees = sanitizeHostedReviewLinksForBranchClears(incoming, current)
       const currentMatchOptions = worktreeHostMatchOptions(get(), repoId, hostId)
       const currentForHost = (current ?? []).filter((worktree) =>
         worktreeMatchesHost(worktree, hostId, currentMatchOptions)
@@ -2484,8 +2489,15 @@ export const createWorktreeSlice: StateCreator<AppState, [], [], WorktreeSlice> 
             executionHostId: hostId,
             reuseRecentCompatibilityFailure: true
           })
+          const incoming = toVisibleWorktrees(detected, hostId, setup)
+          routeListingBranchSwitchesThroughGitIdentity({
+            current: get().worktreesByRepo[r.id],
+            incoming,
+            hasBranchScopedReviewContext: hasBranchScopedHostedReviewContext,
+            updateWorktreeGitIdentity: get().updateWorktreeGitIdentity
+          })
           const worktrees = sanitizeHostedReviewLinksForBranchClears(
-            toVisibleWorktrees(detected, hostId, setup),
+            incoming,
             get().worktreesByRepo[r.id]
           )
           set((s) => {
@@ -2563,11 +2575,15 @@ export const createWorktreeSlice: StateCreator<AppState, [], [], WorktreeSlice> 
             r.id,
             { executionHostId: hostId, reuseRecentCompatibilityFailure: true }
           )
+          const incoming = toVisibleWorktrees(detected, hostId, setup)
+          routeListingBranchSwitchesThroughGitIdentity({
+            current: get().worktreesByRepo[r.id],
+            incoming,
+            hasBranchScopedReviewContext: hasBranchScopedHostedReviewContext,
+            updateWorktreeGitIdentity: get().updateWorktreeGitIdentity
+          })
           const current = get().worktreesByRepo[r.id]
-          const list = sanitizeHostedReviewLinksForBranchClears(
-            toVisibleWorktrees(detected, hostId, setup),
-            current
-          )
+          const list = sanitizeHostedReviewLinksForBranchClears(incoming, current)
           const currentMatchOptions = worktreeHostMatchOptions(get(), r.id, hostId)
           const currentForHost = (current ?? []).filter((worktree) =>
             worktreeMatchesHost(worktree, hostId, currentMatchOptions)
