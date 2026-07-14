@@ -24,29 +24,40 @@ function isTerminalScrollIntentPointerTarget(target: EventTarget | null): target
   return target.closest(XTERM_SCROLL_INTENT_POINTER_TARGET_SELECTOR) !== null
 }
 
-type TerminalWithCoreUserInput = {
-  _core?: {
-    coreService?: {
-      onUserInput?: (listener: () => void) => { dispose?: unknown } | undefined
-    }
-  }
+type TerminalWithOnData = {
+  onData?: (listener: (data: string) => void) => { dispose?: unknown } | undefined
 }
 
-// Why: typing scrolls the terminal to the bottom (xterm scrollOnUserInput)
-// without going through any wheel/pointer path this module tracks. Without a
-// resync, a stored pin goes stale and a later workspace-switch restore yanks
-// the user back to the old reading position. Core onUserInput fires only for
-// real input, never for parser auto-replies (see terminal-user-input-signal).
+// Mouse reports (SGR "\x1b[<b;x;yM" and X10 "\x1b[M...") stream at pointer
+// frequency and are the one input kind whose native scroll-to-bottom must NOT
+// reclassify a pin: converting it would permanently drop a reading position
+// on a mere mouse-move over a mouse-tracking app.
+function isMouseReportInput(data: string): boolean {
+  return (
+    data.charCodeAt(0) === 0x1b &&
+    data.charAt(1) === '[' &&
+    (data.charAt(2) === '<' || data.charAt(2) === 'M')
+  )
+}
+
+// Why: typing/pasting scrolls the terminal to the bottom (xterm
+// scrollOnUserInput) without going through any wheel/pointer path this module
+// tracks. Without a resync, a stored pin goes stale and a later
+// workspace-switch restore yanks the user back to the old reading position.
+// onData also carries parser auto-replies (DSR/CPR, focus reports); those
+// never move the viewport, so their resync settles as a no-op.
 function subscribeScrollIntentUserInputResync(
   terminal: TerminalScrollIntentTarget
 ): { dispose: () => void } | null {
-  const coreService = (terminal as TerminalWithCoreUserInput)._core?.coreService
-  if (typeof coreService?.onUserInput !== 'function') {
+  const onData = (terminal as TerminalWithOnData).onData
+  if (typeof onData !== 'function') {
     return null
   }
   try {
-    const subscription = coreService.onUserInput(() => {
-      syncTerminalScrollIntentSoon(terminal)
+    const subscription = onData((data: string) => {
+      if (!isMouseReportInput(data)) {
+        syncTerminalScrollIntentSoon(terminal)
+      }
     })
     if (subscription && typeof subscription.dispose === 'function') {
       return subscription as { dispose: () => void }
