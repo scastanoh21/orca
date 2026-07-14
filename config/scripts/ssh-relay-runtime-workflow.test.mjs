@@ -61,6 +61,8 @@ describe('SSH relay runtime artifact workflow', () => {
     expect(source).toContain('foreach ($output in @($firstOutput, $secondOutput))')
     expect(source).toContain('ssh-relay-runtime-reproducibility.mjs')
     expect(source).toContain('ssh-relay-runtime-reproducibility.test.mjs')
+    expect(source).toContain('ssh-relay-runtime-windows-pe-diagnostic.mjs')
+    expect(source).toContain('ssh-relay-runtime-windows-pe-diagnostic.test.mjs')
     expect(source).toContain(
       'node --check config/scripts/ssh-relay-runtime-reproducibility.test.mjs'
     )
@@ -100,6 +102,18 @@ describe('SSH relay runtime artifact workflow', () => {
         run.indexOf('ssh-relay-runtime-reproducibility.mjs')
       )
     }
+    const windowsRun = windowsSteps.find(
+      (step) => step.name === 'Build twice, inspect, smoke, and compare exact runtime'
+    ).run
+    expect(windowsRun.indexOf('ssh-relay-runtime-windows-pe-diagnostic.mjs')).toBeGreaterThan(
+      windowsRun.indexOf('ssh-relay-runtime-reproducibility.mjs')
+    )
+    expect(
+      windowsRun.indexOf("throw 'runtime reproducibility verification failed'")
+    ).toBeGreaterThan(windowsRun.indexOf('ssh-relay-runtime-windows-pe-diagnostic.mjs'))
+    expect(windowsRun.indexOf('runtime-evidence/${{ matrix.tuple }}')).toBeGreaterThan(
+      windowsRun.indexOf("throw 'runtime reproducibility verification failed'")
+    )
     expect(steps[uploadIndex].with.path).toBe('runtime-evidence/${{ matrix.tuple }}/')
     expect(source).not.toMatch(/releases\/|gh release|contents:\s*write/i)
   })

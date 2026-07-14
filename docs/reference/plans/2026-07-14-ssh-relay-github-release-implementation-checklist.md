@@ -2,7 +2,7 @@
 
 Date created: 2026-07-14<br>
 Last updated: 2026-07-14<br>
-Current phase: Milestone 3 / Work Package 2 target-native runtime assembly — exact-head run 29351557922 proves clean-build equality on Linux x64/arm64, macOS x64/arm64, and Windows x64, but fails closed because Windows arm64 first differs at `conpty_console_list.node`; the active slice is bounded diagnosis/correction of that copied artifact build only; oldest-baseline, native-trust, cross-family remote, and measured-baseline gates remain open; no bundled-runtime path is enabled<br>
+Current phase: Milestone 3 / Work Package 2 target-native runtime assembly — exact-head runs 29351557922 and 29352510414 prove clean-build equality on Linux x64/arm64, macOS x64/arm64, and Windows x64, but both fail closed because Windows arm64 first differs at `conpty_console_list.node`; the active slice is a bounded PE diagnostic for that copied artifact before any producer correction; oldest-baseline, native-trust, cross-family remote, and measured-baseline gates remain open; no bundled-runtime path is enabled<br>
 Primary design: [SSH relay GitHub Release plan](./2026-07-14-ssh-relay-github-release-plan.html)<br>
 Motivating issues: [#8450](https://github.com/stablyai/orca/issues/8450), [#1693](https://github.com/stablyai/orca/issues/1693)
 
@@ -108,8 +108,11 @@ same change as the work it records.
   exact commit `f864d3fa6`. Exact-head run 29351557922 then parses and builds on all six native
   runners: Linux x64/arm64, macOS x64/arm64, and Windows x64 compare exactly and upload, while
   Windows arm64 fully builds, verifies, and smokes both outputs but fails closed before upload when
-  `conpty_console_list.node` differs (E-M3-REPRODUCIBILITY-WINDOWS-ARM64-CI-RED-001). Native Windows
-  arm64 equality remains mandatory; oldest-baseline, native-trust, SSH, and musl cells remain open.
+  `conpty_console_list.node` differs (E-M3-REPRODUCIBILITY-WINDOWS-ARM64-CI-RED-001). Documentation-
+  only exact-head repeat run 29352510414 reproduces the same isolated arm64 drift while all five
+  controls compare and upload under E-M3-REPRODUCIBILITY-WINDOWS-ARM64-REPEAT-CI-RED-001. Native
+  Windows arm64 equality remains mandatory; oldest-baseline, native-trust, SSH, and musl cells
+  remain open.
 - Windows input correction: E-M3-WINDOWS-INPUT-GAP-001 proved the official Windows ZIP lacks headers
   and `node.lib`. Both artifacts now require the exact signed headers archive and tuple import
   library as explicit inputs. The schema, signed-checksum verifier, bounded ZIP/header extraction,
@@ -149,12 +152,12 @@ same change as the work it records.
   per-target opt-in selects bundled-preferred behavior, and implementing the setting does not
   authorize default-on rollout or legacy removal (E-M1-ROLLOUT-DECISION-001).
 - Legacy fallback removal: not authorized.
-- Next required action: commit the exact local evidence record for `f864d3fa6`, push the bounded
-  correction and evidence commits, and rerun all six target-native jobs. Require Linux and macOS to
-  remain equal and Windows `/Brepro` outputs to build, smoke, compare equal, and upload. Keep
-  oldest-baseline, cross-family remote infrastructure, signing/trust, and measured legacy baseline
-  gates open; do not introduce publication, resolver, transfer, rollout, tuple enablement, or
-  default behavior.
+- Next required action: finish the bounded Windows PE diagnostic that compares the two rejected
+  `conpty_console_list.node` outputs before cleanup and
+  reports hashes, sizes, differing byte ranges, and relevant PE headers without uploading either
+  failed binary. Prove the diagnostic contract locally and on both native Windows runners before
+  making any copied-artifact producer correction. Keep the strict comparator, x64 behavior,
+  repository-wide node-pty patch, legacy/default path, and all other release gates unchanged.
 
 ## Non-Negotiable Invariants
 
@@ -631,19 +634,17 @@ isolated the first native differences to macOS `pty.node` and Windows `conpty_co
 under E-M3-REPRODUCIBILITY-DIAGNOSTIC-CI-RED-001. Artifact consumers, publication, the
 repository-wide node-pty patch, and the legacy/default path remain unchanged.
 
-**Active correction — 2026-07-14, Codex implementation owner:** implementation `a09b02ec4` requires
-disjoint exclusive output/work directories, reuses one caller-owned work path across clean passes,
-links macOS native outputs with `-Wl,-reproducible` while retaining the required `LC_UUID`, and
-adds `/Brepro` only to the copied Windows node-pty source with an exact-source fail-closed guard.
-Follow-up `3e433b343` removes the run ID from the work path so separate CI runs use one canonical
-runner-local location while their outputs remain run-scoped. E-M3-REPRODUCIBILITY-LINKER-LOCAL-001
-proves two clean macOS passes plus a separate repeat session are byte-identical and loadable.
-E-M3-REPRODUCIBILITY-LINKER-CI-RED-001 proves Linux and macOS x64/arm64 equality on exact head
-`54df2cb99`; Windows stopped before artifact inputs because Vitest imported the builder's unused Unix
-shebang. The active bounded correction removes only that shebang and syntax-checks the builder and
-its test on POSIX and Windows before contract collection. Its exact implementation commit
-`f864d3fa6` is locally green under E-M3-REPRODUCIBILITY-BUILDER-PARSER-LOCAL-001. Native Windows
-proof and the six-runner equality gate remain open; no tuple or production consumer is enabled.
+**Active correction — 2026-07-14, Codex implementation owner:** exact-head run 29351557922 proves
+the parser and `/Brepro` correction on both Windows architectures, with complete equality on x64.
+Windows arm64 builds, verifies, and smokes both complete outputs but first differs at copied-artifact
+`conpty_console_list.node`, so the comparator rejects the cell and uploads neither output under
+E-M3-REPRODUCIBILITY-WINDOWS-ARM64-CI-RED-001. The active bounded package adds a test-covered PE
+mismatch diagnostic before cleanup: hashes, sizes, coalesced differing byte ranges, and relevant PE
+headers only, with bounded reads/output and no failed-binary upload. Exact-head repeat run
+29352510414 reproduces the same arm64-only drift while all five controls compare and upload under
+E-M3-REPRODUCIBILITY-WINDOWS-ARM64-REPEAT-CI-RED-001. No comparator weakening, post-build
+normalization, producer correction, repository-wide node-pty change, tuple enablement, or production
+consumer is authorized without the diagnostic evidence.
 
 Each runtime must contain only the executable closure required by the relay.
 
@@ -4116,6 +4117,62 @@ or unexpected token`; the first logs did not identify a source location.
 - Follow-up: add a bounded PE-diff diagnostic for the two Windows arm64 binaries, record byte ranges
   and headers, then correct only the copied artifact build if evidence identifies a safe source.
   Do not weaken comparison, upload failed outputs, or change repository-wide/legacy node-pty.
+
+### E-M3-REPRODUCIBILITY-WINDOWS-ARM64-REPEAT-CI-RED-001 — Independent repeat of arm64-only drift
+
+- Date: 2026-07-14
+- Commit SHA / PR: documentation-only exact head `a7151f9750fd9bfcdcff8c01c1fd6caff2e6116a`;
+  implementation bytes remain `de541efd11989d2e6dce0402307912afffae3510`; stacked draft PR
+  [#8741](https://github.com/stablyai/orca/pull/8741)
+- Run and jobs: [run 29352510414](https://github.com/stablyai/orca/actions/runs/29352510414),
+  conclusion `failure`; Linux x64 `87151980265`, Linux arm64 `87151980298`, macOS arm64
+  `87151980396`, macOS x64 `87151980327`, Windows x64 `87151980324`, and failing Windows arm64
+  `87151980264`
+- Runners: the same six native labels/toolchain family recorded in
+  E-M3-REPRODUCIBILITY-WINDOWS-ARM64-CI-RED-001. The failing cell was Windows 11 Enterprise
+  10.0.26200 arm64, image `windows-11-arm64` `20260706.102.1`, runner `2.335.1`, provisioner
+  `20260624.560`, Node v24.18.0, MSVC 19.44.35228 / tools 14.44.35207, Windows SDK 10.0.26100.0,
+  and Python 3.13.14.
+- Remote and transport: none; independent target-native artifact assembly/execution and unpublished
+  Actions artifact upload only
+- Exact evidence commands:
+
+  ```sh
+  gh run view 29352510414 --repo stablyai/orca \
+    --json databaseId,headSha,status,conclusion,url,updatedAt,jobs
+  gh api repos/stablyai/orca/actions/jobs/87151980264/logs
+  gh api 'repos/stablyai/orca/actions/runs/29352510414/artifacts?per_page=100'
+  ```
+
+- Result: FAIL as expected at the unchanged native boundary. All 14 contract suites passed on
+  Windows arm64 with 44 tests passed and three POSIX-only skips. Linux x64/arm64, macOS x64/arm64,
+  and Windows x64 independently built twice, inspected, smoked, compared exactly, and uploaded
+  unpublished artifacts `8318818618`, `8318833832`, `8318812505`, `8318846378`, and `8318866333`.
+  Windows arm64 again built, inspected, and smoked two complete 60-entry, 42-file,
+  86,189,895-byte outputs, then first differed at
+  `runtime/node_modules/node-pty/build/Release/conpty_console_list.node`; upload was skipped.
+- Windows arm64 rejected outputs: first content ID
+  `e13f39ae96eba36c3ed41054da7429533e2eebbdd7d845a712d802d002906bc8`, ZIP 33,261,548 bytes
+  with SHA-256 `ca1be18b572e353ac2eb3a390d91e5d0acb93100735f387ce74300cb48ba39d1`;
+  second content ID `4989a282c6529df6066aefbb5667ca96777907d54f1d9a48041f8ff98555b9c0`,
+  ZIP 33,261,548 bytes with SHA-256
+  `e91664074aa2f434ea0e2603596410c119b89b2a4a4d7eab453bfb7407ff91d0`.
+- Duration and resource metrics: jobs completed in 3m9s Linux x64, 3m39s Linux arm64, 2m56s macOS
+  arm64, 4m9s macOS x64, 4m53s Windows x64, and 8m48s Windows arm64. Arm64 native builds took
+  145,700 ms and 124,010 ms; smoke took 6,042 ms and 5,564 ms at 53,075,968 and 52,977,664 bytes
+  RSS. Build peak RSS, open files/channels, and cancellation settlement were not instrumented.
+- Artifact/log/trace link: run/job above and the five unpublished seven-day artifacts; no failed
+  arm64 bytes were uploaded
+- Oracle proved: the Windows arm64 difference repeats across an independent run while the same-head
+  Windows x64 and four POSIX controls remain reproducible; the strict gate consistently prevents a
+  rejected output from upload. The drift is not a transient failure from run 29351557922.
+- Does not prove: differing PE byte ranges/headers, a producer correction, arm64 equality,
+  cross-run equality, oldest baselines, native trust/signing, SSH, publication, transfer, fallback,
+  UI, or any enabled tuple.
+- Checklist items satisfied: no new completion checkbox; this repeat evidence justifies the bounded
+  PE diagnostic before any producer change.
+- Follow-up: run the bounded diagnostic on both native Windows runners, require x64 to remain equal,
+  and use only the rejected arm64 headers/ranges to choose or reject a copied-artifact correction.
 
 ## Accepted Gaps
 
