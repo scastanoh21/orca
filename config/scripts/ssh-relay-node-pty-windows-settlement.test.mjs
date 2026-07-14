@@ -42,7 +42,9 @@ describe('SSH relay copied node-pty Windows settlement', () => {
       `                this._ptyNative.kill(this._pty, this._useConptyDll);
                 // Why: quiet ConPTY output cannot retrigger disposal, so start its bounded drain now.
                 this._conoutSocketWorker.dispose();
-                this._outSocket.on('data', function () {`
+                this._outSocket.on('data', function () {
+                    _this._conoutSocketWorker.dispose();
+                });`
     )
   })
 

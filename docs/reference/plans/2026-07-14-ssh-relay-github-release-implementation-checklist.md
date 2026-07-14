@@ -2,7 +2,7 @@
 
 Date created: 2026-07-14<br>
 Last updated: 2026-07-14<br>
-Current phase: Milestone 3 / Work Package 2 target-native runtime assembly — add a fail-closed, runtime-artifact-only correction for the ConPTY worker `MessagePort` retained after functionally successful native Windows x64 and arm64 smoke; exact-head green CI, reproducibility, oldest-baseline, native-trust, cross-family remote, and measured-baseline gates remain open; no bundled-runtime path is enabled<br>
+Current phase: Milestone 3 / Work Package 2 target-native runtime assembly — require exact-head native Windows x64 and arm64 proof for the locally green, fail-closed runtime-artifact-only ConPTY worker settlement correction; reproducibility, oldest-baseline, native-trust, cross-family remote, and measured-baseline gates remain open; no bundled-runtime path is enabled<br>
 Primary design: [SSH relay GitHub Release plan](./2026-07-14-ssh-relay-github-release-plan.html)<br>
 Motivating issues: [#8450](https://github.com/stablyai/orca/issues/8450), [#1693](https://github.com/stablyai/orca/issues/1693)
 
@@ -73,8 +73,9 @@ same change as the work it records.
   (E-M3-WINDOWS-RESOURCE-DIAGNOSTIC-CI-RED-001). The active slice is an exact-source, fail-closed
   correction applied only to the copied node-pty Windows JavaScript inside runtime artifact
   staging; the repository-wide node-pty patch and legacy/default desktop path must remain unchanged.
-  This package may produce test artifacts but must not publish, resolve, transfer, install, launch,
-  or enable them.
+  That local contract is green at `c04b4f630` under E-M3-WINDOWS-CONPTY-WORKER-LOCAL-001; exact-head
+  native Windows proof remains mandatory. This package may produce test artifacts but must not
+  publish, resolve, transfer, install, launch, or enable them.
 - Active evidence gate: the immutable Node v24.18.0 contract, pinned release key, bounded verifier,
   and artifact-only CLI are locally green under E-M3-NODE-RED-001 and E-M3-NODE-PROVENANCE-001.
   E-M3-RUNTIME-LOCAL-001 additionally proves one unpublished Linux arm64 glibc assembly, exact-tree
@@ -119,14 +120,12 @@ same change as the work it records.
 - Rollout control: existing per-SSH-target configuration; legacy is the default and the bundled
   runtime is an explicit per-target Beta opt-in under E-M1-ROLLOUT-DECISION-001.
 - Legacy fallback removal: not authorized.
-- Next required action: prove the copied node-pty Windows runtime closure owns the persistent
-  `MessagePort`, add a discriminating source-drift-rejecting test, and apply the narrow correction
-  only after node-pty is copied into exclusive artifact staging. Rerun both exact-head native
-  Windows jobs and require normal child exit, no persistent `MessagePort` after observation, and
-  unpublished artifact upload before claiming either executable cell. A same-head/same-runner
-  clean-rebuild identity oracle remains a separate next gate. Keep cross-family remote
-  infrastructure, signing/trust, and measured legacy baseline gates open; do not introduce
-  publication, resolver, transfer, rollout, tuple enablement, or default behavior.
+- Next required action: push the locally green copied-node-pty settlement correction and rerun both
+  exact-head native Windows jobs. Require normal child exit, no persistent `MessagePort` after
+  observation, and unpublished artifact upload before claiming either executable cell. A
+  same-head/same-runner clean-rebuild identity oracle remains a separate next gate. Keep
+  cross-family remote infrastructure, signing/trust, and measured legacy baseline gates open; do
+  not introduce publication, resolver, transfer, rollout, tuple enablement, or default behavior.
 
 ## Non-Negotiable Invariants
 
@@ -592,12 +591,12 @@ archive inspection, bundled-Node/native-module/PTY/watcher smoke, SBOM, and prov
 behind purpose-named scripts and CI artifacts. No release publication, desktop resolver, SSH
 transfer, install, fallback, rollout setting, or tuple enablement belongs in this package.
 
-**Active sub-gate — 2026-07-14, Codex implementation owner:** exact-head run 29343816558 identifies
-one persistent `MessagePort` on native Windows x64 and arm64 after functional PTY/watcher smoke,
-public PTY cleanup, and a two-second observation window. Prove and correct the copied ConPTY worker
-lifecycle inside artifact staging only, rejecting missing, duplicated, or drifted source; preserve
-the repository-wide node-pty patch, legacy/default desktop path, 45-second parent bound, and the
-prohibition on `process.exit()`.
+**Active sub-gate — 2026-07-14, Codex implementation owner:** implementation commit `c04b4f630`
+starts the ConPTY worker's bounded drain only in the copied Windows artifact source and rejects
+missing, duplicated, or drifted source. Local contract and repository gates are green; require
+normal child exit and unpublished artifact upload on exact-head native Windows x64 and arm64 while
+preserving the repository-wide node-pty patch, legacy/default desktop path, 45-second parent bound,
+and prohibition on `process.exit()`.
 
 Each runtime must contain only the executable closure required by the relay.
 
@@ -1195,16 +1194,16 @@ Baseline measurements must be captured before product behavior changes.
 
 Update status and evidence as work begins. Do not combine these into one large behavior switch.
 
-| Work package              | Scope                                                                                      | Default behavior change     | Status                                   | PR/evidence                                                                                                                                |
-| ------------------------- | ------------------------------------------------------------------------------------------ | --------------------------- | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| 0. #8450 legacy fix       | Coherent Node/npm selection and live repro                                                 | Fixes legacy selection only | Complete and CI-green in draft PR #8724  | E-M0-UNIT-002, E-M0-LIVE-002, E-M0-STATIC-002, E-M0-PR-001, E-M0-CI-001                                                                    |
-| 1. Contract and selectors | Manifest schema, identity, platform/libc selection, hostile inputs                         | None                        | Complete and CI-green in draft PR #8728  | `b9d80a4cb`; E-M2-RED-001, E-M2-CONTRACT-001, E-M2-CI-001                                                                                  |
-| 2. Runtime builds         | Per-tuple assembly, native smoke, SBOM/provenance/signing                                  | None                        | Draft PR #8741; ConPTY settlement active | `2aaea7046`; E-M3-NODE-RED-001, E-M3-NODE-PROVENANCE-001, E-M3-RUNTIME-LOCAL-001, E-M3-CI-001, E-M3-WINDOWS-RESOURCE-DIAGNOSTIC-CI-RED-001 |
-| 3. Release publication    | Prerequisite DAG, embedded manifest, draft upload/read-back gates                          | Asset-only                  | Not started                              | —                                                                                                                                          |
-| 4. Desktop resolver/cache | Verified download, extraction, cache, offline behavior                                     | None/forced mode only       | Not started                              | —                                                                                                                                          |
-| 5. Transfer/install       | Bounded transports, structured sentinel, bundled launch behind per-target Beta/forced mode | Per-target opt-in only      | Not started                              | —                                                                                                                                          |
-| 6. Fallback/diagnostics   | Abort-and-join state machine, mode isolation, reason codes, target-mode configuration/UI   | Per-target Beta only        | Not started                              | —                                                                                                                                          |
-| 7. Live gates/rollout     | Matrix, security, performance, release promotion                                           | Per-tuple staged            | Not started                              | —                                                                                                                                          |
+| Work package              | Scope                                                                                      | Default behavior change     | Status                                       | PR/evidence                                                                                                                         |
+| ------------------------- | ------------------------------------------------------------------------------------------ | --------------------------- | -------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| 0. #8450 legacy fix       | Coherent Node/npm selection and live repro                                                 | Fixes legacy selection only | Complete and CI-green in draft PR #8724      | E-M0-UNIT-002, E-M0-LIVE-002, E-M0-STATIC-002, E-M0-PR-001, E-M0-CI-001                                                             |
+| 1. Contract and selectors | Manifest schema, identity, platform/libc selection, hostile inputs                         | None                        | Complete and CI-green in draft PR #8728      | `b9d80a4cb`; E-M2-RED-001, E-M2-CONTRACT-001, E-M2-CI-001                                                                           |
+| 2. Runtime builds         | Per-tuple assembly, native smoke, SBOM/provenance/signing                                  | None                        | Draft PR #8741; native settlement CI pending | `c04b4f630`; E-M3-NODE-RED-001, E-M3-NODE-PROVENANCE-001, E-M3-RUNTIME-LOCAL-001, E-M3-CI-001, E-M3-WINDOWS-CONPTY-WORKER-LOCAL-001 |
+| 3. Release publication    | Prerequisite DAG, embedded manifest, draft upload/read-back gates                          | Asset-only                  | Not started                                  | —                                                                                                                                   |
+| 4. Desktop resolver/cache | Verified download, extraction, cache, offline behavior                                     | None/forced mode only       | Not started                                  | —                                                                                                                                   |
+| 5. Transfer/install       | Bounded transports, structured sentinel, bundled launch behind per-target Beta/forced mode | Per-target opt-in only      | Not started                                  | —                                                                                                                                   |
+| 6. Fallback/diagnostics   | Abort-and-join state machine, mode isolation, reason codes, target-mode configuration/UI   | Per-target Beta only        | Not started                                  | —                                                                                                                                   |
+| 7. Live gates/rollout     | Matrix, security, performance, release promotion                                           | Per-tuple staged            | Not started                                  | —                                                                                                                                   |
 
 Every PR must document:
 
@@ -1254,6 +1253,7 @@ focused commands as their scripts/tests are introduced.
 - [x] `pnpm exec vitest run --config config/vitest.config.ts config/scripts/ssh-relay-runtime-windows-tree.test.mjs` (E-M3-WINDOWS-LOCAL-002; structural Windows ConPTY closure only, no execution)
 - [x] `pnpm exec vitest run --config config/vitest.config.ts config/scripts/ssh-relay-runtime-pty-smoke.test.mjs` (E-M3-WINDOWS-SMOKE-SETTLEMENT-LOCAL-RED-001, E-M3-WINDOWS-SMOKE-SETTLEMENT-LOCAL-001; native evidence remains pending)
 - [x] `pnpm exec vitest run --config config/vitest.config.ts config/scripts/ssh-relay-runtime-resource-diagnostics.test.mjs` (E-M3-WINDOWS-RESOURCE-DIAGNOSTIC-LOCAL-001; native classification pending)
+- [x] `pnpm exec vitest run --config config/vitest.config.ts config/scripts/ssh-relay-node-pty-windows-settlement.test.mjs` (E-M3-WINDOWS-CONPTY-WORKER-LOCAL-RED-001, E-M3-WINDOWS-CONPTY-WORKER-LOCAL-001; native settlement pending)
 - [x] `node config/scripts/verify-ssh-relay-node-release-inputs.mjs --inputs-directory <verified-windows-input-directory> --archive win32-x64` (E-M3-WINDOWS-INPUT-001; signed real Node ZIP, headers, and import library; no Windows execution)
 - [x] `node config/scripts/build-ssh-relay-runtime.mjs --tuple linux-arm64-glibc --inputs-directory <verified-input-directory> --output-directory <exclusive-output> --source-date-epoch <epoch> --git-commit <full-sha>` (E-M3-RUNTIME-LOCAL-001; local native Linux arm64 only)
 - [x] `node config/scripts/verify-ssh-relay-runtime.mjs --runtime-directory <runtime-tree> --identity <identity.json> --archive <runtime.tar.xz>` (E-M3-RUNTIME-LOCAL-001; local native Linux arm64 only)
@@ -3143,6 +3143,92 @@ or unexpected token`; the first logs did not identify a source location.
 - Follow-up: inspect the copied node-pty ConPTY worker lifecycle, add an exact-source fail-closed
   transform contract scoped to Windows artifact staging, then require both native jobs to exit and
   upload unpublished evidence before advancing.
+
+### E-M3-WINDOWS-CONPTY-WORKER-LOCAL-RED-001 — Copied-source settlement contract red gate
+
+- Date: 2026-07-14
+- Commit SHA / PR: uncommitted red-test working tree based on
+  `2aaea70465dc80ced2ba4662b5bc1475a9c2f8c5`; draft PR
+  [#8741](https://github.com/stablyai/orca/pull/8741)
+- Runner: macOS 26.2 arm64; Node v26.0.0 and pnpm 10.24.0. Node 24 and native Windows remain the
+  authoritative artifact environments.
+- Remote and transport: none; synthetic copied-source fixtures only
+- Exact command:
+  `pnpm exec vitest run --config config/vitest.config.ts config/scripts/ssh-relay-node-pty-windows-settlement.test.mjs`
+- Result: expected discriminating FAIL, 4/4 tests failed in 136 ms. The copied Windows source was
+  unchanged, POSIX returned no explicit no-op result, and missing/duplicate source patterns did not
+  fail closed.
+- Oracle proved: the new contract failed for each missing behavior before the correction existed.
+- Does not prove: the green transform, production wiring, native Windows execution, prompt worker
+  settlement, or any tuple.
+- Checklist items satisfied: red half of the copied ConPTY worker settlement correction only.
+- Follow-up: implement the exact one-match transform against exclusive artifact staging and rerun
+  focused, artifact, and repository gates.
+
+### E-M3-WINDOWS-CONPTY-WORKER-LOCAL-001 — Fail-closed artifact-only worker settlement
+
+- Date: 2026-07-14
+- Commit SHA / PR: implementation commit `c04b4f630`; draft PR
+  [#8741](https://github.com/stablyai/orca/pull/8741)
+- Runner: macOS 26.2 arm64; Node v26.0.0 and pnpm 10.24.0. Node 24 and native Windows remain the
+  authoritative artifact environments.
+- Remote and transport: none; pinned installed node-pty source, synthetic source-drift fixtures,
+  workflow contract, and repository static gates
+- Exact commands:
+
+  ```sh
+  pnpm exec vitest run --config config/vitest.config.ts \
+    config/scripts/ssh-relay-node-pty-windows-settlement.test.mjs
+  pnpm exec vitest run --config config/vitest.config.ts \
+    config/scripts/ssh-relay-node-pty-windows-settlement.test.mjs \
+    config/scripts/ssh-relay-runtime-pty-smoke.test.mjs \
+    config/scripts/ssh-relay-runtime-resource-diagnostics.test.mjs \
+    config/scripts/ssh-relay-runtime-windows-tree.test.mjs \
+    config/scripts/ssh-relay-runtime-workflow.test.mjs
+  pnpm exec vitest run --config config/vitest.config.ts \
+    config/scripts/ssh-relay-node-release-verification.test.mjs \
+    config/scripts/ssh-relay-node-tar-inspection.test.mjs \
+    config/scripts/ssh-relay-node-pty-windows-settlement.test.mjs \
+    config/scripts/ssh-relay-node-zip-inspection.test.mjs \
+    config/scripts/ssh-relay-runtime-artifact.test.mjs \
+    config/scripts/ssh-relay-runtime-pty-smoke.test.mjs \
+    config/scripts/ssh-relay-runtime-resource-diagnostics.test.mjs \
+    config/scripts/ssh-relay-runtime-windows-tree.test.mjs \
+    config/scripts/ssh-relay-runtime-zip.test.mjs \
+    config/scripts/ssh-relay-runtime-workflow.test.mjs
+  pnpm run typecheck
+  pnpm exec oxlint config/scripts/ssh-relay-node-pty-build.mjs \
+    config/scripts/ssh-relay-node-pty-windows-settlement.mjs \
+    config/scripts/ssh-relay-node-pty-windows-settlement.test.mjs \
+    .github/workflows/ssh-relay-runtime-artifacts.yml
+  pnpm run check:max-lines-ratchet
+  GOMAXPROCS=2 pnpm run lint
+  pnpm exec oxfmt --check .github/workflows/ssh-relay-runtime-artifacts.yml \
+    config/scripts/ssh-relay-node-pty-build.mjs \
+    config/scripts/ssh-relay-node-pty-windows-settlement.mjs \
+    config/scripts/ssh-relay-node-pty-windows-settlement.test.mjs \
+    docs/reference/plans/2026-07-14-ssh-relay-github-release-implementation-checklist.md
+  git diff --check
+  ```
+
+- Result: PASS. The purpose-named suite passed 5/5 tests in 124 ms; the settlement/PTY/resource/tree/
+  workflow slice passed 12/12 tests across five suites in 201 ms; all ten artifact suites passed
+  32/32 tests in 378 ms. Typecheck, focused oxlint, max-lines, full lint/reliability/localization,
+  formatting, and whitespace gates passed with only existing out-of-package lint warnings.
+- Duration and resource metrics: the combined repository static command completed in approximately
+  12.4 seconds. Peak memory and open-file counts were not instrumented by these local static tests.
+- Oracle proved: the transform accepts the exact pinned installed node-pty source, starts the
+  ConPTY `Worker` drain even when no later output arrives, preserves later-data timer resets, modifies
+  only the copied Windows artifact source after exclusive staging, and does not inspect a POSIX copy.
+  Missing, drifted, duplicate, or already-transformed source rejects before a write. Both native
+  workflow families run the purpose-named contract. The repository-wide
+  `config/patches/node-pty@1.1.0.patch` and legacy/default desktop node-pty behavior are unchanged.
+- Does not prove: native Windows worker termination, normal smoke child exit, absence of a persistent
+  `MessagePort`, artifact upload, reproducibility, native trust, oldest baseline, SSH, or any tuple.
+- Checklist items satisfied: purpose-named local copied-source settlement contract and verification
+  command inventory only; Windows executable rows remain unchecked.
+- Follow-up: push the exact head and require both target-native Windows jobs to exit normally, show
+  no persistent `MessagePort` after the observation window, and upload unpublished evidence.
 
 ### E-M3-RUNTIME-LOCAL-001 — First target-native Linux arm64 runtime artifact
 
