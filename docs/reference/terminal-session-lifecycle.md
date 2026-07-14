@@ -1,6 +1,6 @@
 # Terminal Session Ownership and Teardown
 
-**Status:** Phase 1 implemented; focused verification complete
+**Status:** Incident fix and pane-authority transfer implemented
 **Date:** 2026-07-13
 **Incident:** [`../../pty-exhaustion-agent-session-leak.md`](../../pty-exhaustion-agent-session-leak.md)
 **Related contracts:** [`terminal-model-view-contract.md`](./terminal-model-view-contract.md),
@@ -38,11 +38,13 @@ store callers have migrated.
 
 ## Implementation status
 
-Phase 1 now ships the retirement planner, provider-aware close routing, parked
-watcher/candidate disposal, resume-authority revocation, explicit natural-exit
-handling, late-binding rejection in `updateTabPtyId`, and post-spawn ownership
-checks for both direct background launchers. Focused tests cover local, SSH,
-split, parked, shared, paired-host, ordinary runtime, and late-spawn paths.
+The incident patch ships the retirement planner, provider-aware close routing,
+unified-only retirement, parked watcher/candidate disposal, resume-authority
+revocation, explicit natural-exit handling, late-binding rejection, and direct
+background-launch ownership checks. It also adds exact pane retirement and a
+persisted physical-to-owner pane-key alias for detach, plus a live Electron
+parked-close gate. Focused tests cover local, SSH, split, parked, shared,
+paired-host, ordinary runtime, pane-transfer, and late-spawn paths.
 
 Origin-aware defensive expiry remains a follow-up. Immediate deletion on
 explicit close fixes the incident without applying a wall-clock policy that
@@ -54,7 +56,8 @@ could invalidate intentional long-lived `worktree-sleep` checkpoints.
    daemon, WSL, SSH, or runtime PTYs, including every split pane, whether its
    views are mounted or parked.
 2. Closing a terminal pane terminates only that pane's PTY; detaching a pane to
-   another tab preserves it. The pane-scoped resume transfer is a Phase 2 item.
+   another tab preserves its PTY, hook identity, and resume authority under the
+   new owning pane.
 3. Closing a tab permanently removes its agent resume authority. App restart,
    worktree activation, mobile wake, and periodic capture must not resurrect it.
 4. Parking, tab-group moves, renderer reload, and warm reattach keep their
@@ -277,8 +280,7 @@ record is deleted immediately; it is not retained for 30 minutes.
 ### 5. Pane close remains pane-scoped
 
 `PaneManager.closePane` already distinguishes `reason: 'close'` from
-`reason: 'detach'`. Preserve that distinction, but treat the complete
-pane-identity transfer as Phase 2:
+`reason: 'detach'`. Preserve that distinction with explicit pane authority:
 
 - `close` must clear the exact pane's resume authority, add a pane-scoped late
   event tombstone, and destroy the pane transport;
@@ -382,18 +384,18 @@ shutdown IPC may return per-ID acceptance, but UI close does not wait for it.
 5. Add focused planner, store, launcher-race, and resume-policy tests. Keep one
    local Electron parked-close proof as an RC release gate.
 
-### Phase 2: API cleanup
+### Phase 2: remaining API cleanup
 
 1. Rename the state-only reducer primitive so `closeTab` cannot ambiguously mean
    either UI cleanup or lifecycle teardown.
 2. Route all user and runtime close call sites through one domain command.
-3. Add exact pane retirement and atomically transfer or alias resume identity on
-   pane-to-tab detach.
-4. Guard `closeUnifiedTab` and unified bulk APIs from removing terminal wrappers
-   without terminal retirement.
-5. Keep explicit `detach` and `sleep` APIs; do not encode them as close options.
-6. Add a development assertion when tab state is removed with provider PTY IDs
+3. Keep explicit `detach` and `sleep` APIs; do not encode them as close options.
+4. Add a development assertion when tab state is removed with provider PTY IDs
    but no retirement plan.
+
+Exact pane retirement, persisted detach authority transfer, and unified-only
+terminal routing landed with Phase 1 because exact-head review found they were
+required to avoid introducing adjacent close regressions.
 
 ### Phase 3: daemon ownership leases
 
@@ -543,7 +545,6 @@ observable.
 
 ## Full-contract follow-ups
 
-- Pane-scoped resume revocation and immutable pane-key transfer/aliasing.
 - Durable main-owned retirement intent and bounded retry inventory.
 - Disconnected SSH relay kill-on-reconnect.
 - Serializable daemon attachment leases with protocol-version fallback.

@@ -3,13 +3,21 @@ import type { TerminalTabCloseReason } from '@/store/slices/terminal-tab-retirem
 
 export function closeLocalTerminalTabState(
   terminalTabId: string,
-  options?: { reason?: TerminalTabCloseReason; remoteCloseOwnedByHost?: boolean }
+  options?: {
+    reason?: TerminalTabCloseReason
+    remoteCloseOwnedByHost?: boolean
+    localPtyTeardownOwnedExternally?: boolean
+  }
 ): void {
   const state = useAppStore.getState()
   if (
     Object.values(state.tabsByWorktree).some((tabs) => tabs.some((tab) => tab.id === terminalTabId))
   ) {
-    if (options?.reason || options?.remoteCloseOwnedByHost) {
+    if (
+      options?.reason ||
+      options?.remoteCloseOwnedByHost ||
+      options?.localPtyTeardownOwnedExternally
+    ) {
       state.closeTab(terminalTabId, options)
     } else {
       state.closeTab(terminalTabId)
@@ -24,7 +32,7 @@ export function closeLocalTerminalTabState(
         (tab.entityId === terminalTabId || tab.id === terminalTabId)
     )
     if (unified) {
-      state.closeUnifiedTab(unified.id)
+      state.closeTab(unified.entityId, options)
       return
     }
   }

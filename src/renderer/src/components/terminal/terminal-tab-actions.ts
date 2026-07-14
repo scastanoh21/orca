@@ -131,7 +131,11 @@ export function createNewTerminalTab(
 
 export function closeTerminalTab(
   tabId: string,
-  options?: { force?: boolean; reason?: TerminalTabCloseReason }
+  options?: {
+    force?: boolean
+    reason?: TerminalTabCloseReason
+    localPtyTeardownOwnedExternally?: boolean
+  }
 ): void {
   const state = useAppStore.getState()
   const target = resolveCloseTerminalTabTarget(state, tabId)
@@ -176,7 +180,8 @@ export function closeTerminalTab(
     // host session snapshot catches up.
     closeLocalTerminalTabState(terminalTabId, {
       reason: options?.reason,
-      remoteCloseOwnedByHost: true
+      remoteCloseOwnedByHost: true,
+      ...(options?.localPtyTeardownOwnedExternally ? { localPtyTeardownOwnedExternally: true } : {})
     })
     void closeWebRuntimeSessionTab({
       worktreeId: owningWorktreeId,
@@ -188,7 +193,10 @@ export function closeTerminalTab(
 
   const currentTerminalTabIds = getWorktreeTerminalTabIds(state, owningWorktreeId)
   if (currentTerminalTabIds.length <= 1) {
-    closeLocalTerminalTabState(terminalTabId, { reason: options?.reason })
+    closeLocalTerminalTabState(terminalTabId, {
+      reason: options?.reason,
+      ...(options?.localPtyTeardownOwnedExternally ? { localPtyTeardownOwnedExternally: true } : {})
+    })
     if (state.activeWorktreeId === owningWorktreeId) {
       // Why: only deactivate the worktree when no tabs of any kind remain.
       // Editor files are a separate tab type; closing the last terminal tab
@@ -219,7 +227,10 @@ export function closeTerminalTab(
     }
   }
 
-  closeLocalTerminalTabState(terminalTabId, { reason: options?.reason })
+  closeLocalTerminalTabState(terminalTabId, {
+    reason: options?.reason,
+    ...(options?.localPtyTeardownOwnedExternally ? { localPtyTeardownOwnedExternally: true } : {})
+  })
 }
 
 export function closeOtherTerminalTabs(tabId: string, activeWorktreeId: string | null): void {

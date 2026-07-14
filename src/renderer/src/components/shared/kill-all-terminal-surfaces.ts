@@ -6,6 +6,7 @@ const CLOSE_BATCH_SIZE = 2
 type DaemonKillAllResult = {
   killedCount: number
   remainingCount: number
+  killedSessionIds?: string[]
 }
 
 export type KillAllTerminalSurfaceState = Pick<
@@ -34,7 +35,10 @@ export type KillAllTerminalSurfacesSummary = {
 type KillAllTerminalSurfaceDependencies = {
   getState: () => KillAllTerminalSurfaceState
   killDaemonSessions: () => Promise<DaemonKillAllResult>
-  closeSurface: (tabId: string, options: { force: true }) => void
+  closeSurface: (
+    tabId: string,
+    options: { force: true; localPtyTeardownOwnedExternally: true }
+  ) => void
   killPty: (ptyId: string) => Promise<void>
   now: () => number
   yieldToRenderer: () => Promise<void>
@@ -155,7 +159,7 @@ export async function runKillAllTerminalSurfaces(
     const targetId = closeOrder[index]
     let failed = false
     try {
-      deps.closeSurface(targetId, { force: true })
+      deps.closeSurface(targetId, { force: true, localPtyTeardownOwnedExternally: true })
     } catch {
       failed = true
     }
@@ -185,8 +189,15 @@ export async function runKillAllTerminalSurfaces(
   }
   const closeDurationMs = Math.max(0, deps.now() - closeStartedAt)
 
+  // Why: the management sweep already settled daemon-owned IDs; the exact
+  // phase owns only non-daemon or still-alive IDs, so each provider sees one request.
+  const daemonKilledSessionIds = new Set(
+    daemon.status === 'fulfilled' ? (daemon.killedSessionIds ?? []) : []
+  )
   const exactKillResults = await Promise.allSettled(
-    [...exactPtyIds].map((ptyId) => Promise.resolve().then(() => deps.killPty(ptyId)))
+    [...exactPtyIds]
+      .filter((ptyId) => !daemonKilledSessionIds.has(ptyId))
+      .map((ptyId) => Promise.resolve().then(() => deps.killPty(ptyId)))
   )
   const exactKillAcceptedCount = exactKillResults.filter(
     (result) => result.status === 'fulfilled'

@@ -1296,16 +1296,10 @@ export function useTerminalPaneLifecycle({
         }
         const leafId = closedPane?.leafId
         if (leafId && !isDetachedToTab) {
-          // Why: closing a pane is user-initiated teardown of this row — drop
-          // (not remove) so any retained `done` snapshot for this pane is also
-          // cleared and a same-frame live→gone transition cannot re-snapshot
-          // it via the retention sync. This is pane-keyed state, so it must
-          // clear even if the PTY transport was already removed.
+          // Why: pane close permanently revokes only this pane's authority;
+          // an exact tombstone blocks queued hooks without suppressing siblings.
           const paneKey = makePaneKey(tabId, leafId)
-          useAppStore.getState().setCacheTimerStartedAt(paneKey, null)
-          clearTerminalPaneUnread(paneKey)
-          useAppStore.getState().dropAgentStatus(paneKey)
-          useAppStore.getState().clearPaneForegroundAgent(paneKey)
+          useAppStore.getState().retireAgentPaneAuthority(paneKey)
         }
         if (transport) {
           if (isDetachedToTab) {

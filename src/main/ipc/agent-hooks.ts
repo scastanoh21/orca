@@ -27,6 +27,7 @@ import { hermesHookService } from '../hermes/hook-service'
 import { devinHookService } from '../devin/hook-service'
 import { kimiHookService } from '../kimi/hook-service'
 import { openClaudeHookService } from '../openclaude/hook-service'
+import { registerAgentPaneAuthorityIpcHandlers } from './agent-pane-authority-ipc'
 
 type AgentStatusRuntimeEnrichment = Pick<
   OrcaRuntimeService,
@@ -120,6 +121,7 @@ export function registerAgentHookHandlers(runtime?: AgentStatusRuntimeEnrichment
       console.warn('[agent-hooks] dropStatusEntriesByTabPrefix failed:', err)
     }
   })
+  registerAgentPaneAuthorityIpcHandlers()
   ipcMain.handle('agentStatus:getSnapshot', (): AgentStatusIpcPayload[] => {
     // Why: the renderer pulls this after workspace hydration, so startup cannot
     // lose replayed statuses while its local store is still empty. Match the

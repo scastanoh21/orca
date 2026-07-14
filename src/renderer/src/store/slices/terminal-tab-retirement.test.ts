@@ -128,6 +128,43 @@ describe('terminal tab retirement planning', () => {
     expect(plan.runtimeTerminals).toEqual([])
   })
 
+  it('protects a scoped runtime terminal referenced through its legacy alias', () => {
+    const scoped = 'remote:env-1@@terminal-1'
+    const legacy = 'remote:terminal-1'
+    const state = makeState({
+      settings: { activeRuntimeEnvironmentId: 'env-1' },
+      tabsByWorktree: {
+        'wt-1': [makeTab('tab-1', 'wt-1', legacy)],
+        'wt-2': [makeTab('tab-2', 'wt-2', scoped)]
+      },
+      ptyIdsByTabId: { 'tab-1': [legacy], 'tab-2': [scoped] }
+    })
+
+    const plan = buildTerminalTabRetirementPlan(state, 'tab-1')
+    expect(plan.sharedPtyIds).toEqual([legacy])
+    expect(plan.runtimeTerminals).toEqual([])
+  })
+
+  it('deduplicates legacy and scoped aliases owned by the closing tab', () => {
+    const state = makeState({
+      settings: { activeRuntimeEnvironmentId: 'env-1' },
+      tabsByWorktree: {
+        'wt-1': [makeTab('tab-1', 'wt-1', 'remote:terminal-1')]
+      },
+      ptyIdsByTabId: {
+        'tab-1': ['remote:terminal-1', 'remote:env-1@@terminal-1']
+      }
+    })
+
+    expect(buildTerminalTabRetirementPlan(state, 'tab-1').runtimeTerminals).toEqual([
+      {
+        ptyId: 'remote:terminal-1',
+        environmentId: null,
+        handle: 'terminal-1'
+      }
+    ])
+  })
+
   it('ignores stale ownership maps and never routes malformed remote ids locally', () => {
     const malformedRemote = 'remote:'
     const state = makeState({

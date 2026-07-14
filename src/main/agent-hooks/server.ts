@@ -28,6 +28,7 @@ import {
   HOOK_REQUEST_SLOWLORIS_MS,
   markClaudeLeadTurnInterrupted,
   MAX_PANE_KEY_LEN,
+  movePaneCacheState,
   normalizeHookPayload,
   parseFormEncodedBody,
   readRequestBody,
@@ -128,6 +129,7 @@ const HYDRATE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000
 // gone. Bound the set so it can't grow one entry per tab close for the whole
 // session (it is otherwise only cleared at app quit).
 export const CLOSED_AGENT_STATUS_TAB_IDS_MAX = 1024
+export const CLOSED_AGENT_STATUS_PANE_KEYS_MAX = 1024
 
 type LastStatusFile = {
   version: number
@@ -473,6 +475,7 @@ export class AgentHookServer {
   private promptSentDedupeByPaneKey = new Map<string, AgentPromptSentDedupeEntry>()
   private promptSentHashSalt = randomBytes(16).toString('hex')
   private closedAgentStatusTabIds = new Set<string>()
+  private closedAgentStatusPaneKeys = new Set<string>()
   // Why: identity check — skip writes when the JSON-stringified contents
   // exactly match the last successful disk write. Cheap protection against
   // re-firing trailing timers when nothing changed.
@@ -641,11 +644,30 @@ export class AgentHookServer {
   }
 
   private shouldSuppressClosedTabStatus(paneKey: string): boolean {
-    const tabId = parsePaneKey(paneKey)?.tabId
+    const ownerPaneKey = this.resolvePaneKeyAlias(paneKey)
+    if (
+      this.closedAgentStatusPaneKeys.has(paneKey) ||
+      this.closedAgentStatusPaneKeys.has(ownerPaneKey)
+    ) {
+      return true
+    }
+    const tabId = parsePaneKey(ownerPaneKey)?.tabId
     if (!tabId) {
       return false
     }
     return this.closedAgentStatusTabIds.has(tabId)
+  }
+
+  private markPaneClosedForAgentStatus(paneKey: string): void {
+    this.closedAgentStatusPaneKeys.delete(paneKey)
+    this.closedAgentStatusPaneKeys.add(paneKey)
+    while (this.closedAgentStatusPaneKeys.size > CLOSED_AGENT_STATUS_PANE_KEYS_MAX) {
+      const oldest = this.closedAgentStatusPaneKeys.keys().next().value
+      if (oldest === undefined) {
+        break
+      }
+      this.closedAgentStatusPaneKeys.delete(oldest)
+    }
   }
 
   private attachStatusTiming(
@@ -975,6 +997,94 @@ export class AgentHookServer {
     }
   }
 
+  transferPaneAuthority(
+    fromPaneKey: string,
+    toPaneKey: string,
+    ptyId?: string,
+    updatedAt = Date.now()
+  ): void {
+    if (!parsePaneKey(fromPaneKey) || !parsePaneKey(toPaneKey)) {
+      return
+    }
+    const previousOwnerPaneKey = this.resolvePaneKeyAlias(fromPaneKey)
+    let physicalPaneKey = fromPaneKey
+    for (const [candidatePhysicalPaneKey, entry] of this.legacyPaneKeyAliases) {
+      if (
+        entry.stablePaneKey === previousOwnerPaneKey &&
+        (!ptyId || !entry.ptyId || entry.ptyId === ptyId)
+      ) {
+        physicalPaneKey = candidatePhysicalPaneKey
+        break
+      }
+    }
+    const existing = this.legacyPaneKeyAliases.get(physicalPaneKey)
+    const normalizedPtyId = ptyId?.trim() || existing?.ptyId || null
+    const hadStatus = this.state.lastStatusByPaneKey.has(previousOwnerPaneKey)
+    movePaneCacheState(this.state, previousOwnerPaneKey, toPaneKey)
+    const movedStatus = this.state.lastStatusByPaneKey.get(toPaneKey) as
+      | EnrichedAgentHookEventPayload
+      | undefined
+    if (movedStatus) {
+      const owner = parsePaneKey(toPaneKey)
+      this.state.lastStatusByPaneKey.set(toPaneKey, {
+        ...movedStatus,
+        paneKey: toPaneKey,
+        tabId: owner?.tabId
+      })
+    }
+    if (this.runtimeObservedStatusPaneKeys.delete(previousOwnerPaneKey)) {
+      this.runtimeObservedStatusPaneKeys.add(toPaneKey)
+    }
+    const promptDedupe = this.promptSentDedupeByPaneKey.get(previousOwnerPaneKey)
+    if (promptDedupe !== undefined) {
+      this.promptSentDedupeByPaneKey.delete(previousOwnerPaneKey)
+      this.promptSentDedupeByPaneKey.set(toPaneKey, promptDedupe)
+    }
+    this.clearAssistantMessageRetry(previousOwnerPaneKey)
+    // Why: the live process keeps posting the physical source key after detach;
+    // persist one chain-safe mapping to whichever surface currently owns it.
+    this.legacyPaneKeyAliases.set(physicalPaneKey, {
+      stablePaneKey: toPaneKey,
+      ptyId: normalizedPtyId,
+      updatedAt
+    })
+    this.closedAgentStatusPaneKeys.delete(toPaneKey)
+    this.notifyPaneKeyAliasPersistenceListener()
+    if (hadStatus) {
+      this.scheduleStatusPersist()
+      this.notifyStatusChangeListeners()
+    }
+  }
+
+  retirePaneAuthority(paneKey: string): void {
+    const ownerPaneKey = this.resolvePaneKeyAlias(paneKey)
+    const paneKeys = new Set([paneKey, ownerPaneKey])
+    let aliasChanged = false
+    for (const [physicalPaneKey, entry] of this.legacyPaneKeyAliases) {
+      if (physicalPaneKey === paneKey || entry.stablePaneKey === ownerPaneKey) {
+        this.legacyPaneKeyAliases.delete(physicalPaneKey)
+        paneKeys.add(physicalPaneKey)
+        paneKeys.add(entry.stablePaneKey)
+        aliasChanged = true
+      }
+    }
+    const hadStatus = [...paneKeys].some((key) => this.state.lastStatusByPaneKey.has(key))
+    for (const key of paneKeys) {
+      this.markPaneClosedForAgentStatus(key)
+      this.clearAssistantMessageRetry(key)
+      clearPaneCacheState(this.state, key)
+      this.runtimeObservedStatusPaneKeys.delete(key)
+      this.promptSentDedupeByPaneKey.delete(key)
+    }
+    if (aliasChanged) {
+      this.notifyPaneKeyAliasPersistenceListener()
+    }
+    if (hadStatus) {
+      this.scheduleStatusPersist()
+      this.notifyStatusChangeListeners()
+    }
+  }
+
   clearPaneKeyAliasesForPty(
     ptyId: string,
     options?: { shouldClearStablePaneKey?: (paneKey: string) => boolean }
@@ -1030,10 +1140,9 @@ export class AgentHookServer {
     if (!stablePaneKey) {
       return body
     }
-    // Why: pre-migration live shells keep posting their immutable numeric
-    // ORCA_PANE_KEY. The reattach path proves the UUID leaf once, then this
-    // bridge lets hook caches and renderer state use only the stable key.
-    return { ...record, paneKey: stablePaneKey }
+    // Why: migrated and detached shells keep posting an immutable physical
+    // pane key; normalize both pane and tab identity to the current owner.
+    return { ...record, paneKey: stablePaneKey, tabId: parsePaneKey(stablePaneKey)?.tabId }
   }
 
   ingestTerminalStatus(event: {
@@ -1043,7 +1152,8 @@ export class AgentHookServer {
     connectionId?: string | null
     payload: ParsedAgentStatusPayload
   }): void {
-    const paneKey = this.resolvePaneKeyAlias(event.paneKey.trim())
+    const physicalPaneKey = event.paneKey.trim()
+    const paneKey = this.resolvePaneKeyAlias(physicalPaneKey)
     const parsedPaneKey = parsePaneKey(paneKey)
     if (paneKey.length === 0) {
       track('agent_hook_unattributed', { reason: 'empty_pane_key' })
@@ -1052,11 +1162,16 @@ export class AgentHookServer {
     if (paneKey.length > MAX_PANE_KEY_LEN || !parsedPaneKey) {
       return
     }
-    const tabId =
+    const reportedTabId =
       event.tabId !== undefined && event.tabId.trim().length > 0 ? event.tabId.trim() : undefined
-    if (tabId !== undefined && tabId !== parsedPaneKey.tabId) {
+    if (
+      paneKey === physicalPaneKey &&
+      reportedTabId !== undefined &&
+      reportedTabId !== parsedPaneKey.tabId
+    ) {
       return
     }
+    const tabId = paneKey !== physicalPaneKey ? parsedPaneKey.tabId : reportedTabId
     if (this.shouldSuppressClosedTabStatus(paneKey)) {
       return
     }
@@ -1135,7 +1250,8 @@ export class AgentHookServer {
     // Why: match the listener's HTTP path — `normalizeHookPayload` trims and
     // length-caps paneKey before caching, so the cache key here must follow
     // the same rule or remote-vs-local events for the same pane would diverge.
-    const paneKey = this.resolvePaneKeyAlias(envelope.paneKey.trim())
+    const physicalPaneKey = envelope.paneKey.trim()
+    const paneKey = this.resolvePaneKeyAlias(physicalPaneKey)
     const parsedPaneKey = parsePaneKey(paneKey)
     if (paneKey.length === 0) {
       track('agent_hook_unattributed', { reason: 'empty_pane_key' })
@@ -1156,13 +1272,18 @@ export class AgentHookServer {
     // Why: mirror the HTTP path's `readStringField` behavior — trim and treat
     // empty-after-trim as undefined rather than letting a literal "" leak
     // into the event.
-    const tabId =
+    const reportedTabId =
       envelope.tabId !== undefined && envelope.tabId.trim().length > 0
         ? envelope.tabId.trim()
         : undefined
-    if (tabId !== undefined && tabId !== parsedPaneKey.tabId) {
+    if (
+      paneKey === physicalPaneKey &&
+      reportedTabId !== undefined &&
+      reportedTabId !== parsedPaneKey.tabId
+    ) {
       return
     }
+    const tabId = paneKey !== physicalPaneKey ? parsedPaneKey.tabId : reportedTabId
     if (this.shouldSuppressClosedTabStatus(paneKey)) {
       return
     }
@@ -1363,6 +1484,7 @@ export class AgentHookServer {
     this.runtimeObservedStatusPaneKeys.clear()
     this.promptSentDedupeByPaneKey.clear()
     this.closedAgentStatusTabIds.clear()
+    this.closedAgentStatusPaneKeys.clear()
     this.legacyPaneKeyAliases.clear()
     clearAllListenerCaches(this.state)
     this.notifyStatusChangeListeners()
@@ -1432,13 +1554,13 @@ export class AgentHookServer {
 
     let aliasChanged = false
     for (const [legacyPaneKey, entry] of this.legacyPaneKeyAliases) {
-      if (
-        paneCacheKeyMatchesTab(legacyPaneKey, tabId) ||
-        paneCacheKeyMatchesTab(entry.stablePaneKey, tabId)
-      ) {
+      const ownerMatches = paneCacheKeyMatchesTab(entry.stablePaneKey, tabId)
+      if (ownerMatches) {
         this.legacyPaneKeyAliases.delete(legacyPaneKey)
         paneKeysToClear.add(legacyPaneKey)
         paneKeysToClear.add(entry.stablePaneKey)
+        this.markPaneClosedForAgentStatus(legacyPaneKey)
+        this.markPaneClosedForAgentStatus(entry.stablePaneKey)
         aliasChanged = true
       }
     }

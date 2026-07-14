@@ -21,7 +21,13 @@ import {
   capturedPanesByTabId,
   parkedWatchersByTabId
 } from '@/components/terminal-pane/terminal-parked-watcher-registry'
-import { createTestStore, makeTab, seedStore } from './store-test-helpers'
+import {
+  createTestStore,
+  makeTab,
+  makeTabGroup,
+  makeUnifiedTab,
+  seedStore
+} from './store-test-helpers'
 
 function sleepingRecord(paneKey: string, tabId: string): SleepingAgentSessionRecord {
   return {
@@ -154,6 +160,37 @@ describe('terminal tab retirement store boundary', () => {
 
     expect(store.getState().ptyIdsByTabId['closed-tab']).toBeUndefined()
     expect(store.getState().lastKnownRelayPtyIdByTabId['closed-tab']).toBeUndefined()
+  })
+
+  it('retires a unified-only terminal instead of removing only its wrapper', async () => {
+    const store = createTestStore()
+    const unified = makeUnifiedTab({
+      id: 'unified-tab-1',
+      entityId: 'terminal-tab-1',
+      worktreeId: 'wt-1',
+      groupId: 'group-1'
+    })
+    seedStore(store, {
+      tabsByWorktree: { 'wt-1': [] },
+      unifiedTabsByWorktree: { 'wt-1': [unified] },
+      groupsByWorktree: {
+        'wt-1': [
+          makeTabGroup({
+            id: 'group-1',
+            worktreeId: 'wt-1',
+            activeTabId: unified.id,
+            tabOrder: [unified.id]
+          })
+        ]
+      },
+      ptyIdsByTabId: { 'terminal-tab-1': ['pty-unified-only'] }
+    })
+
+    store.getState().closeUnifiedTab(unified.id)
+    await vi.waitFor(() => expect(mockKill).toHaveBeenCalledWith('pty-unified-only'))
+
+    expect(store.getState().unifiedTabsByWorktree['wt-1']).toEqual([])
+    expect(store.getState().ptyIdsByTabId['terminal-tab-1']).toBeUndefined()
   })
 
   it('lets a paired host own runtime teardown while pruning local state', async () => {

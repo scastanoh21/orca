@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { FLOATING_TERMINAL_WORKTREE_ID } from '../../../../shared/constants'
 import { useAppStore, type AppState } from '@/store'
+import { closeTerminalTab } from '../terminal/terminal-tab-actions'
 import {
   runKillAllTerminalSurfaces,
   snapshotKillAllTerminalSurfaceIds,
@@ -183,9 +184,9 @@ describe('runKillAllTerminalSurfaces', () => {
     await vi.waitFor(() => expect(killPty).toHaveBeenCalledTimes(3))
 
     expect(closeSurface.mock.calls).toEqual([
-      ['background-target', { force: true }],
-      ['unified-only-target', { force: true }],
-      ['moved-target', { force: true }]
+      ['background-target', { force: true, localPtyTeardownOwnedExternally: true }],
+      ['unified-only-target', { force: true, localPtyTeardownOwnedExternally: true }],
+      ['moved-target', { force: true, localPtyTeardownOwnedExternally: true }]
     ])
     expect(calls.slice(0, 3)).toEqual([
       'close:background-target',
@@ -240,9 +241,35 @@ describe('runKillAllTerminalSurfaces', () => {
 
     expect(summary.daemon).toEqual({ status: 'rejected' })
     expect(summary.absentTargetCount).toBe(1)
-    expect(closeSurface).toHaveBeenCalledWith('target', { force: true })
+    expect(closeSurface).toHaveBeenCalledWith('target', {
+      force: true,
+      localPtyTeardownOwnedExternally: true
+    })
     expect(killPty).toHaveBeenCalledWith('local-pty')
     expect(snapshotKillAllTerminalSurfaceIds(current)).toEqual(['later'])
+  })
+
+  it('does not exact-kill daemon sessions already settled by management', async () => {
+    const current = state({
+      tabsByWorktree: { wt: [terminal('target', 'wt')] },
+      ptyIdsByTabId: { target: ['daemon-pty', 'ssh:host@@relay-pty'] }
+    })
+    const killPty = vi.fn().mockResolvedValue(undefined)
+
+    await runKillAllTerminalSurfaces(['target'], {
+      getState: () => current,
+      killDaemonSessions: vi.fn().mockResolvedValue({
+        killedCount: 1,
+        remainingCount: 0,
+        killedSessionIds: ['daemon-pty']
+      }),
+      closeSurface: (targetId) => removeSurface(current, targetId),
+      killPty,
+      reportSummary: vi.fn()
+    })
+
+    expect(killPty).toHaveBeenCalledOnce()
+    expect(killPty).toHaveBeenCalledWith('ssh:host@@relay-pty')
   })
 
   it('reports the informational zero state without provider fanout', async () => {
@@ -326,7 +353,7 @@ describe('runKillAllTerminalSurfaces', () => {
     })
   })
 
-  it('records bounded count and latency evidence for 100 terminal tabs', async () => {
+  it('records bounded fanout and two-close batches for 100 terminal tabs', async () => {
     const tabs = Array.from({ length: 100 }, (_, index) => terminal(`tab-${index}`, 'wt'))
     const ptyIdsByTabId = Object.fromEntries(tabs.map((tab, index) => [tab.id, [`pty-${index}`]]))
     const previousState = useAppStore.getState()
@@ -340,11 +367,25 @@ describe('runKillAllTerminalSurfaces', () => {
     const unsubscribe = useAppStore.subscribe(() => {
       zustandWrites += 1
     })
-    const killPty = vi.fn().mockResolvedValue(undefined)
+    const providerKill = vi.fn().mockResolvedValue(undefined)
+    vi.stubGlobal('window', { api: { pty: { kill: providerKill } } })
+    let nowMs = 0
     try {
       const summary = await runKillAllTerminalSurfaces(snapshotKillAllTerminalSurfaceIds(), {
-        killDaemonSessions: vi.fn().mockResolvedValue({ killedCount: 0, remainingCount: 0 }),
-        killPty,
+        killDaemonSessions: vi.fn().mockResolvedValue({
+          killedCount: 0,
+          remainingCount: 0,
+          killedSessionIds: []
+        }),
+        closeSurface: (tabId, options) => {
+          closeTerminalTab(tabId, options)
+          nowMs += 1
+        },
+        killPty: providerKill,
+        now: () => nowMs,
+        yieldToRenderer: async () => {
+          nowMs += 0.1
+        },
         reportSummary: vi.fn()
       })
 
@@ -352,12 +393,13 @@ describe('runKillAllTerminalSurfaces', () => {
       expect(summary.absentTargetCount).toBe(100)
       expect(summary.exactKillAcceptedCount).toBe(100)
       expect(summary.closeDurationMs).toBeGreaterThanOrEqual(0)
-      expect(summary.maxCloseBatchDurationMs).toBeLessThanOrEqual(50)
+      expect(summary.maxCloseBatchDurationMs).toBeLessThanOrEqual(2.1)
       expect(summary.closeYieldCount).toBe(49)
       expect(summary.closePhaseExceededLongTaskBudget).toBe(false)
       expect(zustandWrites).toBeGreaterThanOrEqual(100)
-      expect(killPty).toHaveBeenCalledTimes(100)
+      expect(providerKill).toHaveBeenCalledTimes(100)
     } finally {
+      vi.unstubAllGlobals()
       unsubscribe()
       useAppStore.setState(previousState, true)
     }

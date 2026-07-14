@@ -1,19 +1,24 @@
 import type { SleepingAgentSessionRecord } from '../../../../shared/agent-session-resume'
 import type { AppState } from '../types'
+import {
+  getRuntimeEnvironmentIdForWorktree,
+  type WorktreeRuntimeOwnerState
+} from '@/lib/worktree-runtime-owner'
 import { parseRemoteRuntimePtyId } from '@/runtime/runtime-terminal-stream'
 
 export type TerminalTabCloseReason = 'user' | 'cleanup' | 'pty-exit'
 
-type TerminalTabRetirementState = Pick<
-  AppState,
-  | 'tabsByWorktree'
-  | 'unifiedTabsByWorktree'
-  | 'ptyIdsByTabId'
-  | 'terminalLayoutsByTabId'
-  | 'lastKnownRelayPtyIdByTabId'
-  | 'deferredSshSessionIdsByTabId'
-  | 'pendingReconnectPtyIdByTabId'
->
+type TerminalTabRetirementState = WorktreeRuntimeOwnerState &
+  Pick<
+    AppState,
+    | 'tabsByWorktree'
+    | 'unifiedTabsByWorktree'
+    | 'ptyIdsByTabId'
+    | 'terminalLayoutsByTabId'
+    | 'lastKnownRelayPtyIdByTabId'
+    | 'deferredSshSessionIdsByTabId'
+    | 'pendingReconnectPtyIdByTabId'
+  >
 
 export type TerminalTabRetirementPlan = {
   tabId: string
@@ -53,58 +58,69 @@ function collectTerminalTabPtyIds(state: TerminalTabRetirementState, tabId: stri
   return [...ids]
 }
 
-function referencesPtyFromAnotherTab(
+function getPtyOwnershipIdentity(
   state: TerminalTabRetirementState,
-  closingTabId: string,
-  ptyId: string
-): boolean {
-  for (const tabs of Object.values(state.tabsByWorktree)) {
-    if (tabs.some((tab) => tab.id !== closingTabId && tab.ptyId === ptyId)) {
-      return true
-    }
+  ptyId: string,
+  worktreeId: string | null
+): string {
+  const remote = parseRemoteRuntimePtyId(ptyId)
+  if (!remote?.handle) {
+    return `pty:${ptyId}`
   }
+  // Why: hydrated legacy runtime IDs omit their owner, but still refer to the
+  // same provider terminal as a scoped ID in the owning worktree.
+  const environmentId =
+    remote.environmentId?.trim() || getRuntimeEnvironmentIdForWorktree(state, worktreeId) || ''
+  return JSON.stringify(['runtime', environmentId, remote.handle])
+}
 
-  const liveTabIds = new Set<string>()
-  for (const tabs of Object.values(state.tabsByWorktree)) {
+function collectPtyIdsForTab(
+  state: TerminalTabRetirementState,
+  tabId: string,
+  rowPtyId: string | null | undefined
+): string[] {
+  const ids = new Set<string>()
+  appendPtyId(ids, rowPtyId)
+  for (const ptyId of state.ptyIdsByTabId[tabId] ?? []) {
+    appendPtyId(ids, ptyId)
+  }
+  for (const ptyId of Object.values(state.terminalLayoutsByTabId[tabId]?.ptyIdsByLeafId ?? {})) {
+    appendPtyId(ids, ptyId)
+  }
+  appendPtyId(ids, state.lastKnownRelayPtyIdByTabId[tabId])
+  appendPtyId(ids, state.deferredSshSessionIdsByTabId[tabId])
+  appendPtyId(ids, state.pendingReconnectPtyIdByTabId[tabId])
+  return [...ids]
+}
+
+function collectOtherLivePtyOwnershipIdentities(
+  state: TerminalTabRetirementState,
+  closingTabId: string
+): Set<string> {
+  const liveTabs = new Map<string, { worktreeId: string; rowPtyId: string | null }>()
+  for (const [worktreeId, tabs] of Object.entries(state.tabsByWorktree)) {
     for (const tab of tabs) {
-      liveTabIds.add(tab.id)
+      liveTabs.set(tab.id, { worktreeId, rowPtyId: tab.ptyId })
     }
   }
-  for (const tabs of Object.values(state.unifiedTabsByWorktree)) {
+  for (const [worktreeId, tabs] of Object.entries(state.unifiedTabsByWorktree)) {
     for (const tab of tabs) {
-      if (tab.contentType === 'terminal') {
-        liveTabIds.add(tab.entityId)
+      if (tab.contentType === 'terminal' && !liveTabs.has(tab.entityId)) {
+        liveTabs.set(tab.entityId, { worktreeId, rowPtyId: null })
       }
     }
   }
 
-  const indexedMaps: readonly Record<string, string | string[] | undefined>[] = [
-    state.ptyIdsByTabId,
-    state.lastKnownRelayPtyIdByTabId,
-    state.deferredSshSessionIdsByTabId,
-    state.pendingReconnectPtyIdByTabId
-  ]
-  for (const indexedMap of indexedMaps) {
-    for (const [tabId, value] of Object.entries(indexedMap)) {
-      if (tabId === closingTabId || !liveTabIds.has(tabId)) {
-        continue
-      }
-      if (Array.isArray(value) ? value.includes(ptyId) : value === ptyId) {
-        return true
-      }
+  const identities = new Set<string>()
+  for (const [tabId, owner] of liveTabs) {
+    if (tabId === closingTabId) {
+      continue
+    }
+    for (const ptyId of collectPtyIdsForTab(state, tabId, owner.rowPtyId)) {
+      identities.add(getPtyOwnershipIdentity(state, ptyId, owner.worktreeId))
     }
   }
-
-  for (const [tabId, layout] of Object.entries(state.terminalLayoutsByTabId)) {
-    if (
-      tabId !== closingTabId &&
-      liveTabIds.has(tabId) &&
-      Object.values(layout.ptyIdsByLeafId ?? {}).includes(ptyId)
-    ) {
-      return true
-    }
-  }
-  return false
+  return identities
 }
 
 export function isTerminalTabPresent(
@@ -131,9 +147,12 @@ export function buildTerminalTabRetirementPlan(
   const localOrSshPtyIds: string[] = []
   const runtimeTerminals: TerminalTabRetirementPlan['runtimeTerminals'] = []
   const unroutablePtyIds: string[] = []
+  const scheduledPtyOwners = new Set<string>()
+  const otherLivePtyOwners = collectOtherLivePtyOwnershipIdentities(state, tabId)
 
   for (const ptyId of ptyIds) {
-    if (referencesPtyFromAnotherTab(state, tabId, ptyId)) {
+    const ownerIdentity = getPtyOwnershipIdentity(state, ptyId, worktreeId)
+    if (otherLivePtyOwners.has(ownerIdentity)) {
       sharedPtyIds.push(ptyId)
       continue
     }
@@ -143,6 +162,10 @@ export function buildTerminalTabRetirementPlan(
         unroutablePtyIds.push(ptyId)
         continue
       }
+      if (scheduledPtyOwners.has(ownerIdentity)) {
+        continue
+      }
+      scheduledPtyOwners.add(ownerIdentity)
       runtimeTerminals.push({
         ptyId,
         environmentId: remote.environmentId?.trim() || null,
