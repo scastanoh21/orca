@@ -12,7 +12,8 @@ vi.mock('./runtime-environment-transport-routing', () => ({
 
 import {
   closeRuntimeTerminalWithRetryOwnership,
-  initializeRuntimeTerminalCloseRetryOwner
+  initializeRuntimeTerminalCloseRetryOwner,
+  releaseRuntimeTerminalClosesForEnvironment
 } from './runtime-terminal-close-retry-owner'
 
 function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
@@ -279,6 +280,33 @@ describe('runtime terminal close retry ownership', () => {
 
     expect(callRuntimeEnvironmentMock).toHaveBeenCalledOnce()
     expect(remove).toHaveBeenCalledTimes(2)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('retries only durable cleanup after authoritative environment removal', async () => {
+    vi.useFakeTimers()
+    const removeExact = vi.fn()
+    const removeEnvironment = vi.fn(() => {
+      throw new Error('environment intent removal disk full')
+    })
+    initializeRuntimeTerminalCloseRetryOwner(
+      {
+        getPendingRuntimeTerminalCloses: () => [
+          { environmentId: 'environment-1', handle: 'terminal-1', runtimeId: 'runtime-a' }
+        ],
+        removePendingRuntimeTerminalClose: removeExact,
+        removePendingRuntimeTerminalClosesForEnvironment: removeEnvironment
+      } as never,
+      '/tmp/orca-runtime-owner-test'
+    )
+
+    expect(() => releaseRuntimeTerminalClosesForEnvironment('environment-1')).not.toThrow()
+    expect(removeEnvironment).toHaveBeenCalledOnce()
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(getRuntimeEnvironmentStatusMock).not.toHaveBeenCalled()
+    expect(callRuntimeEnvironmentMock).not.toHaveBeenCalled()
+    expect(removeExact).toHaveBeenCalledWith('environment-1', 'terminal-1')
     expect(vi.getTimerCount()).toBe(0)
   })
 })

@@ -277,13 +277,31 @@ export function closeRuntimeTerminalWithRetryOwnership(
 }
 
 export function releaseRuntimeTerminalClosesForEnvironment(environmentId: string): void {
-  for (const [closeKey, close] of retainedCloses) {
+  const ownedCloses: RetainedTerminalClose[] = []
+  for (const close of retainedCloses.values()) {
     if (close.environmentId === environmentId) {
-      retainedCloses.delete(closeKey)
+      // Why: environment deletion proves transport close is unnecessary, but
+      // durable cleanup must succeed before the retry owner can be discarded.
+      close.closeComplete = true
+      close.nextRetryAt = 0
+      ownedCloses.push(close)
     }
   }
   if (typeof store?.removePendingRuntimeTerminalClosesForEnvironment === 'function') {
-    store.removePendingRuntimeTerminalClosesForEnvironment(environmentId)
+    try {
+      store.removePendingRuntimeTerminalClosesForEnvironment(environmentId)
+    } catch (error) {
+      if (ownedCloses.length === 0) {
+        throw error
+      }
+      schedule()
+      return
+    }
+  }
+  for (const close of ownedCloses) {
+    if (isCurrentOwner(close)) {
+      retainedCloses.delete(key(close.environmentId, close.handle))
+    }
   }
   schedule()
 }
