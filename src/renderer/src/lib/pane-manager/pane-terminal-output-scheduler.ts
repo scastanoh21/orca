@@ -7,10 +7,6 @@ import {
   writeForegroundTerminalChunk,
   type ForegroundTerminalOutputTarget
 } from './pane-terminal-foreground-render-settle'
-import {
-  captureTerminalWriteScrollIntent,
-  enforceTerminalWriteScrollIntent
-} from './terminal-scroll-intent'
 import { runGuardedWriteCompletionStep } from './xterm-write-callback-guard'
 import { recordRendererCrashBreadcrumb } from '@/lib/crash-breadcrumb-recorder'
 import {
@@ -815,6 +811,11 @@ function hasDrainableBacklog(): boolean {
   return false
 }
 
+// Why no per-write scroll enforcement: xterm's BufferService.isUserScrolling
+// natively keeps a scrolled-up viewport stable and follows output at the
+// bottom, and it only flips on real viewport movement — so live writes need
+// no capture/restore. App-side intent enforcement is scoped to structural
+// operations xterm cannot know about (snapshot replay, remount, fit reflow).
 function writeBackgroundTerminalChunk(
   terminal: TerminalOutputTarget,
   data: string,
@@ -826,52 +827,12 @@ function writeBackgroundTerminalChunk(
   const runOnParsed = onParsed
     ? (): void => runGuardedWriteCompletionStep('background-on-parsed', onParsed)
     : undefined
-  const scrollIntent = captureTerminalWriteScrollIntent(terminal)
-  if (!scrollIntent) {
-    if (!runOnParsed || terminal.write.length < 2) {
-      terminal.write(data)
-      runOnParsed?.()
-      return
-    }
-    terminal.write(data, runOnParsed)
-    return
-  }
-  const runScrollIntentThenParsed = (): void => {
-    runGuardedWriteCompletionStep('background-scroll-intent', () =>
-      enforceTerminalWriteScrollIntent(terminal, scrollIntent)
-    )
-    runOnParsed?.()
-  }
-  if (terminal.write.length < 2) {
+  if (!runOnParsed || terminal.write.length < 2) {
     terminal.write(data)
-    runScrollIntentThenParsed()
+    runOnParsed?.()
     return
   }
-  terminal.write(data, runScrollIntentThenParsed)
-}
-
-function writeForegroundTerminalChunkWithIntent(
-  terminal: TerminalOutputTarget,
-  data: string,
-  options: {
-    forceViewportRefresh: boolean
-    followupViewportRefresh: boolean
-    shouldRefreshViewportSynchronously: ForegroundRefreshSyncResolver
-    onParsed?: TerminalOutputParsedCallback
-  }
-): void {
-  const scrollIntent = captureTerminalWriteScrollIntent(terminal)
-  writeForegroundTerminalChunk(terminal, data, {
-    forceViewportRefresh: options.forceViewportRefresh,
-    followupViewportRefresh: options.followupViewportRefresh,
-    shouldRefreshViewportSynchronously: options.shouldRefreshViewportSynchronously,
-    onParsed: () => {
-      // Why: recovery must repaint from the scrolled buffer state that xterm
-      // will keep, not from a pre-intent-restored viewport snapshot.
-      enforceTerminalWriteScrollIntent(terminal, scrollIntent)
-      options.onParsed?.()
-    }
-  })
+  terminal.write(data, runOnParsed)
 }
 
 function takeNextDrainableEntry(): QueueEntry | null {
@@ -951,7 +912,7 @@ function writeQueuedChunk(entry: QueueEntry): 'foreground' | 'background' | null
   try {
     queuedWrite.beforeWrite?.(queuedWrite.data)
     if (queuedWrite.foreground) {
-      writeForegroundTerminalChunkWithIntent(
+      writeForegroundTerminalChunk(
         entry.terminal,
         queuedWrite.stripTransientCursorShows
           ? removeTransientCursorShowSequences(queuedWrite.data)
@@ -1215,7 +1176,7 @@ export function writeTerminalOutput(
     )
     try {
       options.beforeWrite?.(data)
-      writeForegroundTerminalChunkWithIntent(
+      writeForegroundTerminalChunk(
         terminal,
         options.stripTransientCursorShows ? removeTransientCursorShowSequences(data) : data,
         {
@@ -1299,7 +1260,7 @@ export function flushTerminalOutput(
     try {
       queuedWrite.beforeWrite?.(queuedWrite.data)
       if (queuedWrite.foreground) {
-        writeForegroundTerminalChunkWithIntent(
+        writeForegroundTerminalChunk(
           terminal,
           queuedWrite.stripTransientCursorShows
             ? removeTransientCursorShowSequences(queuedWrite.data)
