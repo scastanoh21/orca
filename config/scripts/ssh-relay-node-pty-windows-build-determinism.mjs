@@ -1,4 +1,4 @@
-import { readFile, writeFile } from 'node:fs/promises'
+import { open, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
 const COMPILER_OPTIONS = `            'VCCLCompilerTool': {
@@ -42,6 +42,7 @@ const REPRODUCIBLE_LINKER_OPTIONS = `            'VCLinkerTool': {
             }`
 
 const REQUIRED_GENERATED_OPTIONS = ['/Brepro', '/experimental:deterministic']
+const MAX_LINK_COMMAND_TRACKING_BYTES = 256 * 1024
 
 function decodeXmlText(value) {
   return value
@@ -126,28 +127,109 @@ export async function assertWindowsNodePtyGeneratedBuildSettings({ nodePtyDirect
   }
 }
 
-export function windowsNodePtyLinkIncrementalCommand({ nodePtyDirectory, tuple }) {
+export function windowsNodePtyLinkCommandTrackingPath({ nodePtyDirectory, tuple }) {
   if (!tuple.startsWith('win32-')) {
     return undefined
   }
-  const platform = tuple.endsWith('-arm64') ? 'ARM64' : 'x64'
-  return {
-    command: 'MSBuild.exe',
-    args: [
-      join(nodePtyDirectory, 'build', 'conpty_console_list.vcxproj'),
-      '-nologo',
-      '-verbosity:quiet',
-      '-property:Configuration=Release',
-      `-property:Platform=${platform}`,
-      '-getProperty:LinkIncremental'
-    ]
+  return join(
+    nodePtyDirectory,
+    'build',
+    'Release',
+    'obj',
+    'conpty_console_list',
+    'conpty_console_list.tlog',
+    'link.command.1.tlog'
+  )
+}
+
+async function readBoundedLinkCommandTracking(path) {
+  const handle = await open(path, 'r')
+  try {
+    // Why: build-tool tracking output must not bypass the diagnostic's explicit memory ceiling.
+    const bytes = Buffer.allocUnsafe(MAX_LINK_COMMAND_TRACKING_BYTES + 1)
+    let length = 0
+    while (length < bytes.length) {
+      const result = await handle.read(bytes, length, bytes.length - length, null)
+      if (result.bytesRead === 0) {
+        break
+      }
+      length += result.bytesRead
+    }
+    return bytes.subarray(0, length)
+  } finally {
+    await handle.close()
   }
 }
 
-export function parseWindowsNodePtyLinkIncremental(output) {
-  const value = output.trim().toLowerCase()
-  if (value !== 'true' && value !== 'false') {
-    throw new Error('unexpected LinkIncremental evaluation from MSBuild')
+function decodeLinkCommandTracking(bytes) {
+  if (bytes.length < 2 || bytes.length > MAX_LINK_COMMAND_TRACKING_BYTES) {
+    throw new Error('MSBuild linker tracking record is outside the bounded size')
   }
-  return value === 'true'
+  let encoding = 'utf8'
+  let offset = 0
+  if (bytes[0] === 0xff && bytes[1] === 0xfe) {
+    encoding = 'utf16le'
+    offset = 2
+  } else if (bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) {
+    offset = 3
+  }
+  let text
+  try {
+    const decoderEncoding = encoding === 'utf16le' ? 'utf-16le' : 'utf-8'
+    text = new TextDecoder(decoderEncoding, { fatal: true }).decode(bytes.subarray(offset))
+  } catch {
+    throw new Error('MSBuild linker tracking record has invalid text encoding')
+  }
+  if (text.includes('\u0000') || text.includes('\ufffd')) {
+    throw new Error('MSBuild linker tracking record has invalid text encoding')
+  }
+  return { encoding, text }
+}
+
+export function parseWindowsNodePtyLinkCommandTracking(bytes) {
+  const { encoding, text } = decodeLinkCommandTracking(bytes)
+  const commandRecords = text.split(/\r?\n/).filter((line) => line.startsWith('^')).length
+  if (commandRecords !== 1) {
+    throw new Error('MSBuild linker tracking record must contain exactly one command record')
+  }
+  const switches = [
+    ...text.matchAll(
+      /(?:^|\s)(\/(?:brepro|debug(?::[^\s"]+)?|experimental:deterministic|guard:[^\s"]+|incremental(?::(?:no|yes))?|opt:[^\s"]+))(?=\s|$)/gim
+    )
+  ].map((match) => match[1].toLowerCase())
+  const incrementalTokens = [
+    ...text.matchAll(/(?:^|\s)(\/incremental(?::[^\s"]*)?)(?=\s|$)/gim)
+  ].map((match) => match[1].toLowerCase())
+  if (incrementalTokens.some((token) => !switches.includes(token))) {
+    throw new Error('MSBuild linker tracking record has malformed incremental-link switch')
+  }
+  if (new Set(switches).size !== switches.length) {
+    throw new Error('MSBuild linker tracking record has duplicate allowlisted switches')
+  }
+  for (const required of ['/brepro', '/experimental:deterministic', '/guard:cf']) {
+    if (!switches.includes(required)) {
+      throw new Error(`MSBuild linker tracking record is missing ${required}`)
+    }
+  }
+  const incrementalSwitches = switches.filter((value) => value.startsWith('/incremental'))
+  if (incrementalSwitches.length > 1) {
+    throw new Error('MSBuild linker tracking record has ambiguous incremental-link switches')
+  }
+  const incremental =
+    incrementalSwitches.length === 0
+      ? 'unspecified'
+      : incrementalSwitches[0] === '/incremental:no'
+        ? 'disabled'
+        : 'enabled'
+  return {
+    bytes: bytes.length,
+    commandRecords,
+    encoding,
+    incremental,
+    switches: switches.toSorted()
+  }
+}
+
+export async function inspectWindowsNodePtyLinkCommandTracking(path) {
+  return parseWindowsNodePtyLinkCommandTracking(await readBoundedLinkCommandTracking(path))
 }

@@ -7,8 +7,9 @@ import { afterEach, describe, expect, it } from 'vitest'
 import {
   applyWindowsNodePtyBuildDeterminism,
   assertWindowsNodePtyGeneratedBuildSettings,
-  parseWindowsNodePtyLinkIncremental,
-  windowsNodePtyLinkIncrementalCommand
+  inspectWindowsNodePtyLinkCommandTracking,
+  parseWindowsNodePtyLinkCommandTracking,
+  windowsNodePtyLinkCommandTrackingPath
 } from './ssh-relay-node-pty-windows-build-determinism.mjs'
 
 const temporaryDirectories = []
@@ -88,40 +89,103 @@ describe('SSH relay Windows node-pty build determinism', () => {
     })
   })
 
-  it('evaluates the effective Release incremental-link state with strict output parsing', () => {
+  it('parses one bounded UTF-16 linker command into an allowlisted switch summary', () => {
     expect(
-      windowsNodePtyLinkIncrementalCommand({
+      windowsNodePtyLinkCommandTrackingPath({
         nodePtyDirectory: 'C:\\artifact-node-pty',
         tuple: 'win32-arm64'
       })
+    ).toBe(
+      join(
+        'C:\\artifact-node-pty',
+        'build',
+        'Release',
+        'obj',
+        'conpty_console_list',
+        'conpty_console_list.tlog',
+        'link.command.1.tlog'
+      )
+    )
+    const command = [
+      '^C:\\artifact-node-pty\\build\\Release\\obj\\conpty_console_list.obj',
+      '/OUT:conpty_console_list.node /INCREMENTAL:NO /GUARD:CF /DEBUG:FULL',
+      '/OPT:REF /OPT:ICF /Brepro /experimental:deterministic'
+    ].join('\r\n')
+    expect(
+      parseWindowsNodePtyLinkCommandTracking(Buffer.from(`\ufeff${command}`, 'utf16le'))
     ).toEqual({
-      command: 'MSBuild.exe',
-      args: [
-        join('C:\\artifact-node-pty', 'build', 'conpty_console_list.vcxproj'),
-        '-nologo',
-        '-verbosity:quiet',
-        '-property:Configuration=Release',
-        '-property:Platform=ARM64',
-        '-getProperty:LinkIncremental'
+      bytes: Buffer.byteLength(`\ufeff${command}`, 'utf16le'),
+      commandRecords: 1,
+      encoding: 'utf16le',
+      incremental: 'disabled',
+      switches: [
+        '/brepro',
+        '/debug:full',
+        '/experimental:deterministic',
+        '/guard:cf',
+        '/incremental:no',
+        '/opt:icf',
+        '/opt:ref'
       ]
     })
-    expect(parseWindowsNodePtyLinkIncremental('TRUE\r\n')).toBe(true)
-    expect(parseWindowsNodePtyLinkIncremental('false\n')).toBe(false)
-    expect(() => parseWindowsNodePtyLinkIncremental('true\nwarning')).toThrow(
-      'unexpected LinkIncremental evaluation'
-    )
     expect(
-      windowsNodePtyLinkIncrementalCommand({
-        nodePtyDirectory: 'C:\\artifact-node-pty',
-        tuple: 'win32-x64'
-      }).args
-    ).toContain('-property:Platform=x64')
-    expect(
-      windowsNodePtyLinkIncrementalCommand({
+      windowsNodePtyLinkCommandTrackingPath({
         nodePtyDirectory: '/not-used-on-posix',
         tuple: 'linux-arm64-glibc'
       })
     ).toBeUndefined()
+  })
+
+  it('rejects oversized, malformed, duplicate, or ambiguous linker tracking input', () => {
+    expect(() => parseWindowsNodePtyLinkCommandTracking(Buffer.alloc(300_000))).toThrow(
+      'outside the bounded size'
+    )
+    expect(() =>
+      parseWindowsNodePtyLinkCommandTracking(Buffer.from([0xff, 0xfe, 0x00, 0xd8]))
+    ).toThrow('invalid text encoding')
+    expect(() =>
+      parseWindowsNodePtyLinkCommandTracking(
+        Buffer.from('^first\n/INCREMENTAL\n^second\n/INCREMENTAL', 'utf8')
+      )
+    ).toThrow('exactly one command record')
+    expect(() =>
+      parseWindowsNodePtyLinkCommandTracking(
+        Buffer.from(
+          '^one\n/INCREMENTAL /INCREMENTAL:NO /Brepro /GUARD:CF /experimental:deterministic',
+          'utf8'
+        )
+      )
+    ).toThrow('ambiguous incremental-link switches')
+    expect(() =>
+      parseWindowsNodePtyLinkCommandTracking(
+        Buffer.from('^one\n/INCREMENTAL:MAYBE /Brepro /GUARD:CF /experimental:deterministic')
+      )
+    ).toThrow('malformed incremental-link switch')
+    expect(() =>
+      parseWindowsNodePtyLinkCommandTracking(
+        Buffer.from('^one\n/Brepro /BREPRO /GUARD:CF /experimental:deterministic')
+      )
+    ).toThrow('duplicate allowlisted switches')
+    expect(() =>
+      parseWindowsNodePtyLinkCommandTracking(Buffer.from('^one\n/Brepro /GUARD:CF', 'utf8'))
+    ).toThrow('missing /experimental:deterministic')
+  })
+
+  it('bounds linker tracking bytes while reading the generated file', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'orca-node-pty-link-tracking-'))
+    temporaryDirectories.push(directory)
+    const trackingPath = join(directory, 'link.command.1.tlog')
+    await writeFile(
+      trackingPath,
+      '^one\n/INCREMENTAL:NO /Brepro /GUARD:CF /experimental:deterministic'
+    )
+    await expect(inspectWindowsNodePtyLinkCommandTracking(trackingPath)).resolves.toMatchObject({
+      incremental: 'disabled'
+    })
+    await writeFile(trackingPath, Buffer.alloc(300_000))
+    await expect(inspectWindowsNodePtyLinkCommandTracking(trackingPath)).rejects.toThrow(
+      'outside the bounded size'
+    )
   })
 
   it('rejects missing, duplicate, non-inherited, or wrong-architecture generated settings', async () => {
