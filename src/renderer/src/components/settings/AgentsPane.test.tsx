@@ -217,7 +217,7 @@ describe('AgentsPane', () => {
 
   it('describes Windows lid behavior according to the device', () => {
     expect(getAgentAwakeDescription('Windows')).toBe(
-      "Keeps this computer awake so agents keep running. The display stays on while agents are actively working and is allowed to sleep during long quiet stretches. Lid-close behavior follows this device's power settings."
+      "Keeps this computer and display awake while agents are working. Lid-close behavior follows this device's power settings."
     )
   })
 

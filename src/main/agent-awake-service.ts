@@ -13,6 +13,14 @@ export const AGENT_AWAKE_STATUS_STALE_AFTER_MS = 2 * 60 * 60 * 1000
 // refreshed within this shorter window, downgrade to a system-only assertion:
 // the machine (and the agent) stays awake for the full 2h window, but the
 // display is allowed to sleep normally.
+//
+// Known limitation: "no status for 15m" is a proxy for "idle", so a single
+// hook-silent tool call longer than this (e.g. a 30m build streaming output)
+// will let the display sleep mid-work; press a key to wake it (the agent keeps
+// running). Refreshing this off raw PTY output would keep such screens lit but
+// costs the battery win (a spinner counts as output), so it's left as future
+// work. The downgrade only applies where a separate system-sleep floor exists
+// (macOS/Linux); Windows keeps prevent-display-sleep (see refresh()).
 export const AGENT_AWAKE_DISPLAY_KEEP_AFTER_MS = 15 * 60 * 1000
 
 type AgentAwakeBlockerType = 'prevent-app-suspension' | 'prevent-display-sleep'
@@ -48,6 +56,7 @@ type AgentAwakeServiceOptions = {
   logger?: Logger
   macosAssertion?: PlatformAwakeAssertion
   now?: () => number
+  platform?: NodeJS.Platform
   powerMonitor?: PowerMonitorEventSource | null
 }
 
@@ -62,12 +71,14 @@ export class AgentAwakeService {
   private readonly logger: Logger
   private readonly macosAssertion: PlatformAwakeAssertion
   private readonly now: () => number
+  private readonly platform: NodeJS.Platform
   private readonly unsubscribeResume: (() => void) | null
 
   constructor(options: AgentAwakeServiceOptions = {}) {
     this.blocker = options.blocker ?? powerSaveBlocker
     this.logger = options.logger ?? console
     this.now = options.now ?? Date.now
+    this.platform = options.platform ?? process.platform
     // Windows lid close is intentionally not modeled as an assertion here:
     // keeping it awake requires mutating the user's global power plan.
     this.linuxAssertion =
@@ -118,15 +129,22 @@ export class AgentAwakeService {
   private refresh(reason: string): void {
     this.scheduleStaleTimer()
     const now = this.now()
-    const runningStatusCount = this.getEligibleRunningStatusCount()
+    const runningStatusCount = this.getEligibleRunningStatusCount(now)
     const shouldBlock = this.enabled && runningStatusCount > 0
     if (shouldBlock) {
       // Keep the screen lit only while an agent is actively working; once every
       // working status has gone quiet past the display window, keep the system
-      // (and the agent) awake but let the display sleep.
+      // (and the agent) awake but let the display sleep. Only downgrade where a
+      // SEPARATE system-sleep floor is held (macOS caffeinate / Linux
+      // systemd-inhibit); on Windows there is no such floor, and letting the
+      // display sleep can trigger Modern Standby and suspend the agent, so keep
+      // prevent-display-sleep there — the display assertion is load-bearing.
+      const hasIndependentSystemFloor = this.platform === 'darwin' || this.platform === 'linux'
       const displayEligibleCount = this.getDisplayEligibleCount(now)
       const desiredType: AgentAwakeBlockerType =
-        displayEligibleCount > 0 ? 'prevent-display-sleep' : 'prevent-app-suspension'
+        displayEligibleCount > 0 || !hasIndependentSystemFloor
+          ? 'prevent-display-sleep'
+          : 'prevent-app-suspension'
       this.startBlocker(reason, runningStatusCount, desiredType)
       this.startMacosAssertion(reason)
       this.startLinuxAssertion(reason)
@@ -137,8 +155,7 @@ export class AgentAwakeService {
     }
   }
 
-  private getEligibleRunningStatusCount(): number {
-    const now = this.now()
+  private getEligibleRunningStatusCount(now: number): number {
     return this.statuses.filter((status) => this.isWakeEligible(status, now)).length
   }
 

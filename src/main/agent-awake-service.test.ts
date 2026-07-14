@@ -82,13 +82,17 @@ function createService(
   blocker = createBlocker(),
   macosAssertion = createMacosAssertion(),
   linuxAssertion = createLinuxAssertion(),
-  powerMonitor: ReturnType<typeof createPowerMonitor> | null = null
+  powerMonitor: ReturnType<typeof createPowerMonitor> | null = null,
+  // Default to darwin (has an independent caffeinate system floor) so the
+  // display-downgrade path is exercised deterministically regardless of CI OS.
+  platform: NodeJS.Platform = 'darwin'
 ): AgentAwakeService {
   return new AgentAwakeService({
     blocker,
     linuxAssertion,
     macosAssertion,
     now,
+    platform,
     powerMonitor,
     logger: {
       debug: vi.fn(),
@@ -170,6 +174,45 @@ describe('AgentAwakeService', () => {
     expect(blocker.start).toHaveBeenLastCalledWith('prevent-app-suspension')
     expect(macosAssertion.stop).not.toHaveBeenCalled()
     expect(linuxAssertion.stop).not.toHaveBeenCalled()
+    service.dispose()
+  })
+
+  it('re-upgrades to prevent-display-sleep when a quiet agent resumes producing status', () => {
+    const blocker = createBlocker()
+    let now = 1_000 + AGENT_AWAKE_DISPLAY_KEEP_AFTER_MS + 1
+    const service = createService(() => now, blocker)
+
+    service.setEnabled(true)
+    // Starts in the quiet tier: system-only.
+    service.setStatuses([workingStatus({ receivedAt: 1_000 })])
+    expect(blocker.start).toHaveBeenLastCalledWith('prevent-app-suspension')
+
+    // A fresh status arrives (agent resumed) -> back to display-sleep.
+    service.setStatuses([workingStatus({ receivedAt: now })])
+    expect(blocker.start).toHaveBeenLastCalledWith('prevent-display-sleep')
+    service.dispose()
+  })
+
+  it('never downgrades the display on Windows (no independent system-sleep floor)', () => {
+    const blocker = createBlocker()
+    // Quiet past the display window, but on Windows the display assertion is the
+    // only thing keeping the system awake, so it must NOT be downgraded.
+    const now = 1_000 + AGENT_AWAKE_DISPLAY_KEEP_AFTER_MS + 1
+    const service = createService(
+      () => now,
+      blocker,
+      createMacosAssertion(),
+      createLinuxAssertion(),
+      null,
+      'win32'
+    )
+
+    service.setEnabled(true)
+    service.setStatuses([workingStatus({ receivedAt: 1_000 })])
+
+    expect(blocker.start).toHaveBeenCalledTimes(1)
+    expect(blocker.start).toHaveBeenCalledWith('prevent-display-sleep')
+    expect(blocker.start).not.toHaveBeenCalledWith('prevent-app-suspension')
     service.dispose()
   })
 
