@@ -2,6 +2,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Session, type SubprocessHandle } from './session'
 import { TerminalHost } from './terminal-host'
 
+const killWithDescendantSweepMock = vi.hoisted(() => vi.fn())
+vi.mock('../pty-descendant-termination', () => ({
+  killWithDescendantSweep: killWithDescendantSweepMock
+}))
+
 function createMockSubprocess(
   options: { startupCommandDeliveredInShellArgs?: boolean; shellPath?: string } = {}
 ): SubprocessHandle {
@@ -56,6 +61,7 @@ describe('TerminalHost', () => {
   }
 
   beforeEach(() => {
+    killWithDescendantSweepMock.mockReset()
     spawnFn = vi.fn(() => {
       const sub = createMockSubprocess() as ReturnType<typeof createMockSubprocess> & {
         _onDataCb: ((data: string) => void) | null
@@ -392,6 +398,43 @@ describe('TerminalHost', () => {
 
     it('throws for non-existent session', () => {
       expect(() => host.kill('missing')).toThrow('Session not found')
+    })
+
+    it('non-agent immediate kill stays synchronous and never routes through the descendant sweep', async () => {
+      await host.createOrAttach({
+        sessionId: 'plain-1',
+        cols: 80,
+        rows: 24,
+        streamClient: { onData: vi.fn(), onExit: vi.fn() }
+      })
+
+      host.kill('plain-1', { immediate: true })
+
+      expect(lastSubprocess.forceKill).toHaveBeenCalled()
+      expect(killWithDescendantSweepMock).not.toHaveBeenCalled()
+    })
+
+    it('agent immediate kill routes through the descendant sweep and defers the force-kill to it', async () => {
+      await host.createOrAttach({
+        sessionId: 'agent-1',
+        cols: 80,
+        rows: 24,
+        launchAgent: 'claude',
+        streamClient: { onData: vi.fn(), onExit: vi.fn() }
+      })
+
+      host.kill('agent-1', { immediate: true })
+
+      // Why order matters: force-killing first would let orphans reparent to
+      // pid 1 and escape the sweep's ppid walk entirely.
+      expect(killWithDescendantSweepMock).toHaveBeenCalledWith(99999, expect.any(Function))
+      expect(lastSubprocess.forceKill).not.toHaveBeenCalled()
+      expect(host.isKilled('agent-1')).toBe(true)
+
+      const finish = killWithDescendantSweepMock.mock.calls[0][1] as () => void
+      finish()
+      expect(lastSubprocess.forceKill).toHaveBeenCalled()
+      expect(lastSubprocess.dispose).toHaveBeenCalled()
     })
   })
 

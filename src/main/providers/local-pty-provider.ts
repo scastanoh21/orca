@@ -54,6 +54,10 @@ import { WINDOWS_GIT_BASH_SHELL } from '../../shared/windows-terminal-shell'
 import { resolveAgentForegroundProcessWithAvailability } from './agent-foreground-process'
 import { getAgentForegroundContextPaths } from './agent-foreground-context-paths'
 import { recognizeAgentProcessFromCommandLine } from '../../shared/agent-process-recognition'
+import {
+  captureDescendantSnapshot,
+  terminateDescendantSnapshot
+} from '../pty-descendant-termination'
 import { readWindowsConptyProcessIds } from './windows-conpty-process-membership'
 import { shouldUseShellReadyStartupDelivery } from '../../shared/codex-startup-delivery'
 import { assertSafeAgentStartupCwd, resolveSafePtyDefaultCwd } from './pty-default-cwd'
@@ -68,6 +72,11 @@ const PANE_IDENTITY_ENV_KEYS = [
 
 let ptyCounter = 0
 const ptyProcesses = new Map<string, pty.IPty>()
+// Why: only agent sessions get descendant tree-kill on shutdown. Agent CLIs
+// spawn tool children in detached process groups the PTY's SIGHUP can never
+// reach; plain user terminals keep classic semantics where deliberately
+// detached (nohup-style) children survive the pane.
+const ptyAgentSessionIds = new Set<string>()
 const ptyShellName = new Map<string, string>()
 const ptyAgentForegroundContextPaths = new Map<string, string[]>()
 const ptyTerminalHandle = new Map<string, string>()
@@ -180,6 +189,7 @@ function clearPtyState(id: string): void {
   runPtyCleanup(id)
   disposePtyListeners(id)
   ptyProcesses.delete(id)
+  ptyAgentSessionIds.delete(id)
   ptyShellName.delete(id)
   ptyAgentForegroundContextPaths.delete(id)
   ptyTerminalHandle.delete(id)
@@ -689,6 +699,12 @@ export class LocalPtyProvider implements IPtyProvider {
 
     const proc = spawnResult.process
     ptyProcesses.set(id, proc)
+    // Why both signals: launchAgent is the caller's explicit intent and
+    // survives command rewriting (e.g. auth env prefixes); recognition covers
+    // callers that pass a bare agent command line without the flag.
+    if (args.launchAgent || startupAgentRecognition) {
+      ptyAgentSessionIds.add(id)
+    }
     ptyShellName.set(id, getSpawnedShellName(shellPath))
     if (finalEnv.ORCA_TERMINAL_HANDLE) {
       ptyTerminalHandle.set(id, finalEnv.ORCA_TERMINAL_HANDLE)
@@ -891,23 +907,36 @@ export class LocalPtyProvider implements IPtyProvider {
     if (!proc) {
       return
     }
-    // Why: disposePtyListeners removes the onExit callback, so the natural
-    // exit cleanup path from node-pty won't fire. Cleanup and notification
-    // must happen unconditionally after the try/catch.
-    // Timer/writer cleanup must happen here too: disposing listeners prevents
-    // the natural onExit callback from running the usual clearPtyState path.
-    runPtyCleanup(id)
-    disposePtyListeners(id)
-    try {
-      proc.kill()
-    } catch {
-      /* Process may already be dead */
+    // Why: the snapshot must precede any signal/destroy — once the shell dies,
+    // surviving descendants reparent to pid 1 and a ppid walk can't find them.
+    const descendants = ptyAgentSessionIds.has(id)
+      ? await captureDescendantSnapshot(proc.pid)
+      : null
+    // Why the handle re-check: the snapshot is this method's only await, and a
+    // natural exit (or same-id respawn) may have raced it. That path already
+    // ran clearPtyState and notified exit — only the descendant sweep remains.
+    if (ptyProcesses.get(id) === proc) {
+      // Why: disposePtyListeners removes the onExit callback, so the natural
+      // exit cleanup path from node-pty won't fire. Cleanup and notification
+      // must happen unconditionally after the try/catch.
+      // Timer/writer cleanup must happen here too: disposing listeners prevents
+      // the natural onExit callback from running the usual clearPtyState path.
+      runPtyCleanup(id)
+      disposePtyListeners(id)
+      try {
+        proc.kill()
+      } catch {
+        /* Process may already be dead */
+      }
+      destroyPtyProcess(proc, { alreadyKilled: true })
+      clearPtyState(id)
+      this.opts.onExit?.(id, -1)
+      for (const cb of exitListeners) {
+        cb({ id, code: -1 })
+      }
     }
-    destroyPtyProcess(proc, { alreadyKilled: true })
-    clearPtyState(id)
-    this.opts.onExit?.(id, -1)
-    for (const cb of exitListeners) {
-      cb({ id, code: -1 })
+    if (descendants) {
+      terminateDescendantSnapshot(descendants)
     }
   }
 

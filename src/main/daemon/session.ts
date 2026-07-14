@@ -9,6 +9,7 @@ import {
   type ShellReadyScanState
 } from '../shell-ready-marker-scanner'
 import { isPowerShellProcess } from '../../shared/shell-process-detection'
+import { killWithDescendantSweep } from '../pty-descendant-termination'
 import type { TuiAgent } from '../../shared/types'
 import type {
   PendingOutputRecord,
@@ -267,7 +268,19 @@ export class Session {
     // Why: a paused child can be blocked inside write(); resume before
     // signalling so it can run signal handlers and actually exit.
     this.releaseProducerPause({ resume: true })
-    this.subprocess.kill()
+    if (!this.launchAgent) {
+      this.subprocess.kill()
+    } else {
+      // Why: agent tool children live in detached process groups a dying
+      // shell's SIGHUP never reaches. The bounded snapshot briefly defers the
+      // signal; the kill timer below starts now, so force-dispose timing is
+      // unaffected.
+      killWithDescendantSweep(this.subprocess.pid, () => {
+        if (this._state !== 'exited') {
+          this.subprocess.kill()
+        }
+      })
+    }
 
     this.killTimer = setTimeout(() => {
       if (this._state !== 'exited') {

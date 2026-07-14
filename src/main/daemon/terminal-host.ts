@@ -6,6 +6,7 @@ import type { StartupCommandDelivery } from '../../shared/codex-startup-delivery
 import { buildStartupCommandSubmission } from '../../shared/startup-command-submission'
 import type { SessionInfo, TakePendingOutputResult, TerminalSnapshot } from './types'
 import { SessionNotFoundError } from './types'
+import { killWithDescendantSweep } from '../pty-descendant-termination'
 import type { CreateOrAttachOptions, CreateOrAttachResult } from './terminal-host-create-contract'
 
 export type { CreateOrAttachOptions, CreateOrAttachResult } from './terminal-host-create-contract'
@@ -197,11 +198,20 @@ export class TerminalHost {
     const session = this.getAliveSession(sessionId)
     this.recordTombstone(sessionId)
     if (opts.immediate) {
-      session.forceKillAndDisposeSubprocess()
-      // Why: the immediate path tears down synchronously without firing the
-      // session's onExit hook, so reap it here. The graceful path below funnels
-      // through Session.handleSubprocessExit -> onExit -> reapSession.
-      this.reapSession(sessionId)
+      const finish = (): void => {
+        session.forceKillAndDisposeSubprocess()
+        // Why: the immediate path tears down synchronously without firing the
+        // session's onExit hook, so reap it here. The graceful path below
+        // funnels through Session.handleSubprocessExit -> onExit -> reapSession.
+        this.reapSession(sessionId)
+      }
+      if (!session.launchAgent) {
+        finish()
+        return
+      }
+      // Why: agent tool children live in detached process groups the shell's
+      // death never signals; the bounded snapshot defers teardown at most ~1s.
+      killWithDescendantSweep(session.pid, finish)
       return
     }
     session.kill()

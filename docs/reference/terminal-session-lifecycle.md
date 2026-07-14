@@ -74,8 +74,13 @@ could invalidate intentional long-lived `worktree-sleep` checkpoints.
 
 - Changing terminal output, snapshot, replay, query-response, or hidden-delivery
   behavior.
-- Killing processes that deliberately daemonize away from the terminal process
-  group. This contract covers the PTY and its attached foreground process tree.
+- Killing processes that deliberately daemonize away from a plain user
+  terminal's process group (nohup-style survivors remain user intent there).
+  For **agent sessions**, close/kill additionally terminates the snapshotted
+  descendant tree — including detached-pgid children the PTY's SIGHUP cannot
+  reach — via `pty-descendant-termination.ts` (SIGTERM, grace window, then
+  identity-checked SIGKILL). Windows and SSH-hosted PTYs keep the previous
+  foreground-tree contract for now.
 - Changing agent-provider resume commands or permission flags.
 - Making a UI close wait for a remote process to exit before the tab disappears.
 - Replacing worktree sleep with tab close. Sleep remains resumable by design.
