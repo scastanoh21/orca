@@ -3466,6 +3466,24 @@ describe('Store', () => {
     expect(ui.workspaceHostOrder).toEqual(['ssh:ssh-new', 'local'])
   })
 
+  it('reassignSshTargetId invalidates a warmed lease identity index', async () => {
+    const store = await createStore()
+    store.upsertSshRemotePtyLease({
+      targetId: 'ssh-old',
+      ptyId: 'pty-2',
+      state: 'detached'
+    })
+    expect(store.markSshRemotePtyLease('ssh-old', 'ssh:ssh-old@@pty-2', 'detached')).toBe(true)
+
+    store.reassignSshTargetId('ssh-old', 'ssh-new')
+
+    expect(store.markSshRemotePtyLease('ssh-new', 'ssh:ssh-new@@pty-2', 'attached')).toBe(true)
+    expect(store.getSshRemotePtyLeases('ssh-new')).toEqual([
+      expect.objectContaining({ ptyId: 'pty-2', state: 'attached' })
+    ])
+    store.flush()
+  })
+
   it('reassignSshTargetId re-keys a session partition stored under the old ssh host id', async () => {
     const store = await createStore()
     store.setWorkspaceSession(

@@ -6347,6 +6347,7 @@ export class Store {
     for (const lease of this.state.sshRemotePtyLeases ?? []) {
       if (lease.targetId === oldTargetId) {
         lease.targetId = newTargetId
+        this.sshRemotePtyLeasesByIdentity = null
         carrierChanged = true
       }
     }
