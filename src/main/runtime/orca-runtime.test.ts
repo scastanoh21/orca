@@ -7217,6 +7217,46 @@ describe('OrcaRuntimeService', () => {
       expect(snapshot?.lastTitle).toBe('⠋ Cursor Agent')
     })
 
+    it('falls back to the provider snapshot for a restored PTY with no mounted renderer', async () => {
+      const { runtime } = createSideEffectRuntime()
+      const serializeBuffer = vi.fn()
+      const serializeProviderBuffer = vi.fn().mockResolvedValue({
+        data: 'restored screen\r\n',
+        scrollbackAnsi: 'restored history\r\n',
+        cols: 120,
+        rows: 40,
+        cwd: '/projects/restored',
+        seq: 900,
+        source: 'headless'
+      })
+      runtime.setPtyController({
+        write: () => true,
+        kill: () => true,
+        getForegroundProcess: async () => null,
+        serializeBuffer,
+        serializeProviderBuffer,
+        hasRendererSerializer: () => false
+      })
+
+      const snapshot = await runtime.serializeTerminalBuffer('pty-restored', {
+        scrollbackRows: 5000
+      })
+
+      expect(serializeBuffer).not.toHaveBeenCalled()
+      expect(serializeProviderBuffer).toHaveBeenCalledWith('pty-restored', {
+        scrollbackRows: 5000
+      })
+      expect(snapshot).toEqual({
+        data: 'restored screen\r\n',
+        scrollbackAnsi: 'restored history\r\n',
+        cols: 120,
+        rows: 40,
+        cwd: '/projects/restored',
+        seq: 900,
+        source: 'headless'
+      })
+    })
+
     it('prefers the tracked title over the headless emulator lastTitle', async () => {
       const { runtime } = createSideEffectRuntime()
       syncSinglePty(runtime)

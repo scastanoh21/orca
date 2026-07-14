@@ -11291,6 +11291,42 @@ describe('registerPtyHandlers', () => {
     })
   })
 
+  describe('provider buffer snapshot dispatch', () => {
+    it('exposes daemon history when no renderer pane is mounted', async () => {
+      const provider = installObservableDaemonTestProvider()
+      provider.getBufferSnapshot.mockResolvedValue({
+        data: 'restored screen\r\n',
+        scrollbackAnsi: 'restored history\r\n',
+        cols: 120,
+        rows: 40,
+        cwd: '/projects/restored',
+        seq: 900,
+        source: 'headless'
+      })
+      const runtime = { setPtyController: vi.fn() }
+      handlers.clear()
+      registerPtyHandlers(mainWindow as never, runtime as never)
+      const controller = runtime.setPtyController.mock.calls[0]?.[0] as {
+        serializeProviderBuffer(ptyId: string, opts?: { scrollbackRows?: number }): Promise<unknown>
+      }
+
+      await expect(
+        controller.serializeProviderBuffer('daemon-restored', { scrollbackRows: 5000 })
+      ).resolves.toEqual({
+        data: 'restored screen\r\n',
+        scrollbackAnsi: 'restored history\r\n',
+        cols: 120,
+        rows: 40,
+        cwd: '/projects/restored',
+        seq: 900,
+        source: 'headless'
+      })
+      expect(provider.getBufferSnapshot).toHaveBeenCalledWith('daemon-restored', {
+        scrollbackRows: 5000
+      })
+    })
+  })
+
   describe('main buffer snapshot dispatch', () => {
     it('returns a hidden-output recovery snapshot with clamped scrollback', async () => {
       const runtime = {

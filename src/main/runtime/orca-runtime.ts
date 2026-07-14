@@ -351,6 +351,7 @@ import { serveSimStateWatcher } from '../emulator/serve-sim-state-watcher'
 import type { EmulatorBridge } from '../emulator/emulator-bridge'
 import { RuntimeFileCommands } from './orca-runtime-files'
 import { RuntimeGitCommands } from './orca-runtime-git'
+import type { PtyProviderBufferSnapshot } from '../providers/types'
 import { ClaudeAgentTeamsService } from './claude-agent-teams-service'
 import type {
   AgentTeamsTmuxCompatRequest,
@@ -1218,6 +1219,11 @@ type RuntimePtyController = {
     ptyId: string,
     opts?: { scrollbackRows?: number; altScreenForcesZeroRows?: boolean }
   ): Promise<{ data: string; cols: number; rows: number; lastTitle?: string } | null>
+  /** Authoritative provider-owned snapshot for restored PTYs with no mounted renderer. */
+  serializeProviderBuffer?(
+    ptyId: string,
+    opts?: { scrollbackRows?: number }
+  ): Promise<PtyProviderBufferSnapshot | null>
   // Why: synchronous probe used by maybeHydrateHeadlessFromRenderer to skip
   // hydration when no renderer is authoritative for this PTY. See
   // docs/mobile-prefer-renderer-scrollback.md.
@@ -6765,7 +6771,8 @@ export class OrcaRuntimeService {
     // Why: hidden-output recovery is initiated by the desktop renderer. If the
     // runtime has not built headless state yet, the mounted xterm is still the
     // best available state and avoids a false "snapshot unavailable" result.
-    return this.serializeRendererTerminalBuffer(ptyId, opts)
+    const rendererSnapshot = await this.serializeRendererTerminalBuffer(ptyId, opts)
+    return rendererSnapshot ?? this.serializeProviderTerminalBuffer(ptyId, opts)
   }
 
   async clearTerminalBuffer(handle: string): Promise<{ handle: string; cleared: boolean }> {
@@ -7114,7 +7121,8 @@ export class OrcaRuntimeService {
       return headlessSnapshot
     }
 
-    return this.serializeRendererTerminalBuffer(ptyId, opts)
+    const rendererSnapshot = await this.serializeRendererTerminalBuffer(ptyId, opts)
+    return rendererSnapshot ?? this.serializeProviderTerminalBuffer(ptyId, opts)
   }
 
   private async serializeRendererTerminalBuffer(
@@ -7129,6 +7137,9 @@ export class OrcaRuntimeService {
     source?: 'renderer'
     oscLinks?: TerminalOscLinkRange[]
   } | null> {
+    if (this.ptyController?.hasRendererSerializer?.(ptyId) === false) {
+      return null
+    }
     let rendererSnapshot: {
       data: string
       cols: number
@@ -7157,6 +7168,20 @@ export class OrcaRuntimeService {
           source: 'renderer' as const
         })
       : null
+  }
+
+  private async serializeProviderTerminalBuffer(
+    ptyId: string,
+    opts: { scrollbackRows?: number } = {}
+  ): Promise<PtyProviderBufferSnapshot | null> {
+    try {
+      // Why: daemon PTYs survive an app relaunch before any renderer mounts.
+      // Mobile still needs their retained history without navigating desktop.
+      const snapshot = await this.ptyController?.serializeProviderBuffer?.(ptyId, opts)
+      return snapshot ? this.preferTrackedLastTitle(ptyId, snapshot) : null
+    } catch {
+      return null
+    }
   }
 
   private async withVisibleSnapshotFallback(

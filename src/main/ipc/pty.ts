@@ -3466,6 +3466,15 @@ export function registerPtyHandlers(
       // state and dimensions before live TUI chunks can render correctly.
       return requestSerializedBuffer(ptyId, opts)
     },
+    serializeProviderBuffer: async (ptyId, opts) => {
+      try {
+        // Why: restored daemon PTYs can be live while their desktop pane stays
+        // unmounted; query the provider model so phone-local navigation works.
+        return (await getProviderForPty(ptyId).getBufferSnapshot?.(ptyId, opts)) ?? null
+      } catch {
+        return null
+      }
+    },
     hasRendererSerializer: (ptyId) => {
       // Why: the runtime needs a synchronous probe so it can decide whether to
       // skip the daemon-snapshot seed (the renderer will hydrate it) or run the
