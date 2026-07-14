@@ -672,6 +672,11 @@ const pendingRemoteInstallPromises = new Map<string, Promise<RemoteWatcherInstal
 // recursion or a fired retry tick calls installRemoteWatcher directly, bypassing
 // the token-abort loop. A genuine new fs:watchWorktree clears the latch.
 let remoteWatchersClosed = false
+// Why: the boolean latch alone can't tell a pre-shutdown waiter apart from a
+// fresh call once a genuine new watch reopens the subsystem. Each call captures
+// the generation at entry; closeAllWatchers bumps it, so a joiner that awaited
+// across a shutdown+reopen recurses on a stale generation and is refused.
+let remoteWatcherLifecycleGeneration = 0
 const REMOTE_WATCH_RETRY_MS = 1_000
 const REMOTE_WATCH_RETRY_TIMEOUT_MS = 60_000
 
@@ -744,11 +749,14 @@ type RemoteWatcherInstallResult = 'installed' | 'unavailable' | 'cancelled'
 async function installRemoteWatcher(
   sender: WebContents,
   connectionId: string,
-  worktreePath: string
+  worktreePath: string,
+  generation = remoteWatcherLifecycleGeneration
 ): Promise<RemoteWatcherInstallResult> {
   // Why: refuse installs racing in after teardown (joiner recursion, fired retry
-  // tick) so provider.watch() is never called and registered post-shutdown.
-  if (remoteWatchersClosed) {
+  // tick) so provider.watch() is never called and registered post-shutdown. The
+  // generation guard also refuses a waiter that captured an earlier lifecycle,
+  // even after a new watch reopened the subsystem.
+  if (remoteWatchersClosed || generation !== remoteWatcherLifecycleGeneration) {
     return 'cancelled'
   }
   const provider = getSshFilesystemProvider(connectionId)
@@ -786,13 +794,18 @@ async function installRemoteWatcher(
     ) {
       addRemoteWatchListener(key, sender)
     }
-    if (result === 'cancelled' && !canJoinInstall && !sender.isDestroyed()) {
+    if (
+      result === 'cancelled' &&
+      !canJoinInstall &&
+      !sender.isDestroyed() &&
+      generation === remoteWatcherLifecycleGeneration
+    ) {
       // Why: AbortSignal cannot be revived. A listener arriving after physical
       // cancellation waits out that generation, then owns a fresh install.
       if (pendingRemoteInstallPromises.get(key) === pendingInstall) {
         pendingRemoteInstallPromises.delete(key)
       }
-      return installRemoteWatcher(sender, connectionId, worktreePath)
+      return installRemoteWatcher(sender, connectionId, worktreePath, generation)
     }
     return result
   }
@@ -999,8 +1012,11 @@ export async function closeAllWatchers(): Promise<void> {
   pendingRemoteWatcherRetries.clear()
   loggedUnavailableRemoteWatchers.clear()
   // Why: latch the subsystem shut and drop the dedup map so a late install that
-  // begins after teardown is refused instead of registering post-shutdown.
+  // begins after teardown is refused instead of registering post-shutdown. Bump
+  // the generation so a waiter that resumes after a later reopen still recurses
+  // on a stale lifecycle and is refused.
   remoteWatchersClosed = true
+  remoteWatcherLifecycleGeneration += 1
   pendingRemoteInstallPromises.clear()
   // Why: cancel any in-flight provider.watch() calls so their resolved
   // unwatch handles are discarded instead of being installed after shutdown.

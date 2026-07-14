@@ -241,4 +241,59 @@ describe('remote filesystem watcher cancellation', () => {
     expect(watchMock).toHaveBeenCalledTimes(1)
     expect(lateUnwatch).toHaveBeenCalledTimes(1)
   })
+
+  it('refuses a pre-shutdown joiner recursion even after a new watch reopens the subsystem', async () => {
+    const installs = new Map<
+      string,
+      { signal: AbortSignal | undefined; resolve: (unwatch: () => void) => void }
+    >()
+    const watchMock = vi.fn(
+      (rootPath: string, _callback, options?: { signal?: AbortSignal }) =>
+        new Promise<() => void>((resolve) => {
+          installs.set(rootPath, { signal: options?.signal, resolve })
+        })
+    )
+    getSshFilesystemProviderMock.mockReturnValue({ watch: watchMock })
+    const args = { worktreePath: '/home/me/repo', connectionId: 'conn-1' }
+    const reopenArgs = { worktreePath: '/home/me/other', connectionId: 'conn-1' }
+    const lateUnwatch = vi.fn()
+    const firstSender = { isDestroyed: () => false, send: vi.fn(), once: vi.fn(), id: 1 }
+    const joinerSender = { isDestroyed: () => false, send: vi.fn(), once: vi.fn(), id: 2 }
+    const reopenSender = { isDestroyed: () => false, send: vi.fn(), once: vi.fn(), id: 3 }
+    const first = handlers['fs:watchWorktree']({ sender: firstSender }, args) as Promise<unknown>
+
+    await Promise.resolve()
+    expect(watchMock).toHaveBeenCalledTimes(1)
+
+    // Last listener leaves -> deferred abort fires while the install is still pending.
+    handlers['fs:unwatchWorktree']({ sender: { id: 1 } }, args)
+    await vi.waitFor(() => expect(installs.get('/home/me/repo')?.signal?.aborted).toBe(true))
+
+    // Joiner arrives after physical abort (canJoinInstall === false); it captures the
+    // current lifecycle generation and awaits the 'cancelled' resolution.
+    const joiner = handlers['fs:watchWorktree']({ sender: joinerSender }, args) as Promise<unknown>
+    await Promise.resolve()
+
+    // Shutdown bumps the generation, then a genuine new watch reopens the subsystem
+    // (clearing the boolean latch) before the joiner resumes.
+    await closeAllWatchers()
+    const reopen = handlers['fs:watchWorktree'](
+      { sender: reopenSender },
+      reopenArgs
+    ) as Promise<unknown>
+    await Promise.resolve()
+    expect(watchMock).toHaveBeenCalledTimes(2)
+
+    // Now let the aborted install resolve; the joiner recurses on the stale generation.
+    installs.get('/home/me/repo')?.resolve(lateUnwatch)
+    installs.get('/home/me/other')?.resolve(vi.fn())
+    await Promise.all([first, joiner, reopen])
+
+    // The joiner's recursion is refused despite the reopen: no third provider.watch().
+    expect(watchMock).toHaveBeenCalledTimes(2)
+    expect(watchMock.mock.calls.filter(([rootPath]) => rootPath === '/home/me/repo')).toHaveLength(
+      1
+    )
+    expect(lateUnwatch).toHaveBeenCalledTimes(1)
+  })
 })
