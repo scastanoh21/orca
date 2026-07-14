@@ -1,8 +1,8 @@
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ModelManager } from './model-manager'
 
 const { netRequestMock } = vi.hoisted(() => ({
@@ -27,6 +27,16 @@ type ModelManagerInternals = {
     isAborted: () => boolean,
     signal: AbortSignal
   ) => Promise<void>
+  downloadFile: (
+    url: string,
+    archivePath: string,
+    expectedSize: number,
+    modelId: string,
+    isAborted: () => boolean,
+    signal?: AbortSignal,
+    redirectCount?: number,
+    resumeOffset?: number
+  ) => Promise<void>
 }
 
 type ScriptedResponse = {
@@ -41,7 +51,10 @@ type ScriptedResponseFactory = (sentHeaders: Record<string, string>) => Scripted
 // Emulates Electron's ClientRequest/IncomingMessage closely enough for the
 // download pipeline: a real Readable body so stream.pipeline semantics
 // (including mid-body destroy) match production behavior.
-function scriptRequest(factory: ScriptedResponseFactory): { sentHeaders: Record<string, string> } {
+function scriptRequest(factory: ScriptedResponseFactory): {
+  sentHeaders: Record<string, string>
+  abortMock: ReturnType<typeof vi.fn>
+} {
   const sentHeaders: Record<string, string> = {}
   const listeners = new Map<string, Set<(...args: unknown[]) => void>>()
   const addListener = (event: string, cb: (...args: unknown[]) => void): void => {
@@ -49,6 +62,7 @@ function scriptRequest(factory: ScriptedResponseFactory): { sentHeaders: Record<
     set.add(cb)
     listeners.set(event, set)
   }
+  const abortMock = vi.fn(() => request)
   const request = {
     setHeader: vi.fn((name: string, value: string) => {
       sentHeaders[name.toLowerCase()] = value
@@ -61,7 +75,7 @@ function scriptRequest(factory: ScriptedResponseFactory): { sentHeaders: Record<
       listeners.get(event)?.delete(cb)
       return request
     }),
-    abort: vi.fn(() => request),
+    abort: abortMock,
     end: vi.fn(() => {
       queueMicrotask(() => {
         const spec = factory(sentHeaders)
@@ -91,7 +105,7 @@ function scriptRequest(factory: ScriptedResponseFactory): { sentHeaders: Record<
     })
   }
   netRequestMock.mockImplementationOnce(() => request)
-  return { sentHeaders }
+  return { sentHeaders, abortMock }
 }
 
 const PAYLOAD = Buffer.from('0123456789abcdefghij')
@@ -99,6 +113,11 @@ const PAYLOAD = Buffer.from('0123456789abcdefghij')
 describe('ModelManager download resume', () => {
   beforeEach(() => {
     netRequestMock.mockReset()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.restoreAllMocks()
   })
 
   it('resumes an interrupted download with a Range request and assembles the full file', async () => {
@@ -114,7 +133,10 @@ describe('ModelManager download resume', () => {
         expect(sentHeaders.range).toBe('bytes=10-')
         return {
           statusCode: 206,
-          headers: { 'content-length': String(PAYLOAD.length - 10) },
+          headers: {
+            'content-length': String(PAYLOAD.length - 10),
+            'content-range': `bytes 10-${PAYLOAD.length - 1}/${PAYLOAD.length}`
+          },
           chunks: [PAYLOAD.subarray(10)]
         }
       })
@@ -133,6 +155,45 @@ describe('ModelManager download resume', () => {
       expect(netRequestMock).toHaveBeenCalledTimes(2)
       expect(second.sentHeaders.range).toBe('bytes=10-')
       expect(readFileSync(archivePath)).toEqual(PAYLOAD)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('rejects and discards a partial when Content-Range does not match the offset', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'orca-model-resume-'))
+    try {
+      const mismatched = scriptRequest(() => ({
+        statusCode: 206,
+        headers: {
+          'content-length': '10',
+          'content-range': `bytes 0-9/${PAYLOAD.length}`
+        },
+        chunks: [PAYLOAD.subarray(0, 10)]
+      }))
+      const manager = new ModelManager(dir) as unknown as ModelManagerInternals
+      const archivePath = join(dir, 'model.tar.bz2')
+      writeFileSync(archivePath, PAYLOAD.subarray(0, 10))
+
+      const error = await manager
+        .downloadFile(
+          'https://example.com/model.tar.bz2',
+          archivePath,
+          PAYLOAD.length,
+          'm',
+          () => false,
+          new AbortController().signal,
+          0,
+          10
+        )
+        .catch((cause: unknown) => cause)
+
+      expect(error).toMatchObject({
+        message: 'Invalid Content-Range for resume at byte 10',
+        retryable: true
+      })
+      expect(existsSync(archivePath)).toBe(false)
+      expect(mismatched.abortMock).toHaveBeenCalledTimes(1)
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
@@ -194,18 +255,100 @@ describe('ModelManager download resume', () => {
     }
   })
 
+  it('aborts an HTTP error response instead of draining it after rejection', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'orca-model-resume-'))
+    try {
+      const scripted = scriptRequest(() => ({
+        statusCode: 429,
+        headers: { 'retry-after': '3' }
+      }))
+      const manager = new ModelManager(dir) as unknown as ModelManagerInternals
+
+      const error = await manager
+        .downloadFile(
+          'https://example.com/model.tar.bz2',
+          join(dir, 'model.tar.bz2'),
+          PAYLOAD.length,
+          'm',
+          () => false
+        )
+        .catch((cause: unknown) => cause)
+
+      expect(error).toMatchObject({ message: 'HTTP 429', httpStatusCode: 429, retryAfterMs: 3_000 })
+      expect(scripted.abortMock).toHaveBeenCalledTimes(1)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('honors Retry-After before issuing another request', async () => {
+    vi.useFakeTimers()
+    const dir = mkdtempSync(join(tmpdir(), 'orca-model-resume-'))
+    try {
+      const manager = new ModelManager(dir) as unknown as ModelManagerInternals
+      const rateLimitError = Object.assign(new Error('HTTP 429'), {
+        httpStatusCode: 429,
+        retryAfterMs: 3_000
+      })
+      const downloadFileMock = vi
+        .spyOn(manager, 'downloadFile')
+        .mockRejectedValueOnce(rateLimitError)
+        .mockResolvedValueOnce()
+      const download = manager.downloadArchiveWithRetry(
+        'https://example.com/model.tar.bz2',
+        join(dir, 'model.tar.bz2'),
+        PAYLOAD.length,
+        'm',
+        () => false,
+        new AbortController().signal
+      )
+
+      await vi.advanceTimersByTimeAsync(2_999)
+      expect(downloadFileMock).toHaveBeenCalledTimes(1)
+      await vi.advanceTimersByTimeAsync(1)
+
+      await expect(download).resolves.toBeUndefined()
+      expect(downloadFileMock).toHaveBeenCalledTimes(2)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('does not retry before an excessively long Retry-After window', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'orca-model-resume-'))
+    try {
+      const manager = new ModelManager(dir) as unknown as ModelManagerInternals
+      const rateLimitError = Object.assign(new Error('HTTP 429'), {
+        httpStatusCode: 429,
+        retryAfterMs: 300_000
+      })
+      const downloadFileMock = vi.spyOn(manager, 'downloadFile').mockRejectedValue(rateLimitError)
+
+      await expect(
+        manager.downloadArchiveWithRetry(
+          'https://example.com/model.tar.bz2',
+          join(dir, 'model.tar.bz2'),
+          PAYLOAD.length,
+          'm',
+          () => false,
+          new AbortController().signal
+        )
+      ).rejects.toThrow('server requested retry after 300 seconds')
+
+      expect(downloadFileMock).toHaveBeenCalledTimes(1)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   it('gives up after repeated zero-progress failures with a diagnosable error', async () => {
     vi.useFakeTimers()
     const dir = mkdtempSync(join(tmpdir(), 'orca-model-resume-'))
     try {
-      for (let i = 0; i < 8; i++) {
-        scriptRequest(() => ({
-          statusCode: 200,
-          headers: { 'content-length': String(PAYLOAD.length) },
-          failWith: 'net::ERR_CONNECTION_RESET'
-        }))
-      }
       const manager = new ModelManager(dir) as unknown as ModelManagerInternals
+      const downloadFileMock = vi
+        .spyOn(manager, 'downloadFile')
+        .mockRejectedValue(new Error('net::ERR_CONNECTION_RESET'))
 
       const download = manager.downloadArchiveWithRetry(
         'https://example.com/model.tar.bz2',
@@ -219,14 +362,16 @@ describe('ModelManager download resume', () => {
         () => 'resolved',
         (error: unknown) => (error instanceof Error ? error.message : String(error))
       )
-      await vi.advanceTimersByTimeAsync(60_000)
+      // Let the first rejection schedule its backoff before advancing timers;
+      // this avoids racing fake time against stream/file I/O under full-suite load.
+      await Promise.resolve()
+      await vi.runAllTimersAsync()
 
       await expect(outcome).resolves.toMatch(
         /Model download interrupted at 0% \(0 of 20 bytes\) after 4 attempts: .*net::ERR_CONNECTION_RESET/
       )
-      expect(netRequestMock).toHaveBeenCalledTimes(4)
+      expect(downloadFileMock).toHaveBeenCalledTimes(4)
     } finally {
-      vi.useRealTimers()
       rmSync(dir, { recursive: true, force: true })
     }
   })
@@ -254,8 +399,8 @@ describe('ModelManager download resume', () => {
         () => 'resolved',
         (error: unknown) => (error instanceof Error ? error.message : String(error))
       )
-      // Abort while the retry loop is in its first backoff sleep; the next
-      // attempt must settle as Aborted without issuing another request.
+      // Abort after the transfer failure enters backoff; the next attempt must
+      // settle as Aborted without issuing another request.
       setTimeout(() => controller.abort(), 100)
       const message = await outcome
 

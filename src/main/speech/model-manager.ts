@@ -35,11 +35,15 @@ type ProgressCallback = (modelId: string, progress: number) => void
 type DownloadIncomingMessage = Electron.IncomingMessage &
   NodeJS.ReadableStream & {
     headers: Record<string, string | string[] | undefined>
-    resume: () => void
     destroy?: () => void
   }
-type HttpStatusError = Error & { httpStatusCode?: number }
+type HttpStatusError = Error & {
+  httpStatusCode?: number
+  retryAfterMs?: number
+  retryable?: boolean
+}
 type DownloadTotals = { totalBytes: number }
+type ContentRange = { start: number; end: number; totalBytes?: number }
 
 const DOWNLOAD_IDLE_TIMEOUT_MS = 120_000
 // Why: flaky networks and scanning proxies commonly kill long CDN transfers
@@ -48,6 +52,9 @@ const DOWNLOAD_IDLE_TIMEOUT_MS = 120_000
 // every full restart.
 const DOWNLOAD_RETRY_DELAYS_MS = [1_000, 2_000, 4_000]
 const MAX_DOWNLOAD_ATTEMPTS = 8
+// Why: a longer server window should be surfaced for a later manual retry,
+// rather than leaving the settings download looking stuck for minutes.
+const MAX_RETRY_AFTER_MS = 120_000
 const RETRYABLE_NET_ERROR =
   /net::ERR_(CONTENT_LENGTH_MISMATCH|INCOMPLETE_CHUNKED_ENCODING|CONNECTION_(RESET|CLOSED|ABORTED|REFUSED|TIMED_OUT)|EMPTY_RESPONSE|NETWORK_CHANGED|TIMED_OUT|INTERNET_DISCONNECTED|ADDRESS_UNREACHABLE|NAME_NOT_RESOLVED|SOCKET_NOT_CONNECTED|HTTP2_PROTOCOL_ERROR|QUIC_PROTOCOL_ERROR)\b/
 const RETRYABLE_HTTP_STATUSES = new Set([408, 416, 425, 429, 500, 502, 503, 504])
@@ -56,13 +63,56 @@ function isRetryableDownloadError(error: unknown): boolean {
   if (!(error instanceof Error)) {
     return false
   }
-  const statusCode = (error as HttpStatusError).httpStatusCode
+  const downloadError = error as HttpStatusError
+  if (downloadError.retryable === true) {
+    return true
+  }
+  const statusCode = downloadError.httpStatusCode
   if (statusCode !== undefined) {
     return RETRYABLE_HTTP_STATUSES.has(statusCode)
   }
   return (
     RETRYABLE_NET_ERROR.test(error.message) || error.message.includes('without network activity')
   )
+}
+
+function getHeaderValue(value: string | string[] | undefined): string | undefined {
+  return Array.isArray(value) ? value[0] : value
+}
+
+function parseContentRange(value: string | string[] | undefined): ContentRange | null {
+  const match = getHeaderValue(value)
+    ?.trim()
+    .match(/^bytes\s+(\d+)-(\d+)\/(\d+|\*)$/i)
+  if (!match) {
+    return null
+  }
+  const start = Number.parseInt(match[1], 10)
+  const end = Number.parseInt(match[2], 10)
+  const totalBytes = match[3] === '*' ? undefined : Number.parseInt(match[3], 10)
+  if (
+    !Number.isSafeInteger(start) ||
+    !Number.isSafeInteger(end) ||
+    end < start ||
+    (totalBytes !== undefined && (!Number.isSafeInteger(totalBytes) || totalBytes <= end))
+  ) {
+    return null
+  }
+  return { start, end, totalBytes }
+}
+
+function parseRetryAfterMs(value: string | string[] | undefined): number | undefined {
+  const header = getHeaderValue(value)?.trim()
+  if (!header) {
+    return undefined
+  }
+  if (/^\d+$/.test(header)) {
+    const seconds = Number.parseInt(header, 10)
+    const delayMs = seconds * 1_000
+    return Number.isSafeInteger(delayMs) ? delayMs : undefined
+  }
+  const retryAt = Date.parse(header)
+  return Number.isNaN(retryAt) ? undefined : Math.max(0, retryAt - Date.now())
 }
 
 function describeInterruptedDownload(
@@ -436,9 +486,19 @@ export class ModelManager {
         ) {
           throw describeInterruptedDownload(err, receivedBytes, totals.totalBytes, attempt)
         }
+        const retryAfterMs = (err as HttpStatusError).retryAfterMs
+        if (retryAfterMs !== undefined && retryAfterMs > MAX_RETRY_AFTER_MS) {
+          const statusCode = (err as HttpStatusError).httpStatusCode
+          throw new Error(
+            `HTTP ${statusCode}; server requested retry after ${Math.ceil(retryAfterMs / 1_000)} seconds`
+          )
+        }
         console.warn(`[speech] Model download attempt ${attempt} failed, retrying:`, modelId, err)
         await sleepUnlessAborted(
-          DOWNLOAD_RETRY_DELAYS_MS[Math.min(noProgressStreak, DOWNLOAD_RETRY_DELAYS_MS.length - 1)],
+          retryAfterMs ??
+            DOWNLOAD_RETRY_DELAYS_MS[
+              Math.min(noProgressStreak, DOWNLOAD_RETRY_DELAYS_MS.length - 1)
+            ],
           signal
         )
       }
@@ -572,9 +632,36 @@ export class ModelManager {
       }
       const onResponse = (incoming: Electron.IncomingMessage): void => {
         const response = incoming as DownloadIncomingMessage
-        const resumed = resumeOffset > 0 && response.statusCode === 206
+        const contentLength = response.headers['content-length']
+        const headerLength = Number.parseInt(getHeaderValue(contentLength) || '0', 10)
+        const parsedLength =
+          Number.isSafeInteger(headerLength) && headerLength > 0 ? headerLength : 0
+        const contentRange = parseContentRange(response.headers['content-range'])
+        const resumed =
+          resumeOffset > 0 &&
+          response.statusCode === 206 &&
+          contentRange?.start === resumeOffset &&
+          (parsedLength <= 0 || parsedLength === contentRange.end - contentRange.start + 1)
+
+        if (resumeOffset > 0 && response.statusCode === 206 && !resumed) {
+          // Why: appending an unverified range can silently corrupt the archive;
+          // discard it so the canonical URL is retried from byte zero.
+          try {
+            rmSync(dest)
+          } catch {
+            // best-effort
+          }
+          const activeRequest = request
+          const rangeError: HttpStatusError = new Error(
+            `Invalid Content-Range for resume at byte ${resumeOffset}`
+          )
+          rangeError.retryable = true
+          rejectOnce(rangeError)
+          activeRequest?.abort()
+          return
+        }
+
         if (response.statusCode !== 200 && !resumed) {
-          response.resume()
           if (response.statusCode === 416) {
             // Why: the server rejected our resume offset; drop the partial so
             // the retry loop can restart this download from scratch.
@@ -584,21 +671,26 @@ export class ModelManager {
               // best-effort
             }
           }
+          const activeRequest = request
           const statusError: HttpStatusError = new Error(`HTTP ${response.statusCode}`)
           statusError.httpStatusCode = response.statusCode
+          statusError.retryAfterMs = parseRetryAfterMs(response.headers['retry-after'])
           rejectOnce(statusError)
+          // Why: retrying must not leave a prior error body draining without
+          // cancellation or idle-timeout ownership.
+          activeRequest?.abort()
           return
         }
 
         // Why: a 200 despite our Range request means the server restarted the
         // transfer from byte zero, so the partial file must be overwritten.
         const progressBase = resumed ? resumeOffset : 0
-        const contentLength = response.headers['content-length']
-        const parsedLength = Number.parseInt(
-          Array.isArray(contentLength) ? contentLength[0] : contentLength || '0',
-          10
-        )
-        const totalSize = parsedLength > 0 ? progressBase + parsedLength : expectedSize
+        const totalSize =
+          resumed && contentRange?.totalBytes !== undefined
+            ? contentRange.totalBytes
+            : parsedLength > 0
+              ? progressBase + parsedLength
+              : expectedSize
         if (totals) {
           totals.totalBytes = totalSize
         }
