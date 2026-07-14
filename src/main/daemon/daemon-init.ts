@@ -67,15 +67,21 @@ function logDaemonMilestone(event: string, details: Record<string, unknown> = {}
 
 // Why: how many extra hello+listSessions probes to make against a wedged-but-
 // connectable daemon before replacing it. Each probe waits out the client's 5s
-// hello timeout, so this spaces re-checks ~5s apart, giving a transiently wedged
-// daemon (Windows update-relaunch drain) up to ~20s to answer while keeping a
-// permanent wedge (#8689) bounded well under the 60s local-PTY fail-open cap.
-// Trade-off: a transient wedge that still owns live sessions but takes longer
-// than this window to drain is now replaced (its live processes lost, though
-// scrollback cold-restores) rather than preserved indefinitely. If field
-// update-relaunch drains routinely exceed ~20s, raise this — it stays bounded
-// by the fail-open cap.
-const WEDGED_DAEMON_GRACE_RETRIES = 3
+// hello timeout, so this spaces re-checks ~5s apart: 1 initial + 11 retries ≈
+// 60s of grace for a transiently wedged daemon (Windows update-relaunch drain)
+// to answer and be preserved WITH its live sessions, before a permanent wedge
+// (#8689) is replaced. Deliberately generous to keep live-session loss on the
+// transient path as close to zero as possible.
+//
+// A transient wedge drains early (well under the 60s local-PTY fail-open cap),
+// so its startup is short. Only a *permanent* wedge runs the full window; it can
+// then approach/exceed the fail-open cap, at which point restored panes fail
+// open to the in-process provider for the session and adopt the freshly forked
+// daemon on the next launch — a rare path that still recovers, versus the old
+// forever-broken behavior. Trade-off: a transient wedge owning live sessions
+// that takes longer than ~60s to drain is replaced (live processes lost, though
+// scrollback cold-restores). Raise this only alongside the fail-open cap.
+export const WEDGED_DAEMON_GRACE_RETRIES = 11
 
 let spawner: DaemonSpawner | null = null
 type DaemonProvider = DaemonPtyRouter | DaemonPtyAdapter | DegradedDaemonPtyProvider
