@@ -99,6 +99,7 @@ type RuntimeImportResult =
     }
 
 type RuntimeFileWatchEvent =
+  | { type: 'starting'; subscriptionId: string }
   | { type: 'ready'; subscriptionId: string }
   | { type: 'changed'; worktree: string; events: FsChangedPayload['events'] }
   | { type: 'error'; message: string }
@@ -932,7 +933,7 @@ function handleSharedRuntimeFileWatchResponse(
     const event = unwrapRuntimeRpcResult<RuntimeFileWatchEvent>(
       response as RuntimeRpcResponse<RuntimeFileWatchEvent>
     )
-    if (event.type === 'ready') {
+    if (event.type === 'starting' || event.type === 'ready') {
       shared.remoteSubscriptionId = event.subscriptionId
       if (shared.closed) {
         shared.unsubscribe?.()
@@ -989,7 +990,7 @@ function closeSharedRuntimeFileWatch(key: string, shared: SharedRuntimeFileWatch
   sharedRuntimeFileWatches.delete(key)
   if (shared.keepStreamUntilReady) {
     // Why: WebRuntimeClient owns shared-socket file-watch cleanup, including
-    // pre-ready fallback timers and late-ready files.unwatch.
+    // pre-ready cancellation ownership and late-ready files.unwatch.
     shared.unsubscribe?.()
     shared.unsubscribe = null
     return

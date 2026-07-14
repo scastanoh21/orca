@@ -149,7 +149,7 @@ export class DaemonServer {
   async shutdown(): Promise<void> {
     this.stopStreamBacklogProbe()
     this.transientFactRelay.dispose()
-    this.host.dispose()
+    await this.host.dispose()
     this.streamDataBatcher.clear()
 
     for (const [, client] of this.clients) {
@@ -498,7 +498,7 @@ export class DaemonServer {
           sessionId: request.payload.sessionId,
           immediate: request.payload.immediate === true
         })
-        this.host.kill(request.payload.sessionId, { immediate: request.payload.immediate })
+        await this.host.kill(request.payload.sessionId, { immediate: request.payload.immediate })
         return {}
 
       case 'signal':
@@ -580,7 +580,7 @@ export class DaemonServer {
           killSessions: request.payload.killSessions === true
         })
         if (request.payload.killSessions) {
-          this.host.dispose()
+          await this.host.dispose()
         }
         process.nextTick(() => this.shutdown())
         return {}

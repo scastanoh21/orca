@@ -1,11 +1,16 @@
 import type { IPtyProvider } from '../providers/types'
 import type { OrcaRuntimeService } from './orca-runtime'
 import { listRegisteredPtys } from '../memory/pty-registry'
+import { isPathInsideOrEqual } from '../../shared/cross-platform-path'
+import { splitWorktreeIdForFilesystem } from '../../shared/worktree-id'
 
 export type WorktreeTeardownDeps = {
   runtime?: OrcaRuntimeService
   localProvider: IPtyProvider
   onPtyStopped?: (ptyId: string) => void
+  timeoutMs?: number
+  requirePhysicalStop?: boolean
+  includeLocalRegistry?: boolean
 }
 
 export type WorktreeTeardownResult = {
@@ -13,6 +18,8 @@ export type WorktreeTeardownResult = {
   providerStopped: number
   registryStopped: number
 }
+
+export const WORKTREE_PROCESS_SWEEP_TIMEOUT_MS = 10_000
 
 /**
  * Kills every PTY we can prove belongs to `worktreeId`, across all three
@@ -32,9 +39,8 @@ export type WorktreeTeardownResult = {
  *    canonical source for memory attribution; it also redundantly backstops
  *    daemon spawns.
  *
- * Best-effort throughout: each sweep catches its own errors. The caller
- * (removeManagedWorktree, worktrees:remove IPC) must run the git-level
- * removal regardless of what this returns.
+ * Sweeps are best-effort by default. Destructive removal callers set
+ * `requirePhysicalStop` so a timeout or unproven stop blocks filesystem work.
  */
 export async function killAllProcessesForWorktree(
   worktreeId: string,
@@ -45,44 +51,176 @@ export async function killAllProcessesForWorktree(
     providerStopped: 0,
     registryStopped: 0
   }
-
-  if (deps.runtime) {
-    const r = await deps.runtime.stopTerminalsForWorktree(worktreeId).catch(() => ({ stopped: 0 }))
-    result.runtimeStopped = r.stopped
+  const deadline = Date.now() + Math.max(1, deps.timeoutMs ?? WORKTREE_PROCESS_SWEEP_TIMEOUT_MS)
+  const deadlineError = new Error(`Timed out waiting for physical PTY teardown: ${worktreeId}`)
+  const worktreePath = splitWorktreeIdForFilesystem(worktreeId)?.worktreePath
+  const stopAttempts = new Map<string, Promise<boolean>>()
+  const stopPty = (
+    ptyId: string,
+    stop: () => boolean | Promise<boolean>
+  ): Promise<{ stopped: boolean; owner: boolean }> => {
+    const previous = stopAttempts.get(ptyId) ?? Promise.resolve(false)
+    const current = previous
+      .then(async (stopped) => {
+        if (stopped) {
+          return { stopped: true, owner: false }
+        }
+        const didStop = await stop()
+        return { stopped: didStop, owner: didStop }
+      })
+      .catch(() => ({ stopped: false, owner: false }))
+    stopAttempts.set(
+      ptyId,
+      current.then(({ stopped }) => stopped)
+    )
+    return current
   }
 
-  result.providerStopped = await sweepProviderByPrefix(
-    worktreeId,
-    deps.localProvider,
-    deps.onPtyStopped
+  const runtimeSweep = deps.runtime
+    ? settleBeforeDeadline(
+        () => deps.runtime!.stopTerminalsForWorktree(worktreeId, { deadline, stopPty }),
+        { stopped: 0 },
+        deadline,
+        deps.requirePhysicalStop ? deadlineError : undefined,
+        false
+      )
+    : Promise.resolve({ stopped: 0 })
+  const providerSweep = settleBeforeDeadline(
+    () =>
+      sweepProviderByPrefix(
+        worktreeId,
+        worktreePath,
+        deps.localProvider,
+        deadline,
+        stopPty,
+        deps.onPtyStopped,
+        deps.requirePhysicalStop
+      ),
+    0,
+    deadline,
+    deps.requirePhysicalStop ? deadlineError : undefined
   )
-  result.registryStopped = await sweepRegistryForWorktree(
-    worktreeId,
-    deps.localProvider,
-    deps.onPtyStopped
-  )
+  const registrySweep =
+    deps.includeLocalRegistry === false
+      ? Promise.resolve(0)
+      : settleBeforeDeadline(
+          () =>
+            sweepRegistryForWorktree(
+              worktreeId,
+              deps.localProvider,
+              deadline,
+              stopPty,
+              deps.onPtyStopped
+            ),
+          0,
+          deadline,
+          deps.requirePhysicalStop ? deadlineError : undefined
+        )
+  const [runtimeResult, providerStopped, registryStopped] = await Promise.all([
+    runtimeSweep,
+    providerSweep,
+    registrySweep
+  ])
+  result.runtimeStopped = runtimeResult.stopped
+  result.providerStopped = providerStopped
+  result.registryStopped = registryStopped
+  if (deps.requirePhysicalStop) {
+    const stops = await Promise.all(stopAttempts.values())
+    if (stops.some((stopped) => !stopped)) {
+      throw new Error(`Failed to physically stop every PTY for worktree: ${worktreeId}`)
+    }
+  }
 
   return result
 }
 
+async function settleBeforeDeadline<T>(
+  run: () => Promise<T>,
+  fallback: T,
+  deadline: number,
+  failClosedError?: Error,
+  failClosedOnRunError = true
+): Promise<T> {
+  const remaining = deadline - Date.now()
+  if (remaining <= 0) {
+    if (failClosedError) {
+      throw failClosedError
+    }
+    return fallback
+  }
+  return new Promise((resolve, reject) => {
+    let settled = false
+    const finish = (value: T): void => {
+      if (settled) {
+        return
+      }
+      settled = true
+      clearTimeout(timer)
+      resolve(value)
+    }
+    const fail = (error: unknown): void => {
+      if (settled) {
+        return
+      }
+      settled = true
+      clearTimeout(timer)
+      reject(error)
+    }
+    const timer = setTimeout(
+      () => (failClosedError ? fail(failClosedError) : finish(fallback)),
+      remaining
+    )
+    timer.unref?.()
+    void run().then(finish, (error: unknown) =>
+      failClosedError && failClosedOnRunError ? fail(error) : finish(fallback)
+    )
+  })
+}
+
 async function sweepProviderByPrefix(
   worktreeId: string,
+  worktreePath: string | undefined,
   provider: IPtyProvider,
-  onPtyStopped?: (ptyId: string) => void
+  deadline: number,
+  stopPty: (
+    ptyId: string,
+    stop: () => Promise<boolean>
+  ) => Promise<{ stopped: boolean; owner: boolean }>,
+  onPtyStopped?: (ptyId: string) => void,
+  failClosed = false
 ): Promise<number> {
   const prefix = `${worktreeId}@@`
-  const sessions = await provider.listProcesses().catch(() => [])
+  const sessions = failClosed
+    ? await provider.listProcesses()
+    : await provider.listProcesses().catch(() => [])
   let killed = 0
   for (const s of sessions) {
-    if (!s.id.startsWith(prefix)) {
+    if (Date.now() >= deadline) {
+      break
+    }
+    // Why: older daemon/relay process rows may omit cwd; their established ID
+    // and authoritative worktree ownership must remain usable during teardown.
+    const cwdOwned =
+      worktreePath !== undefined &&
+      typeof s.cwd === 'string' &&
+      s.cwd.length > 0 &&
+      isPathInsideOrEqual(worktreePath, s.cwd)
+    if (!s.id.startsWith(prefix) && s.worktreeId !== worktreeId && !cwdOwned) {
       continue
     }
-    try {
-      await provider.shutdown(s.id, { immediate: true })
+    const stopResult = await stopPty(s.id, async () => {
+      if (Date.now() >= deadline) {
+        return false
+      }
+      try {
+        await provider.shutdown(s.id, { immediate: true })
+        return Date.now() < deadline
+      } catch {
+        return false
+      }
+    })
+    if (stopResult.owner && Date.now() < deadline) {
       clearStoppedPtyState(s.id, onPtyStopped)
-      killed += 1
-    } catch {
-      // Already dead, or the backend dropped the session — treat as success.
       killed += 1
     }
   }
@@ -92,17 +230,33 @@ async function sweepProviderByPrefix(
 async function sweepRegistryForWorktree(
   worktreeId: string,
   localProvider: IPtyProvider,
+  deadline: number,
+  stopPty: (
+    ptyId: string,
+    stop: () => Promise<boolean>
+  ) => Promise<{ stopped: boolean; owner: boolean }>,
   onPtyStopped?: (ptyId: string) => void
 ): Promise<number> {
   const entries = listRegisteredPtys().filter((r) => r.worktreeId === worktreeId)
   let killed = 0
   for (const entry of entries) {
-    try {
-      await localProvider.shutdown(entry.ptyId, { immediate: true })
+    if (Date.now() >= deadline) {
+      break
+    }
+    const stopResult = await stopPty(entry.ptyId, async () => {
+      if (Date.now() >= deadline) {
+        return false
+      }
+      try {
+        await localProvider.shutdown(entry.ptyId, { immediate: true })
+        return Date.now() < deadline
+      } catch {
+        return false
+      }
+    })
+    if (stopResult.owner && Date.now() < deadline) {
       clearStoppedPtyState(entry.ptyId, onPtyStopped)
       killed += 1
-    } catch {
-      /* ignore — best-effort */
     }
   }
   return killed

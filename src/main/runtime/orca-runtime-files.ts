@@ -33,9 +33,11 @@ import {
   isPathInsideOrEqual,
   isRuntimePathAbsolute,
   isWindowsAbsolutePathLike,
+  normalizeRuntimePathForComparison,
   relativePathInsideRoot,
   resolveRuntimePath
 } from '../../shared/cross-platform-path'
+import { PhysicalExitTracker } from '../../shared/physical-exit-tracker'
 import type {
   RuntimeFileListResult,
   RuntimeFileOpenResult,
@@ -44,7 +46,10 @@ import type {
   RuntimeFileReadResult,
   RuntimeTerminalPathResolution
 } from '../../shared/runtime-types'
-import { watchFileExplorerInWatcherProcess } from './file-watcher-host'
+import {
+  closeFileExplorerWatcherInWatcherProcess,
+  watchFileExplorerInWatcherProcess
+} from './file-watcher-host'
 import { wslAwareSpawn } from '../git/runner'
 import { parseWslPath, toWindowsWslPath } from '../wsl'
 import { isENOENT, resolveAuthorizedPath } from '../ipc/filesystem-auth'
@@ -70,18 +75,25 @@ import {
   SSH_FILESYSTEM_PROVIDER_UNAVAILABLE_MESSAGE
 } from '../providers/ssh-filesystem-dispatch'
 import type { FileStat, IFilesystemProvider } from '../providers/types'
+import {
+  isWatcherProcessFailure,
+  WatcherProcessFailure
+} from '../ipc/parcel-watcher-process-failure'
 import { assertNoClobberRenameDestinationAvailable } from '../../shared/filesystem-rename-collision'
 import { joinWorktreeRelativePath, normalizeRuntimeRelativePath } from './runtime-relative-paths'
+import { beginWatcherInstall } from '../ipc/watcher-removal-gate'
 
 const MOBILE_FILE_LIST_LIMIT = 5000
 const MOBILE_FILE_READ_MAX_BYTES = 512 * 1024
 const RUNTIME_PREVIEWABLE_BINARY_MAX_BYTES = 10 * 1024 * 1024
 const WINDOWS_RUNTIME_FILE_WATCH_DEBOUNCE_MS = 150
+export const WINDOWS_RUNTIME_FILE_WATCH_CLOSE_DEADLINE_MS = 10_000
 const TERMINAL_FILE_GRANT_TTL_MS = 10 * 60 * 1000
 const OPEN_NOFOLLOW = typeof constants.O_NOFOLLOW === 'number' ? constants.O_NOFOLLOW : 0
 // Why: runtime files.watch subscriptions are cleaned up through synchronous RPC
 // callbacks. Track native Parcel unsubscribe work so app shutdown can drain it.
 const pendingRuntimeFileWatcherUnsubscribes = new Set<Promise<void>>()
+const runtimeFileWatcherReleasesByOwnerAndRoot = new Map<string, Set<() => Promise<void>>>()
 const MOBILE_BINARY_EXTENSIONS = new Set([
   '.avif',
   '.bmp',
@@ -157,20 +169,93 @@ const RUNTIME_PREVIEWABLE_BINARY_MIME_TYPES: Record<string, string> = {
 function trackRuntimeFileWatcherUnsubscribe(
   rootPath: string,
   unsubscribe: () => Promise<void>
-): void {
+): Promise<void> {
   const promise = Promise.resolve()
     .then(unsubscribe)
-    .catch((err: unknown) => {
-      console.error('[runtime-files.watch] unsubscribe error', { rootPath, err })
-    })
     .finally(() => {
       pendingRuntimeFileWatcherUnsubscribes.delete(promise)
     })
   pendingRuntimeFileWatcherUnsubscribes.add(promise)
+  void promise.catch((err: unknown) => {
+    console.error('[runtime-files.watch] unsubscribe error', { rootPath, err })
+  })
+  return promise
+}
+
+function normalizeRuntimeWatcherRoot(rootPath: string): string {
+  return normalizeRuntimePathForComparison(rootPath)
+}
+
+function runtimeWatcherReleaseKey(
+  runtimeId: string,
+  connectionId: string | undefined,
+  rootPath: string
+): string {
+  // Why: identical absolute paths are valid on local and multiple SSH hosts;
+  // destructive teardown must stay scoped to the execution host that owns it.
+  return JSON.stringify([runtimeId, connectionId ?? null, normalizeRuntimeWatcherRoot(rootPath)])
+}
+
+function registerRuntimeFileWatcherRelease(
+  runtimeId: string,
+  connectionId: string | undefined,
+  rootPaths: string[],
+  unsubscribe: () => Promise<void>
+): () => Promise<void> {
+  const keys = Array.from(
+    new Set(
+      rootPaths.map((rootPath) => runtimeWatcherReleaseKey(runtimeId, connectionId, rootPath))
+    )
+  )
+  let releasePromise: Promise<void> | undefined
+  const removeRelease = (): void => {
+    for (const key of keys) {
+      const releases = runtimeFileWatcherReleasesByOwnerAndRoot.get(key)
+      releases?.delete(release)
+      if (releases?.size === 0) {
+        runtimeFileWatcherReleasesByOwnerAndRoot.delete(key)
+      }
+    }
+  }
+  const release = (): Promise<void> => {
+    if (!releasePromise) {
+      releasePromise = trackRuntimeFileWatcherUnsubscribe(rootPaths[0], unsubscribe)
+      releasePromise.then(removeRelease, (error: unknown) => {
+        if (isWatcherProcessFailure(error) && error.physicalExit) {
+          void error.physicalExit.then(() => {
+            releasePromise = Promise.resolve()
+            removeRelease()
+          })
+        } else {
+          // Why: a synchronous Windows close failure has no process-exit
+          // signal; retain the root and allow a later destructive retry.
+          releasePromise = undefined
+        }
+      })
+    }
+    return releasePromise
+  }
+  for (const key of keys) {
+    const releases =
+      runtimeFileWatcherReleasesByOwnerAndRoot.get(key) ?? new Set<() => Promise<void>>()
+    releases.add(release)
+    runtimeFileWatcherReleasesByOwnerAndRoot.set(key, releases)
+  }
+  return release
 }
 
 export async function awaitRuntimeFileWatcherUnsubscribes(): Promise<void> {
   await Promise.allSettled(Array.from(pendingRuntimeFileWatcherUnsubscribes))
+}
+
+export function _getRuntimeFileWatcherReleaseCountForTests(): number {
+  const releases = new Set<() => Promise<void>>()
+  for (const rootReleases of runtimeFileWatcherReleasesByOwnerAndRoot.values()) {
+    for (const release of rootReleases) {
+      releases.add(release)
+    }
+  }
+  return releases.size
 }
 
 export type ResolvedRuntimeFileWorktree = Worktree & { git: GitWorktreeInfo }
@@ -926,34 +1011,68 @@ export class RuntimeFileCommands {
     signal?: AbortSignal
   ): Promise<() => void> {
     const target = await this.resolveFileExplorerPath(worktreeSelector, '')
-    const provider = target.connectionId ? getSshFilesystemProvider(target.connectionId) : null
-    if (target.connectionId) {
-      if (!provider) {
-        throw new Error(SSH_FILESYSTEM_PROVIDER_UNAVAILABLE_MESSAGE)
+    const finishInstall = beginWatcherInstall(target.path, target.connectionId)
+    try {
+      const provider = target.connectionId ? getSshFilesystemProvider(target.connectionId) : null
+      if (target.connectionId) {
+        if (!provider) {
+          throw new Error(SSH_FILESYSTEM_PROVIDER_UNAVAILABLE_MESSAGE)
+        }
+        // Why: the RPC layer already threads AbortSignal for local watches; SSH
+        // must cancel the remote fs.watch request instead of waiting it out.
+        const close = await provider.watch(target.path, callback, { signal, onTerminalError })
+        return registerRuntimeFileWatcherRelease(
+          this.host.getRuntimeId(),
+          target.connectionId,
+          [target.path],
+          async () => close()
+        )
       }
-      // Why: the RPC layer already threads AbortSignal for local watches; SSH
-      // must cancel the remote fs.watch request instead of waiting it out.
-      return provider.watch(target.path, callback, { signal })
-    }
 
-    const rootPath = await resolveAuthorizedPath(target.path, this.host.requireStore())
-    const rootStats = await stat(rootPath)
-    if (!rootStats.isDirectory()) {
-      throw new Error('not_a_directory')
+      const rootPath = await resolveAuthorizedPath(target.path, this.host.requireStore())
+      const rootStats = await stat(rootPath)
+      if (!rootStats.isDirectory()) {
+        throw new Error('not_a_directory')
+      }
+      if (process.platform === 'win32') {
+        const close = watchWindowsRuntimeFileExplorer(rootPath, callback, onTerminalError)
+        return registerRuntimeFileWatcherRelease(
+          this.host.getRuntimeId(),
+          undefined,
+          [target.path, rootPath],
+          async () => close()
+        )
+      }
+      // Why: the forked watcher keeps the blocking crawl and native faults out
+      // of the main/`serve` process (issues #5308 and #8212).
+      const dispose = await watchFileExplorerInWatcherProcess(
+        rootPath,
+        callback,
+        onTerminalError,
+        signal
+      )
+      return registerRuntimeFileWatcherRelease(
+        this.host.getRuntimeId(),
+        undefined,
+        [target.path, rootPath],
+        dispose
+      )
+    } finally {
+      finishInstall()
     }
-    if (process.platform === 'win32') {
-      return watchWindowsRuntimeFileExplorer(rootPath, callback)
+  }
+
+  async closeFileExplorerWatchersForPath(rootPath: string, connectionId?: string): Promise<void> {
+    const key = runtimeWatcherReleaseKey(this.host.getRuntimeId(), connectionId, rootPath)
+    const releases = runtimeFileWatcherReleasesByOwnerAndRoot.get(key)
+    if (releases) {
+      await Promise.all(Array.from(releases, (release) => release()))
     }
-    // Why: the forked watcher keeps the blocking crawl and native faults out
-    // of the main/`serve` process (issues #5308 and #8212).
-    const dispose = await watchFileExplorerInWatcherProcess(
-      rootPath,
-      callback,
-      onTerminalError,
-      signal
-    )
-    return () => {
-      trackRuntimeFileWatcherUnsubscribe(rootPath, dispose)
+    if (!connectionId) {
+      // Why: setup can fail before registerRuntimeFileWatcherRelease publishes
+      // its callback, while the host still retains an unkillable child owner.
+      const resolvedRootPath = await resolveAuthorizedPath(rootPath, this.host.requireStore())
+      await closeFileExplorerWatcherInWatcherProcess(resolvedRootPath)
     }
   }
 
@@ -1512,10 +1631,13 @@ export class RuntimeFileCommands {
 
 function watchWindowsRuntimeFileExplorer(
   rootPath: string,
-  callback: (events: FsChangeEvent[]) => void
-): () => void {
+  callback: (events: FsChangeEvent[]) => void,
+  onTerminalError: (error: Error) => void
+): () => Promise<void> {
   let disposed = false
   let timer: ReturnType<typeof setTimeout> | null = null
+  let closeStarted = false
+  const physicalClose = new PhysicalExitTracker()
 
   const emitOverflow = (): void => {
     timer = null
@@ -1539,21 +1661,61 @@ function watchWindowsRuntimeFileExplorer(
   // watcher can abort the headless server process. For remote Windows runtimes,
   // a conservative overflow refresh is safer than a process-wide native crash.
   const watcher = watchFs(rootPath, { recursive: true }, scheduleOverflow)
-  watcher.on('error', (err) => {
+  const onClose = (): void => {
+    watcher.removeListener('error', onError)
+    physicalClose.markExited()
+  }
+  const onError = (err: Error): void => {
     console.error('[runtime-files.watch] Windows watcher error', { rootPath, err })
-    scheduleOverflow()
-  })
+    if (timer) {
+      clearTimeout(timer)
+      timer = null
+    }
+    watcher.removeListener('close', onClose)
+    watcher.removeListener('error', onError)
+    // Why: Node closes and nulls FSWatcher's native handle on error without a
+    // close event; that error is positive physical-exit proof for deletion.
+    physicalClose.markExited()
+    if (!disposed) {
+      try {
+        callback([{ kind: 'overflow', absolutePath: rootPath }])
+      } finally {
+        onTerminalError(err)
+      }
+    }
+  }
+  watcher.once('close', onClose)
+  watcher.on('error', onError)
 
-  return () => {
+  return async () => {
     disposed = true
     if (timer) {
       clearTimeout(timer)
       timer = null
     }
+    if (!closeStarted) {
+      try {
+        watcher.close()
+      } catch (err) {
+        console.error('[runtime-files.watch] Windows watcher close error', { rootPath, err })
+        throw err
+      }
+      closeStarted = true
+    }
     try {
-      watcher.close()
-    } catch (err) {
-      console.error('[runtime-files.watch] Windows watcher close error', { rootPath, err })
+      await physicalClose.waitForExit(
+        WINDOWS_RUNTIME_FILE_WATCH_CLOSE_DEADLINE_MS,
+        () => new Error('Windows watcher did not close before deletion deadline')
+      )
+    } catch (error) {
+      // Why: late Windows close still owns native directory handles; expose its
+      // exact completion so destructive cleanup retains and then clears the root.
+      throw new WatcherProcessFailure(
+        error instanceof Error ? error.message : String(error),
+        'supervisor',
+        'process_unavailable',
+        physicalClose.exitedPromise
+      )
     }
   }
 }

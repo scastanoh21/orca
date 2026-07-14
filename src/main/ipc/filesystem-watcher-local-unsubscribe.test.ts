@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import type * as ParcelWatcherProcess from './parcel-watcher-process'
 
 const { handleMock } = vi.hoisted(() => ({
   handleMock: vi.fn()
@@ -22,6 +23,14 @@ vi.mock('./filesystem-watcher-wsl', () => ({
   createWslWatcher: vi.fn()
 }))
 
+vi.mock('./parcel-watcher-process', async (importOriginal) => {
+  const actual = await importOriginal<typeof ParcelWatcherProcess>()
+  return {
+    ...actual,
+    subscribeViaWatcherProcess: vi.fn(actual.subscribeViaWatcherProcess)
+  }
+})
+
 vi.mock('../providers/ssh-filesystem-dispatch', () => ({
   getSshFilesystemProvider: vi.fn()
 }))
@@ -33,6 +42,8 @@ import {
 } from './filesystem-watcher'
 import { stat } from 'node:fs/promises'
 import { subscribe as subscribeParcelWatcher } from '@parcel/watcher'
+import { subscribeViaWatcherProcess } from './parcel-watcher-process'
+import { WatcherProcessFailure } from './parcel-watcher-process-failure'
 
 type HandlerMap = Record<string, (_event: unknown, args: unknown) => Promise<unknown> | unknown>
 
@@ -43,6 +54,7 @@ describe('local filesystem watcher unsubscribe cleanup', () => {
     handleMock.mockReset()
     vi.mocked(stat).mockReset()
     vi.mocked(subscribeParcelWatcher).mockReset()
+    vi.mocked(subscribeViaWatcherProcess).mockClear()
     for (const key of Object.keys(handlers)) {
       delete handlers[key]
     }
@@ -271,6 +283,214 @@ describe('local filesystem watcher unsubscribe cleanup', () => {
     await closeLocalWatcherForWorktreePath('/tmp/repo')
 
     expect(unsubscribeMock).toHaveBeenCalledTimes(1)
+  })
+
+  it.each([
+    ['C:\\Repo', 'c:/repo'],
+    ['\\\\Server\\Share\\Repo', '//server/share/repo']
+  ])('matches Windows watcher cleanup across path casing for %s', async (watchPath, closePath) => {
+    vi.mocked(stat).mockResolvedValue({ isDirectory: () => true } as never)
+    const unsubscribeMock = vi.fn()
+    vi.mocked(subscribeParcelWatcher).mockResolvedValue({ unsubscribe: unsubscribeMock } as never)
+    const sender = {
+      isDestroyed: () => false,
+      send: vi.fn(),
+      once: vi.fn(),
+      id: 1
+    }
+
+    await handlers['fs:watchWorktree']({ sender }, { worktreePath: watchPath })
+    await closeLocalWatcherForWorktreePath(closePath)
+
+    expect(unsubscribeMock).toHaveBeenCalledTimes(1)
+  })
+
+  it.each([
+    ['C:\\Repo', 'c:/repo'],
+    ['\\\\Server\\Share\\Repo', '//server/share/repo']
+  ])('keeps the physical Windows root in event payloads for %s', async (watchPath, closePath) => {
+    vi.useFakeTimers()
+    try {
+      vi.mocked(stat).mockResolvedValue({ isDirectory: () => true } as never)
+      let watcherCallback: (
+        error: Error | null,
+        events: { type: 'update'; path: string }[]
+      ) => void = () => undefined
+      const unsubscribeMock = vi.fn()
+      vi.mocked(subscribeParcelWatcher).mockImplementation(async (_path, callback) => {
+        watcherCallback = callback as typeof watcherCallback
+        return { unsubscribe: unsubscribeMock } as never
+      })
+      const sender = {
+        isDestroyed: () => false,
+        send: vi.fn(),
+        once: vi.fn(),
+        id: 1
+      }
+
+      await handlers['fs:watchWorktree']({ sender }, { worktreePath: watchPath })
+      watcherCallback(null, [{ type: 'update', path: `${watchPath}\\file.txt` }])
+      await vi.advanceTimersByTimeAsync(150)
+
+      expect(sender.send).toHaveBeenCalledWith(
+        'fs:changed',
+        expect.objectContaining({ worktreePath: watchPath })
+      )
+      await closeLocalWatcherForWorktreePath(closePath)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('propagates watcher termination failure to worktree deletion', async () => {
+    vi.mocked(stat).mockResolvedValue({ isDirectory: () => true } as never)
+    const terminationError = new Error('watcher child did not exit')
+    const unsubscribeMock = vi.fn().mockRejectedValue(terminationError)
+    vi.mocked(subscribeParcelWatcher).mockResolvedValue({ unsubscribe: unsubscribeMock } as never)
+    const sender = { isDestroyed: () => false, send: vi.fn(), once: vi.fn(), id: 1 }
+
+    await handlers['fs:watchWorktree']({ sender }, { worktreePath: '/tmp/repo' })
+
+    await expect(closeLocalWatcherForWorktreePath('/tmp/repo')).rejects.toBe(terminationError)
+    expect(unsubscribeMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('awaits and propagates sender cleanup already tearing down the same root', async () => {
+    vi.mocked(stat).mockResolvedValue({ isDirectory: () => true } as never)
+    const terminationError = new Error('watcher child did not exit')
+    let rejectUnsubscribe: (error: Error) => void = () => {}
+    const unsubscribeMock = vi.fn(
+      () =>
+        new Promise<void>((_resolve, reject) => {
+          rejectUnsubscribe = reject
+        })
+    )
+    vi.mocked(subscribeParcelWatcher).mockResolvedValue({ unsubscribe: unsubscribeMock } as never)
+    const destroyedCallbacks: (() => void)[] = []
+    const sender = {
+      isDestroyed: () => false,
+      send: vi.fn(),
+      once: vi.fn((event: string, callback: () => void) => {
+        if (event === 'destroyed') {
+          destroyedCallbacks.push(callback)
+        }
+      }),
+      id: 1
+    }
+    await handlers['fs:watchWorktree']({ sender }, { worktreePath: '/tmp/repo' })
+    destroyedCallbacks[0]()
+    await vi.waitFor(() => expect(unsubscribeMock).toHaveBeenCalledTimes(1))
+
+    let settled = false
+    const closeFailure = expect(
+      closeLocalWatcherForWorktreePath('/tmp/repo').finally(() => {
+        settled = true
+      })
+    ).rejects.toBe(terminationError)
+    await Promise.resolve()
+    expect(settled).toBe(false)
+    rejectUnsubscribe(terminationError)
+    await closeFailure
+  })
+
+  it('retains teardown failure only until the unkillable child physically exits', async () => {
+    vi.mocked(stat).mockResolvedValue({ isDirectory: () => true } as never)
+    let signalPhysicalExit: () => void = () => {}
+    const physicalExit = new Promise<void>((resolve) => {
+      signalPhysicalExit = resolve
+    })
+    const terminationError = new WatcherProcessFailure(
+      'file watcher process did not exit after termination deadline',
+      'supervisor',
+      'process_unavailable',
+      physicalExit
+    )
+    const unsubscribeMock = vi.fn().mockRejectedValue(terminationError)
+    vi.mocked(subscribeParcelWatcher).mockResolvedValue({ unsubscribe: unsubscribeMock } as never)
+    const destroyedCallbacks: (() => void)[] = []
+    const sender = {
+      isDestroyed: () => false,
+      send: vi.fn(),
+      once: vi.fn((event: string, callback: () => void) => {
+        if (event === 'destroyed') {
+          destroyedCallbacks.push(callback)
+        }
+      }),
+      id: 1
+    }
+    await handlers['fs:watchWorktree']({ sender }, { worktreePath: '/tmp/repo' })
+    destroyedCallbacks[0]()
+    await vi.waitFor(() => expect(unsubscribeMock).toHaveBeenCalledTimes(1))
+
+    await expect(closeLocalWatcherForWorktreePath('/tmp/repo')).rejects.toBe(terminationError)
+    signalPhysicalExit()
+    await Promise.resolve()
+    await expect(closeLocalWatcherForWorktreePath('/tmp/repo')).resolves.toBeUndefined()
+  })
+
+  it('retains callback terminal failure when the cleared subscription later unsubscribes cleanly', async () => {
+    vi.mocked(stat).mockResolvedValue({ isDirectory: () => true } as never)
+    let watcherCallback: (error: Error | null, events: []) => void = () => {}
+    let signalPhysicalExit: () => void = () => {}
+    const physicalExit = new Promise<void>((resolve) => {
+      signalPhysicalExit = resolve
+    })
+    const terminationError = new WatcherProcessFailure(
+      'file watcher process did not exit after termination deadline',
+      'supervisor',
+      'process_unavailable',
+      physicalExit
+    )
+    const unsubscribe = vi.fn().mockResolvedValue(undefined)
+    vi.mocked(subscribeViaWatcherProcess).mockImplementationOnce(async (_dir, callback) => {
+      watcherCallback = callback as typeof watcherCallback
+      return { unsubscribe }
+    })
+    const sender = { isDestroyed: () => false, send: vi.fn(), once: vi.fn(), id: 1 }
+    await handlers['fs:watchWorktree']({ sender }, { worktreePath: '/tmp/repo' })
+
+    watcherCallback(terminationError, [])
+    await vi.waitFor(() => expect(unsubscribe).toHaveBeenCalledTimes(1))
+
+    await expect(closeLocalWatcherForWorktreePath('/tmp/repo')).rejects.toBe(terminationError)
+    signalPhysicalExit()
+    await physicalExit
+    await expect(closeLocalWatcherForWorktreePath('/tmp/repo')).resolves.toBeUndefined()
+  })
+
+  it('propagates terminal child failure while deletion cancels an active crawl', async () => {
+    vi.mocked(stat).mockResolvedValue({ isDirectory: () => true } as never)
+    let signalPhysicalExit: () => void = () => undefined
+    const physicalExit = new Promise<void>((resolve) => {
+      signalPhysicalExit = resolve
+    })
+    const terminationError = new WatcherProcessFailure(
+      'file watcher process did not exit after termination deadline',
+      'supervisor',
+      'process_unavailable',
+      physicalExit
+    )
+    vi.mocked(subscribeViaWatcherProcess).mockImplementationOnce(
+      (_dir, _callback, _opts, hooks) =>
+        new Promise((_resolve, reject) => {
+          hooks?.signal?.addEventListener('abort', () => reject(terminationError), { once: true })
+        })
+    )
+    const sender = { isDestroyed: () => false, send: vi.fn(), once: vi.fn(), id: 1 }
+    const watchPromise = handlers['fs:watchWorktree'](
+      { sender },
+      { worktreePath: '/tmp/repo' }
+    ) as Promise<unknown>
+    const watchFailure = expect(watchPromise).rejects.toBe(terminationError)
+    await vi.waitFor(() => expect(subscribeViaWatcherProcess).toHaveBeenCalledTimes(1))
+
+    await expect(closeLocalWatcherForWorktreePath('/tmp/repo')).rejects.toBe(terminationError)
+    await watchFailure
+    await expect(closeLocalWatcherForWorktreePath('/tmp/repo')).rejects.toBe(terminationError)
+
+    signalPhysicalExit()
+    await physicalExit
+    await expect(closeLocalWatcherForWorktreePath('/tmp/repo')).resolves.toBeUndefined()
   })
 
   it('closes a pending grace-teardown watcher immediately for worktree deletion', async () => {

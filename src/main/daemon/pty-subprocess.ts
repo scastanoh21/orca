@@ -1176,11 +1176,14 @@ export function createPtySubprocess(opts: PtySubprocessOptions): SubprocessHandl
       if (dead) {
         return
       }
+      nodePtyKillIssued = true
       try {
-        nodePtyKillIssued = true
         proc.kill()
-      } catch {
-        dead = true
+      } catch (error) {
+        // Why: a rejected native kill is not proof of exit. Keep the wrapper
+        // live and let Session retain/retry the physical owner.
+        nodePtyKillIssued = false
+        throw error
       }
     },
     forceKill: () => {
@@ -1195,12 +1198,14 @@ export function createPtySubprocess(opts: PtySubprocessOptions): SubprocessHandl
       }
       try {
         process.kill(proc.pid, 'SIGKILL')
-      } catch {
+      } catch (signalError) {
         try {
-          nodePtyKillIssued = true
           proc.kill()
+          nodePtyKillIssued = true
         } catch {
-          // Process may already be dead
+          nodePtyKillIssued = false
+          // Keep the original OS failure so callers can retry the same owner.
+          throw signalError
         }
       }
     },
