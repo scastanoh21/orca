@@ -74,6 +74,14 @@ describe('AgentHookServer pane authority', () => {
   it('requires live PTY ownership for a first transfer and trusts the chained alias afterward', () => {
     const server = new AgentHookServer()
 
+    server.ingestTerminalStatus({
+      paneKey: SOURCE,
+      tabId: 'tab-source',
+      worktreeId: 'wt-1',
+      payload: { state: 'working', prompt: 'unverified source' }
+    })
+
+    expect(server.canTransferPaneAuthority(SOURCE, undefined, () => false)).toBe(false)
     expect(server.canTransferPaneAuthority(SOURCE, 'pty-1', () => false)).toBe(false)
     expect(
       server.canTransferPaneAuthority(SOURCE, 'pty-1', (paneKey, ptyId) => {
@@ -82,6 +90,7 @@ describe('AgentHookServer pane authority', () => {
     ).toBe(true)
 
     server.transferPaneAuthority(SOURCE, TARGET, 'pty-1')
+    expect(server.canTransferPaneAuthority(TARGET, undefined, () => false)).toBe(true)
     expect(server.canTransferPaneAuthority(TARGET, 'pty-1', () => false)).toBe(true)
     expect(server.canTransferPaneAuthority(TARGET, 'other-pty', () => false)).toBe(false)
   })

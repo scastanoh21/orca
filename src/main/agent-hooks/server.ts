@@ -1000,11 +1000,9 @@ export class AgentHookServer {
     if (ptyId) {
       return alias?.ptyId === ptyId || ownsPty(physicalPaneKey, ptyId)
     }
-    // Why: an ID-less move may update existing hook state, but it must not mint
-    // authority for a pane main has never observed.
-    return (
-      Boolean(alias) || this.state.lastStatusByPaneKey.has(this.resolvePaneKeyAlias(fromPaneKey))
-    )
+    // Why: hook status is renderer-originated evidence, not PTY ownership.
+    // ID-less moves are safe only after a prior verified transfer minted an alias.
+    return Boolean(alias)
   }
 
   registerPaneKeyAlias(

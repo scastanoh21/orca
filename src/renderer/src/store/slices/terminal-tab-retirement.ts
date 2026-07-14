@@ -30,6 +30,7 @@ export type TerminalTabRetirementPlan = {
     environmentId: string | null
     handle: string
   }[]
+  cleanupOnlyPtyIds: string[]
   sharedPtyIds: string[]
   unroutablePtyIds: string[]
 }
@@ -40,7 +41,7 @@ function appendPtyId(ids: Set<string>, ptyId: string | null | undefined): void {
   }
 }
 
-function getPtyOwnershipIdentity(
+export function getTerminalPtyOwnershipIdentity(
   state: TerminalTabRetirementState,
   ptyId: string,
   worktreeId: string | null
@@ -136,7 +137,7 @@ export function buildTerminalTabRetirementPlans(
     const ptyIds = collectPtyIdsForTab(state, tabId, owner.rowPtyId)
     ptyIdsByLiveTab.set(tabId, ptyIds)
     for (const ptyId of ptyIds) {
-      const identity = getPtyOwnershipIdentity(state, ptyId, owner.worktreeId)
+      const identity = getTerminalPtyOwnershipIdentity(state, ptyId, owner.worktreeId)
       const owners = ownerTabIdsByIdentity.get(identity) ?? new Set<string>()
       owners.add(tabId)
       ownerTabIdsByIdentity.set(identity, owners)
@@ -153,16 +154,20 @@ export function buildTerminalTabRetirementPlans(
     const sharedPtyIds: string[] = []
     const localOrSshPtyIds: string[] = []
     const runtimeTerminals: TerminalTabRetirementPlan['runtimeTerminals'] = []
+    const cleanupOnlyPtyIds: string[] = []
     const unroutablePtyIds: string[] = []
 
     for (const ptyId of ptyIds) {
-      const ownerIdentity = getPtyOwnershipIdentity(state, ptyId, worktreeId)
+      const ownerIdentity = getTerminalPtyOwnershipIdentity(state, ptyId, worktreeId)
       const ownerTabIds = ownerTabIdsByIdentity.get(ownerIdentity)
       if (hasOwnerOutsideTargets(ownerTabIds, targetIdSet)) {
         sharedPtyIds.push(ptyId)
         continue
       }
       if (scheduledPtyOwners.has(ownerIdentity)) {
+        // Why: another closing tab already owns provider teardown, but this
+        // tab can still hold alias-keyed snapshots that must be discarded.
+        cleanupOnlyPtyIds.push(ptyId)
         continue
       }
       scheduledPtyOwners.add(ownerIdentity)
@@ -190,6 +195,7 @@ export function buildTerminalTabRetirementPlans(
       ptyIds,
       localOrSshPtyIds,
       runtimeTerminals,
+      cleanupOnlyPtyIds,
       sharedPtyIds,
       unroutablePtyIds
     })

@@ -100,6 +100,7 @@ describe('terminal tab retirement planning', () => {
           handle: 'terminal-1'
         }
       ],
+      cleanupOnlyPtyIds: [],
       sharedPtyIds: [],
       unroutablePtyIds: []
     })
@@ -208,6 +209,7 @@ describe('terminal tab retirement planning', () => {
     })
     expect(plans.get('tab-2')).toMatchObject({
       localOrSshPtyIds: [],
+      cleanupOnlyPtyIds: ['pty-batch'],
       sharedPtyIds: []
     })
   })

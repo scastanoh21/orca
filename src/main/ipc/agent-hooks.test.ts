@@ -443,6 +443,7 @@ describe('agent pane authority IPC', () => {
 
     canTransferPaneAuthority.mockReturnValue(false)
     transfer({}, { fromPaneKey: PANE_KEY, toPaneKey: CHILD_PANE_KEY, ptyId: 'forged-pty' })
+    transfer({}, { fromPaneKey: PANE_KEY, toPaneKey: CHILD_PANE_KEY })
     canTransferPaneAuthority.mockReturnValue(true)
     transfer({}, { fromPaneKey: PANE_KEY, toPaneKey: CHILD_PANE_KEY, ptyId: 'x'.repeat(513) })
     transfer(

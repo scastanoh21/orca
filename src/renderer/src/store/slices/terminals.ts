@@ -1391,6 +1391,7 @@ export const createTerminalSlice: StateCreator<AppState, [], [], TerminalSlice> 
       const closingPtyIds = new Set([
         ...retirementPlan.localOrSshPtyIds,
         ...retirementPlan.runtimeTerminals.map((terminal) => terminal.ptyId),
+        ...retirementPlan.cleanupOnlyPtyIds,
         ...retirementPlan.unroutablePtyIds,
         ...(closingPtyId ? [closingPtyId] : [])
       ])
