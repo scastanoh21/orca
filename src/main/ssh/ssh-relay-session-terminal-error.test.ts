@@ -58,6 +58,7 @@ vi.mock('../ipc/pty', () => ({
   clearPtyOwnershipForConnection: vi.fn(),
   clearProviderPtyState: vi.fn(),
   deletePtyOwnership: vi.fn(),
+  hasPendingSshShutdown: vi.fn().mockReturnValue(false),
   releasePendingSshShutdown: vi.fn(),
   setPtyOwnership: vi.fn(),
   answerStartupTerminalColorQueriesForPty: vi.fn((_id: string, data: string) => data)
@@ -202,5 +203,24 @@ describe('SshRelaySession terminal relay error (RelayVersionMismatchError)', () 
       id: 'ssh-pty-1',
       code: 0
     })
+  })
+
+  it('leaves SSH exit persistence to an existing retry owner', async () => {
+    const { mockConn, mockStore, mockPortForward, getMainWindow } = createMockDeps()
+    const { hasPendingSshShutdown, registerSshPtyProvider } = await import('../ipc/pty')
+    vi.mocked(hasPendingSshShutdown).mockReturnValue(true)
+    const session = new SshRelaySession('target-1', getMainWindow, mockStore, mockPortForward)
+    await session.establish(mockConn)
+    const ptyProvider = vi.mocked(registerSshPtyProvider).mock.calls[0]?.[1] as unknown as {
+      onExit: ReturnType<typeof vi.fn>
+    }
+    const onExit = ptyProvider.onExit.mock.calls[0]?.[0] as (payload: {
+      id: string
+      code: number
+    }) => void
+
+    onExit({ id: 'ssh-pty-1', code: 0 })
+
+    expect(mockStore.markSshRemotePtyLease).not.toHaveBeenCalled()
   })
 })

@@ -754,6 +754,11 @@ function attemptRetainedPtyShutdown(retained: RetainedPtyShutdown): Promise<void
     if (retained.provider !== currentProvider) {
       return
     }
+    // Why: an exit callback can settle this owner before shutdown() resolves.
+    // Its durable retry is already scheduled, so do not settle it twice.
+    if (retained.providerShutdownComplete) {
+      return
+    }
     if (providerAlreadyGone) {
       retained.providerShutdownComplete = true
       retained.providerExitObserved = false
@@ -1613,6 +1618,10 @@ export function releasePendingSshShutdown(id: string): void {
   // Why: generation expiry proves this exact remote process is unreachable;
   // its retained owner must not keep waking against the replacement relay.
   scheduleRetainedShutdownRetries()
+}
+
+export function hasPendingSshShutdown(id: string): boolean {
+  return pendingSshShutdownRetries.has(id)
 }
 
 export function _resetRetainedPtyShutdownsForTests(): void {

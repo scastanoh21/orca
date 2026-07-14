@@ -3615,7 +3615,11 @@ describe('registerPtyHandlers', () => {
   it('keeps exit fanout live while durable removal retries', async () => {
     vi.useFakeTimers()
     const exitListeners = new Set<(payload: { id: string; code: number }) => void>()
-    const shutdown = vi.fn().mockResolvedValue(undefined)
+    const shutdown = vi.fn(async () => {
+      for (const listener of exitListeners) {
+        listener({ id: 'local-exit', code: 0 })
+      }
+    })
     const remove = vi
       .fn()
       .mockImplementationOnce(() => {
@@ -3641,16 +3645,14 @@ describe('registerPtyHandlers', () => {
       removePendingLocalPtyShutdown: remove
     } as never)
 
-    await expect(handlers.get('pty:kill')!(null, { id: 'local-exit' })).resolves.toBeUndefined()
-    expect(() => {
-      for (const listener of exitListeners) {
-        listener({ id: 'local-exit', code: 0 })
-      }
-    }).not.toThrow()
+    await expect(handlers.get('pty:kill')!(null, { id: 'local-exit' })).rejects.toThrow(
+      'exit intent removal disk full'
+    )
 
     expect(runtime.onPtyExit).toHaveBeenCalledWith('local-exit', 0)
+    // The synchronous exit callback owns settlement while shutdown is in flight.
     expect(remove).toHaveBeenCalledOnce()
-    await vi.advanceTimersByTimeAsync(500)
+    await vi.advanceTimersByTimeAsync(250)
     expect(shutdown).toHaveBeenCalledOnce()
     expect(remove).toHaveBeenCalledTimes(2)
   })
