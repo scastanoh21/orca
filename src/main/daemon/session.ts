@@ -187,6 +187,19 @@ export class Session {
     return this._isTerminating
   }
 
+  /** Claims termination synchronously so attach/re-entry cannot race async
+   * teardown preparation. Returns false when another owner already claimed it. */
+  beginTermination(): boolean {
+    if (this._state === 'exited' || this._isTerminating) {
+      return false
+    }
+    this._isTerminating = true
+    // Why: a paused child can be blocked inside write(); resume before any
+    // async snapshot so it can handle termination promptly.
+    this.releaseProducerPause({ resume: true })
+    return true
+  }
+
   get pid(): number {
     return this.subprocess.pid
   }
@@ -260,14 +273,9 @@ export class Session {
   }
 
   kill(): void {
-    if (this._state === 'exited' || this._isTerminating) {
+    if (!this.beginTermination()) {
       return
     }
-    this._isTerminating = true
-
-    // Why: a paused child can be blocked inside write(); resume before
-    // signalling so it can run signal handlers and actually exit.
-    this.releaseProducerPause({ resume: true })
     if (!this.launchAgent) {
       this.subprocess.kill()
     } else {
@@ -275,7 +283,7 @@ export class Session {
       // shell's SIGHUP never reaches. The bounded snapshot briefly defers the
       // signal; the kill timer below starts now, so force-dispose timing is
       // unaffected.
-      killWithDescendantSweep(this.subprocess.pid, () => {
+      void killWithDescendantSweep(this.subprocess.pid, () => {
         if (this._state !== 'exited') {
           this.subprocess.kill()
         }
@@ -502,6 +510,7 @@ export class Session {
     }
     this.#teardownSubprocess()
     this._state = 'exited'
+    this._isTerminating = false
     // Why: free the headless emulator's scrollback here too (this path skips
     // dispose()). Matches forceDispose(); reaping just drops the map entry.
     this.emulator.dispose()

@@ -77,6 +77,9 @@ const ptyProcesses = new Map<string, pty.IPty>()
 // reach; plain user terminals keep classic semantics where deliberately
 // detached (nohup-style) children survive the pane.
 const ptyAgentSessionIds = new Set<string>()
+// Why: descendant capture is async. Reattach and duplicate shutdown must wait
+// for the original owner instead of returning a PTY that is about to die.
+const ptyShutdownPromises = new Map<string, Promise<void>>()
 const ptyShellName = new Map<string, string>()
 const ptyAgentForegroundContextPaths = new Map<string, string[]>()
 const ptyTerminalHandle = new Map<string, string>()
@@ -344,6 +347,10 @@ export class LocalPtyProvider implements IPtyProvider {
   async spawn(args: PtySpawnOptions): Promise<PtySpawnResult> {
     const reattachId = normalizeLocalCallerSessionId(args.sessionId)
     if (reattachId) {
+      const pendingShutdown = ptyShutdownPromises.get(reattachId)
+      if (pendingShutdown) {
+        await pendingShutdown
+      }
       const existing = ptyProcesses.get(reattachId)
       if (existing) {
         try {
@@ -903,19 +910,43 @@ export class LocalPtyProvider implements IPtyProvider {
   }
 
   async shutdown(id: string, _opts: { immediate?: boolean; keepHistory?: boolean }): Promise<void> {
+    const pending = ptyShutdownPromises.get(id)
+    if (pending) {
+      await pending
+      return
+    }
     const proc = ptyProcesses.get(id)
     if (!proc) {
       return
     }
+    const operation = this.shutdownTrackedPty(id, proc)
+    ptyShutdownPromises.set(id, operation)
+    try {
+      await operation
+    } finally {
+      if (ptyShutdownPromises.get(id) === operation) {
+        ptyShutdownPromises.delete(id)
+      }
+    }
+  }
+
+  private async shutdownTrackedPty(id: string, proc: pty.IPty): Promise<void> {
     // Why: the snapshot must precede any signal/destroy — once the shell dies,
     // surviving descendants reparent to pid 1 and a ppid walk can't find them.
     const descendants = ptyAgentSessionIds.has(id)
       ? await captureDescendantSnapshot(proc.pid)
       : null
+    let descendantsSignalled = false
     // Why the handle re-check: the snapshot is this method's only await, and a
     // natural exit (or same-id respawn) may have raced it. That path already
     // ran clearPtyState and notified exit — only the descendant sweep remains.
     if (ptyProcesses.get(id) === proc) {
+      if (descendants) {
+        // Signal captured children before killing the root so parent links do
+        // not disappear during the sweep.
+        terminateDescendantSnapshot(descendants)
+        descendantsSignalled = true
+      }
       // Why: disposePtyListeners removes the onExit callback, so the natural
       // exit cleanup path from node-pty won't fire. Cleanup and notification
       // must happen unconditionally after the try/catch.
@@ -935,7 +966,9 @@ export class LocalPtyProvider implements IPtyProvider {
         cb({ id, code: -1 })
       }
     }
-    if (descendants) {
+    if (descendants && !descendantsSignalled) {
+      // Natural exit may have won while the snapshot was in flight. The
+      // captured descendants still belong to that retired process identity.
       terminateDescendantSnapshot(descendants)
     }
   }

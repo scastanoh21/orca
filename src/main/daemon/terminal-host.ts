@@ -62,11 +62,13 @@ export class TerminalHost {
   async createOrAttach(opts: CreateOrAttachOptions): Promise<CreateOrAttachResult> {
     const existing = this.sessions.get(opts.sessionId)
 
-    // Why: a session that has been asked to terminate (kill() called but the
-    // subprocess hasn't exited yet) must not be reattached. Reattaching would
-    // hand the caller a handle that races with the in-flight exit, and any
-    // subsequent operation (write/kill/resize) would fail once the subprocess
-    // finally exits. Treat terminating sessions the same as fully-exited ones.
+    // Why: async descendant capture must finish before anyone can attach or
+    // dispose/recreate this id. Disposing here would kill the root before the
+    // snapshot and reattaching would hand out a doomed session.
+    if (existing?.isTerminating) {
+      throw new SessionNotFoundError(opts.sessionId)
+    }
+
     if (existing && existing.isAlive && !existing.isTerminating) {
       const snapshot = existing.getSnapshot()
       existing.detachAllClients()
@@ -194,7 +196,7 @@ export class TerminalHost {
     this.sessions.get(sessionId)?.resumeProducer()
   }
 
-  kill(sessionId: string, opts: { immediate?: boolean } = {}): void {
+  kill(sessionId: string, opts: { immediate?: boolean } = {}): void | Promise<void> {
     const session = this.getAliveSession(sessionId)
     this.recordTombstone(sessionId)
     if (opts.immediate) {
@@ -209,10 +211,12 @@ export class TerminalHost {
         finish()
         return
       }
+      if (!session.beginTermination()) {
+        return
+      }
       // Why: agent tool children live in detached process groups the shell's
       // death never signals; the bounded snapshot defers teardown at most ~1s.
-      killWithDescendantSweep(session.pid, finish)
-      return
+      return killWithDescendantSweep(session.pid, finish)
     }
     session.kill()
   }

@@ -436,6 +436,59 @@ describe('TerminalHost', () => {
       expect(lastSubprocess.forceKill).toHaveBeenCalled()
       expect(lastSubprocess.dispose).toHaveBeenCalled()
     })
+
+    it('rejects reattach while an agent immediate-kill snapshot is pending', async () => {
+      let finishSweep!: () => void
+      killWithDescendantSweepMock.mockImplementation(
+        (_pid: number, finish: () => void) =>
+          new Promise<void>((resolve) => {
+            finishSweep = () => {
+              finish()
+              resolve()
+            }
+          })
+      )
+      await host.createOrAttach({
+        sessionId: 'agent-reattach',
+        cols: 80,
+        rows: 24,
+        launchAgent: 'claude',
+        streamClient: { onData: vi.fn(), onExit: vi.fn() }
+      })
+
+      const killing = host.kill('agent-reattach', { immediate: true })
+      await expect(
+        host.createOrAttach({
+          sessionId: 'agent-reattach',
+          cols: 80,
+          rows: 24,
+          launchAgent: 'claude',
+          streamClient: { onData: vi.fn(), onExit: vi.fn() }
+        })
+      ).rejects.toThrow('Session not found')
+      expect(lastSubprocess.forceKill).not.toHaveBeenCalled()
+
+      finishSweep()
+      await killing
+      expect(lastSubprocess.forceKill).toHaveBeenCalledOnce()
+    })
+
+    it('coalesces duplicate immediate kill while descendant capture is pending', async () => {
+      killWithDescendantSweepMock.mockReturnValue(new Promise<void>(() => {}))
+      await host.createOrAttach({
+        sessionId: 'agent-duplicate-kill',
+        cols: 80,
+        rows: 24,
+        launchAgent: 'claude',
+        streamClient: { onData: vi.fn(), onExit: vi.fn() }
+      })
+
+      host.kill('agent-duplicate-kill', { immediate: true })
+      host.kill('agent-duplicate-kill', { immediate: true })
+
+      expect(killWithDescendantSweepMock).toHaveBeenCalledOnce()
+      expect(lastSubprocess.forceKill).not.toHaveBeenCalled()
+    })
   })
 
   describe('signal', () => {
