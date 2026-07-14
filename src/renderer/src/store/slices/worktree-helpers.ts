@@ -21,6 +21,7 @@ import type {
   WorkspaceKey
 } from '../../../../shared/types'
 import type { WorktreeForceDeleteReason } from '../../../../shared/worktree-removal'
+import type { ExecutionHostId } from '../../../../shared/execution-host'
 import type { TerminalGitHubPRLink } from '../../../../shared/terminal-github-pr-link-detector'
 import type {
   PendingWorktreeCreation,
@@ -156,7 +157,10 @@ export type WorktreeSlice = {
     compareBaseRef?: string,
     // Why: reserved for automation-dispatch flows so host-side provenance can
     // be minted securely; regular create callers should omit this.
-    options?: { automationProvenanceRequest?: CreateWorktreeArgs['automationProvenanceRequest'] }
+    options?: {
+      automationProvenanceRequest?: CreateWorktreeArgs['automationProvenanceRequest']
+      hostId?: ExecutionHostId
+    }
   ) => Promise<CreateWorktreeResult>
   /** Register an in-flight background creation and make it the active surface. */
   beginPendingWorktreeCreation: (entry: PendingWorktreeCreation) => void
@@ -243,6 +247,14 @@ export type WorktreeSlice = {
    */
   seedActiveWorktreeLastVisitedIfMissing: () => void
   setActiveWorktree: (worktreeId: string | null) => void
+  /**
+   * Health-driven remount of one terminal tab: bumps the tab's generation so
+   * TerminalPane unmounts, detaches (preserving a live PTY), and remounts with
+   * a fresh xterm that reattaches and replays. Used by terminal-pane-recovery
+   * when a pane's write pipeline is certified dead or its input is
+   * undeliverable while the PTY is alive. Returns false when the tab is gone.
+   */
+  remountTerminalTabForRecovery: (tabId: string) => boolean
   setActiveFolderWorkspace: (folderWorkspaceId: string) => void
   setRenamingWorktreeId: (request: string | WorktreeRenameRequest | null) => void
   allWorktrees: () => Worktree[]

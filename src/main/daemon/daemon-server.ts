@@ -36,6 +36,7 @@ export type DaemonServerOptions = {
   tokenPath: string
   ptySpawnHealthCheck?: () => Promise<void>
   log?: DaemonFileLog
+  requestProcessExit?: (exitCode: number) => void
   spawnSubprocess: (opts: {
     sessionId: string
     cols: number
@@ -53,6 +54,12 @@ type ConnectedClient = {
   streamSocket: Socket | null
 }
 
+type SessionStreamRoute = {
+  clientId: string
+  active: boolean
+  previous?: SessionStreamRoute
+}
+
 export class DaemonServer {
   private server: Server | null = null
   private token: string
@@ -61,6 +68,7 @@ export class DaemonServer {
   private tokenPath: string
   private ptySpawnHealthCheck: () => Promise<void>
   private log: DaemonFileLog
+  private requestProcessExit: DaemonServerOptions['requestProcessExit']
 
   private clients = new Map<string, ConnectedClient>()
   private streamDataBatcher = new DaemonStreamDataBatcher(
@@ -84,9 +92,9 @@ export class DaemonServer {
   // them (a fact jumping the queue could arrive after the reveal snapshot
   // that already reflects it).
   private transientFactRelay = new BackgroundTransientFactRelay((sessionId, fact) => {
-    const clientId = this.streamClientIdBySessionId.get(sessionId)
-    if (clientId) {
-      this.streamDataBatcher.enqueueControlEvent(clientId, sessionId, {
+    const route = this.streamRouteBySessionId.get(sessionId)
+    if (route) {
+      this.streamDataBatcher.enqueueControlEvent(route.clientId, sessionId, {
         type: 'event',
         event: 'transientFact',
         sessionId,
@@ -94,7 +102,7 @@ export class DaemonServer {
       })
     }
   })
-  private streamClientIdBySessionId = new Map<string, string>()
+  private streamRouteBySessionId = new Map<string, SessionStreamRoute>()
   private lastInputAtBySessionId = new Map<string, number>()
   private stopStreamBacklogProbe: () => void = () => {}
 
@@ -120,6 +128,7 @@ export class DaemonServer {
       backgroundedSessionIdSuffixes: this.transientFactRelay.backgroundedSessionIdSuffixes()
     }))
     this.log = opts.log ?? createNoopDaemonFileLog()
+    this.requestProcessExit = opts.requestProcessExit
   }
 
   async start(): Promise<void> {
@@ -149,7 +158,14 @@ export class DaemonServer {
   async shutdown(): Promise<void> {
     this.stopStreamBacklogProbe()
     this.transientFactRelay.dispose()
-    this.host.dispose()
+    // Why: process exit must not erase a still-live PTY after native kill
+    // failure or acceptance. Preserve listeners while the bounded drain retries.
+    let drainError: unknown = null
+    try {
+      await this.host.shutdownAndWait(4_000)
+    } catch (error) {
+      drainError = error
+    }
     this.streamDataBatcher.clear()
 
     for (const [, client] of this.clients) {
@@ -158,7 +174,7 @@ export class DaemonServer {
     }
     this.clients.clear()
 
-    return new Promise<void>((resolve) => {
+    await new Promise<void>((resolve) => {
       if (this.server) {
         this.server.close(() => {
           try {
@@ -171,6 +187,9 @@ export class DaemonServer {
         resolve()
       }
     })
+    if (drainError) {
+      throw drainError
+    }
   }
 
   private handleConnection(socket: Socket): void {
@@ -333,7 +352,16 @@ export class DaemonServer {
     switch (request.type) {
       case 'createOrAttach': {
         const p = request.payload
-        const result = await this.host.createOrAttach({
+        const previousStreamRoute = this.streamRouteBySessionId.get(p.sessionId)
+        const streamRoute: SessionStreamRoute = {
+          clientId,
+          active: true,
+          ...(previousStreamRoute ? { previous: previousStreamRoute } : {})
+        }
+        // Why before host subscription: node-pty may flush data and exit
+        // synchronously, so routing ownership must exist before callbacks run.
+        this.streamRouteBySessionId.set(p.sessionId, streamRoute)
+        const pendingResult = this.host.createOrAttach({
           sessionId: p.sessionId,
           cols: p.cols,
           rows: p.rows,
@@ -345,6 +373,8 @@ export class DaemonServer {
           // Why: daemon RPC payloads are untrusted JSON. Persist only the
           // allowlisted enum used for byte routing, never arbitrary identity.
           ...(isTuiAgent(p.launchAgent) ? { launchAgent: p.launchAgent } : {}),
+          ...(typeof p.paneKey === 'string' ? { paneKey: p.paneKey } : {}),
+          ...(typeof p.tabId === 'string' ? { tabId: p.tabId } : {}),
           shellOverride: p.shellOverride,
           terminalWindowsWslDistro: p.terminalWindowsWslDistro,
           terminalWindowsPowerShellImplementation: p.terminalWindowsPowerShellImplementation,
@@ -368,7 +398,7 @@ export class DaemonServer {
                 flushMaxChars: DaemonServer.INTERACTIVE_OUTPUT_MAX_CHARS
               })
             },
-            onExit: (code) => {
+            onExit: (code, sessionGeneration) => {
               // Why: exit tears down renderer handlers, so it must ride the
               // ordered queue behind final output even when the shallow socket
               // gate holds that output for a later drain pass.
@@ -377,19 +407,36 @@ export class DaemonServer {
                 type: 'event',
                 event: 'exit',
                 sessionId: p.sessionId,
-                payload: { code }
+                payload: { code, sessionGeneration }
               })
               this.streamDataBatcher.flush(clientId)
               recordDaemonStreamBacklogEvent('sessionExit', {
                 sessionIdSuffix: p.sessionId.slice(-10)
               })
               this.transientFactRelay.onSessionExit(p.sessionId)
-              this.streamClientIdBySessionId.delete(p.sessionId)
+              streamRoute.active = false
+              if (this.streamRouteBySessionId.get(p.sessionId) === streamRoute) {
+                this.streamRouteBySessionId.delete(p.sessionId)
+              }
               this.lastInputAtBySessionId.delete(p.sessionId)
             }
           }
         })
-        this.streamClientIdBySessionId.set(p.sessionId, clientId)
+        const result = await pendingResult.catch((error: unknown) => {
+          streamRoute.active = false
+          // Why identity-fenced rollback: a failed older attach must not
+          // erase a newer concurrent route for the reused session id.
+          if (this.streamRouteBySessionId.get(p.sessionId) === streamRoute) {
+            const activePredecessor = this.findActiveStreamRoute(streamRoute.previous)
+            if (activePredecessor) {
+              this.streamRouteBySessionId.set(p.sessionId, activePredecessor)
+            } else {
+              this.streamRouteBySessionId.delete(p.sessionId)
+            }
+          }
+          throw error
+        })
+        this.retireStreamRoutePredecessors(streamRoute)
         // Why an attach-time marker: the adapter resyncs the background set on
         // a fresh connection, which can precede this attach — main's scan
         // suppression must still start at the head of the new stream.
@@ -411,7 +458,8 @@ export class DaemonServer {
           pid: result.pid,
           shellState: result.shellState,
           ...(result.launchAgent ? { launchAgent: result.launchAgent } : {}),
-          ...(result.historySeeded !== undefined ? { historySeeded: result.historySeeded } : {})
+          ...(result.historySeeded !== undefined ? { historySeeded: result.historySeeded } : {}),
+          sessionGeneration: result.sessionGeneration
         }
       }
 
@@ -469,8 +517,8 @@ export class DaemonServer {
             this.host.getPartialEscapeTailAnsi(sessionId)
           )
         }
-        const streamClientId = this.streamClientIdBySessionId.get(sessionId)
-        if (!streamClientId) {
+        const streamRoute = this.streamRouteBySessionId.get(sessionId)
+        if (!streamRoute) {
           // Not attached yet — the attach-time marker covers the handoff.
           return {}
         }
@@ -480,7 +528,7 @@ export class DaemonServer {
         // and the normal flush/drain loop delivers them within milliseconds
         // (bounded ≤ the keep-tail drop cap), in order, ahead of the marker.
         const scanSeedAnsi = background ? '' : this.host.getPartialEscapeTailAnsi(sessionId)
-        this.streamDataBatcher.enqueueControlEvent(streamClientId, sessionId, {
+        this.streamDataBatcher.enqueueControlEvent(streamRoute.clientId, sessionId, {
           type: 'event',
           event: 'sessionBackgroundMarker',
           sessionId,
@@ -498,7 +546,11 @@ export class DaemonServer {
           sessionId: request.payload.sessionId,
           immediate: request.payload.immediate === true
         })
-        this.host.kill(request.payload.sessionId, { immediate: request.payload.immediate })
+        this.host.kill(request.payload.sessionId, {
+          immediate: request.payload.immediate,
+          expectedPaneKey: request.payload.expectedPaneKey,
+          expectedTabId: request.payload.expectedTabId
+        })
         return {}
 
       case 'signal':
@@ -551,7 +603,7 @@ export class DaemonServer {
       }
 
       case 'getSize':
-        return { size: this.host.getAppliedSize(request.payload.sessionId) }
+        return this.host.getAppliedSizeWithGeneration(request.payload.sessionId) ?? { size: null }
 
       case 'takePendingOutput':
         // Why no await before this call: with includeSnapshot, drain and
@@ -579,13 +631,50 @@ export class DaemonServer {
           reason: 'rpc',
           killSessions: request.payload.killSessions === true
         })
-        if (request.payload.killSessions) {
-          this.host.dispose()
-        }
-        process.nextTick(() => this.shutdown())
+        // shutdownForRpc owns the exit-proof drain and contains failures before
+        // explicitly terminating the detached daemon process.
+        process.nextTick(() => void this.shutdownForRpc())
         return {}
     }
     throw new Error(`Unknown request type: ${(request as { type: string }).type}`)
+  }
+
+  private async shutdownForRpc(): Promise<void> {
+    let exitCode = 0
+    try {
+      await this.shutdown()
+    } catch (error) {
+      exitCode = 1
+      this.log.log('shutdown-error', {
+        reason: 'rpc',
+        message: error instanceof Error ? error.message : String(error)
+      })
+    } finally {
+      // Why: a failed native kill keeps PTY handles alive; explicit process
+      // exit prevents an untracked old daemon from surviving after socket removal.
+      this.requestProcessExit?.(exitCode)
+    }
+  }
+
+  private findActiveStreamRoute(
+    route: SessionStreamRoute | undefined
+  ): SessionStreamRoute | undefined {
+    let candidate = route
+    while (candidate && !candidate.active) {
+      candidate = candidate.previous
+    }
+    return candidate
+  }
+
+  private retireStreamRoutePredecessors(route: SessionStreamRoute): void {
+    let predecessor = route.previous
+    route.previous = undefined
+    while (predecessor) {
+      predecessor.active = false
+      const next = predecessor.previous
+      predecessor.previous = undefined
+      predecessor = next
+    }
   }
 
   private sendExitEvent(

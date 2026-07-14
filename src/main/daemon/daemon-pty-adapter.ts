@@ -5,6 +5,11 @@ import { basename } from 'node:path'
 import { existsSync } from 'node:fs'
 import { DaemonClient } from './client'
 import { getMacDaemonSystemResolverHealth } from './daemon-health'
+import {
+  DaemonSessionExitFence,
+  type DaemonSessionAdmission,
+  type PendingDaemonExit
+} from './daemon-session-exit-fence'
 import { HistoryManager } from './history-manager'
 import { HistoryReader, type ColdRestoreInfo } from './history-reader'
 import { mintPtySessionId, parsePtySessionId } from './pty-session-id'
@@ -24,19 +29,31 @@ import type {
   PtyBackgroundStreamEvent,
   PtyProviderBufferSnapshot,
   PtyProcessInfo,
+  PtyShutdownOptions,
   PtySpawnOptions,
   PtySpawnResult
 } from '../providers/types'
 import { isShellProcess } from '../../shared/agent-detection'
 import { recognizeAgentProcessFromCommandLine } from '../../shared/agent-process-recognition'
 import { shouldUseShellReadyStartupDelivery } from '../../shared/codex-startup-delivery'
+import { DAEMON_PTY_EXITED_DURING_ADMISSION } from '../../shared/constants'
 import type { TerminalOscLinkRange } from '../../shared/terminal-osc-link-ranges'
+import {
+  assertPtyPaneIdentity,
+  getPtyPaneIdentityFromEnv,
+  type PtyPaneIdentity
+} from '../pty/pty-shutdown-identity'
 
 type ColdRestorePayload = {
   scrollback: string
   cwd: string
   oscLinks?: TerminalOscLinkRange[]
 }
+
+type AppliedSizeReadback =
+  | { status: 'alive'; size: { cols: number; rows: number }; sessionGeneration?: string }
+  | { status: 'absent' }
+  | { status: 'unknown' }
 
 function getRecoveredHistorySeed(restoreInfo: ColdRestoreInfo): string | null {
   // Why: alt-screen snapshots represent the TUI buffer; prefer its normal
@@ -69,6 +86,7 @@ export class TerminalKilledError extends Error {
 }
 
 export class DaemonPtyAdapter implements IPtyProvider {
+  readonly requiresShutdownExitProof = true
   readonly protocolVersion: number
   private socketPath: string
   private tokenPath: string
@@ -102,6 +120,7 @@ export class DaemonPtyAdapter implements IPtyProvider {
   private coldRestoreCache = new Map<string, ColdRestorePayload>()
   private sleepRestoreSessionIds = new Set<string>()
   private activeSessionIds = new Set<string>()
+  private paneIdentityBySessionId = new Map<string, PtyPaneIdentity>()
   private dirtySessionVersions = new Map<string, number>()
   // Why: a cold-restored session is a fresh shell whose on-disk checkpoint and
   // log belong to the pre-crash session. Incremental appends would land on
@@ -130,6 +149,8 @@ export class DaemonPtyAdapter implements IPtyProvider {
   // resume died with the connection. Owe those sessions a resume on the next
   // connect; the daemon's 5s failsafe covers the window in between.
   private producerResumesOwedOnReconnect = new Set<string>()
+  private exitFence = new DaemonSessionExitFence()
+  private sessionAdmissionTails = new Map<string, Promise<void>>()
   private static CHECKPOINT_INTERVAL_MS = 5_000
   // Why: a streaming session (build logs, `yes`) re-triggers a full multi-MB
   // snapshot checkpoint on every 5s tick via pending-buffer overflow or the
@@ -168,20 +189,49 @@ export class DaemonPtyAdapter implements IPtyProvider {
     return this.historyManager
   }
 
-  async spawn(opts: PtySpawnOptions): Promise<PtySpawnResult> {
-    return this.withDaemonRetry(() => this.doSpawn(opts))
+  private rememberSessionIdentity(session: SessionInfo): void {
+    if (session.paneKey || session.tabId) {
+      this.paneIdentityBySessionId.set(session.sessionId, {
+        paneKey: session.paneKey ?? null,
+        tabId: session.tabId ?? null
+      })
+    }
   }
 
-  private async doSpawn(opts: PtySpawnOptions): Promise<PtySpawnResult> {
+  async spawn(opts: PtySpawnOptions): Promise<PtySpawnResult> {
     const sessionId = opts.sessionId ?? mintPtySessionId(opts.worktreeId)
+    return this.withSerializedSessionAdmission(sessionId, () =>
+      this.spawnAfterAdmissionQueue(opts, sessionId)
+    )
+  }
 
-    if (this.killedSessionTombstones.has(sessionId)) {
-      throw new TerminalKilledError(sessionId)
-    }
-
+  private async spawnAfterAdmissionQueue(
+    opts: PtySpawnOptions,
+    sessionId: string
+  ): Promise<PtySpawnResult> {
+    this.assertSpawnAllowed(sessionId, opts)
     if (opts.isNewSession) {
       await this.replaceUnhealthyMacResolverDaemonBeforeNewPty()
     }
+    const admission = this.exitFence.beginAdmission(sessionId)
+    let result: PtySpawnResult
+    try {
+      result = await this.withDaemonRetry(() => this.doSpawn({ ...opts, sessionId }, admission))
+    } catch (error) {
+      await this.finishAdmission(sessionId, admission, false)
+      throw error
+    }
+    await this.finishAdmission(sessionId, admission, true)
+    return result
+  }
+
+  private async doSpawn(
+    opts: PtySpawnOptions,
+    admission: DaemonSessionAdmission
+  ): Promise<PtySpawnResult> {
+    const sessionId = opts.sessionId!
+    const requestedIdentity = getPtyPaneIdentityFromEnv(opts.env)
+    this.assertSpawnAllowed(sessionId, opts)
 
     await this.ensureConnected()
     // Why before createOrAttach: a preserved v19 daemon may remember this
@@ -238,6 +288,8 @@ export class DaemonPtyAdapter implements IPtyProvider {
         command: opts.command,
         startupCommandDelivery: opts.startupCommandDelivery,
         launchAgent: opts.launchAgent,
+        ...(requestedIdentity.paneKey ? { paneKey: requestedIdentity.paneKey } : {}),
+        ...(requestedIdentity.tabId ? { tabId: requestedIdentity.tabId } : {}),
         // Why: without this, the daemon always spawns cmd.exe (COMSPEC) or
         // PowerShell as a fallback — regardless of which shell the renderer
         // asked for in the "+" menu or persisted as the default. Forwarding
@@ -251,8 +303,15 @@ export class DaemonPtyAdapter implements IPtyProvider {
         ...(historySeed ? { historySeed } : {})
       })
 
+    if (!admission.isCurrent()) {
+      throw new Error(`Daemon PTY admission superseded for "${sessionId}"`)
+    }
     let scrollback = restoreInfo ? getRecoveredHistorySeed(restoreInfo) : null
     let result = await createOrAttach(scrollback)
+    if (!this.exitFence.rememberGeneration(sessionId, result.sessionGeneration, admission)) {
+      throw new Error(`Daemon PTY admission superseded for "${sessionId}"`)
+    }
+    this.paneIdentityBySessionId.set(sessionId, requestedIdentity)
     const launchIdentity = (): { launchAgent?: NonNullable<typeof result.launchAgent> } =>
       result.launchAgent ? { launchAgent: result.launchAgent } : {}
 
@@ -307,6 +366,9 @@ export class DaemonPtyAdapter implements IPtyProvider {
         effectiveCols = restoreInfo.cols
         effectiveRows = restoreInfo.rows
         result = await createOrAttach(scrollback)
+        if (!this.exitFence.rememberGeneration(sessionId, result.sessionGeneration, admission)) {
+          throw new Error(`Daemon PTY admission superseded for "${sessionId}"`)
+        }
         pid = typeof result.pid === 'number' && result.pid > 0 ? result.pid : null
         this.initialCwds.set(sessionId, effectiveCwd)
       }
@@ -424,17 +486,52 @@ export class DaemonPtyAdapter implements IPtyProvider {
     }
   }
 
-  async attach(id: string): Promise<void> {
-    await this.ensureConnected()
-    if (!this.supportsAuthoritativeBufferSnapshots) {
-      this.setPtyBackgrounded(id, false)
+  private assertSpawnAllowed(sessionId: string, opts: PtySpawnOptions): void {
+    if (this.killedSessionTombstones.has(sessionId)) {
+      throw new TerminalKilledError(sessionId)
     }
+    if (this.protocolVersion >= 22 || !this.activeSessionIds.has(sessionId)) {
+      return
+    }
+    const requestedIdentity = getPtyPaneIdentityFromEnv(opts.env)
+    const knownIdentity = this.paneIdentityBySessionId.get(sessionId)
+    if (knownIdentity) {
+      assertPtyPaneIdentity(sessionId, knownIdentity, {
+        expectedPaneKey: requestedIdentity.paneKey ?? undefined,
+        expectedTabId: requestedIdentity.tabId ?? undefined
+      })
+    } else if (requestedIdentity.paneKey || requestedIdentity.tabId) {
+      // Why: preserved legacy daemons cannot report identity, so attaching a
+      // new pane by a reused ID could later authorize killing the old pane.
+      throw new Error(`Legacy PTY identity unavailable for "${sessionId}"`)
+    }
+  }
 
-    await this.client.request<CreateOrAttachResult>('createOrAttach', {
-      sessionId: id,
-      cols: 80,
-      rows: 24
-    })
+  async attach(id: string): Promise<void> {
+    return this.withSerializedSessionAdmission(id, () => this.attachAfterAdmissionQueue(id))
+  }
+
+  private async attachAfterAdmissionQueue(id: string): Promise<void> {
+    const admission = this.exitFence.beginAdmission(id)
+    try {
+      await this.ensureConnected()
+      if (!this.supportsAuthoritativeBufferSnapshots) {
+        this.setPtyBackgrounded(id, false)
+      }
+
+      const result = await this.client.request<CreateOrAttachResult>('createOrAttach', {
+        sessionId: id,
+        cols: 80,
+        rows: 24
+      })
+      if (!this.exitFence.rememberGeneration(id, result.sessionGeneration, admission)) {
+        throw new Error(`Daemon PTY admission superseded for "${id}"`)
+      }
+    } catch (error) {
+      await this.finishAdmission(id, admission, false)
+      throw error
+    }
+    await this.finishAdmission(id, admission, true)
   }
 
   hasPty(id: string): boolean {
@@ -485,7 +582,19 @@ export class DaemonPtyAdapter implements IPtyProvider {
     this.client.notify('setSessionBackground', { sessionId: id, background: safeBackground })
   }
 
-  async shutdown(id: string, opts: { immediate?: boolean; keepHistory?: boolean }): Promise<void> {
+  async shutdown(id: string, opts: PtyShutdownOptions): Promise<void> {
+    if (
+      this.protocolVersion < 22 &&
+      (opts.expectedPaneKey !== undefined || opts.expectedTabId !== undefined)
+    ) {
+      // Why: preserved pre-v22 daemons ignore kill identity fields. Fail
+      // closed unless this main process observed the exact attached pane.
+      const knownIdentity = this.paneIdentityBySessionId.get(id)
+      if (!knownIdentity) {
+        throw new Error(`Legacy PTY identity unavailable for "${id}"`)
+      }
+      assertPtyPaneIdentity(id, knownIdentity, opts)
+    }
     // Why: sleep/exact-stop kills the live PTY before the periodic checkpoint may run.
     // Force a final snapshot so wake can restore the pane users left.
     if (opts.keepHistory) {
@@ -500,21 +609,18 @@ export class DaemonPtyAdapter implements IPtyProvider {
         this.sleepRestoreSessionIds.add(id)
       }
     }
-    await this.client.request('kill', { sessionId: id, immediate: opts.immediate ?? false })
-    this.activeSessionIds.delete(id)
-    this.dirtySessionVersions.delete(id)
+    await this.client.request('kill', {
+      sessionId: id,
+      immediate: opts.immediate ?? false,
+      expectedPaneKey: opts.expectedPaneKey,
+      expectedTabId: opts.expectedTabId
+    })
+    // Why: RPC success is only kill acceptance. Exit events or listProcesses
+    // readback own cache cleanup so retries cannot lose a still-live session.
     if (!opts.keepHistory) {
       this.coldRestoreCache.delete(id)
       this.sleepRestoreSessionIds.delete(id)
     }
-    // Why: the !keepHistory close path doesn't take a final checkpoint, so a
-    // session stranded in sessionsNeedingFullCheckpoint would never be cleared.
-    // (Under keepHistory the final checkpoint above already cleared the flag, so
-    // this is a harmless no-op there — kept unconditional to cover both paths.)
-    this.sessionsNeedingFullCheckpoint.delete(id)
-    this.lastFullCheckpointAt.delete(id)
-    this.stopCheckpointTimerIfIdle()
-    this.initialCwds.delete(id)
     // Why: history removal is for the "user explicitly closed this terminal"
     // path. Sleep also calls shutdown but expects scrollback to survive — wake
     // re-spawns and the cold-restore reader needs the dir intact. Caller
@@ -592,14 +698,25 @@ export class DaemonPtyAdapter implements IPtyProvider {
   // and re-assert. Null (RPC failure / unknown session) means "cannot confirm",
   // which the renderer treats as a cue to re-forward once.
   async getAppliedSize(id: string): Promise<{ cols: number; rows: number } | null> {
+    const readback = await this.readAppliedSize(id)
+    return readback.status === 'alive' ? readback.size : null
+  }
+
+  private async readAppliedSize(id: string): Promise<AppliedSizeReadback> {
     try {
-      const result = await this.client.request<{ size: { cols: number; rows: number } | null }>(
-        'getSize',
-        { sessionId: id }
-      )
-      return result.size ?? null
+      const result = await this.client.request<{
+        size: { cols: number; rows: number } | null
+        sessionGeneration?: string
+      }>('getSize', { sessionId: id })
+      return result.size
+        ? {
+            status: 'alive',
+            size: result.size,
+            ...(result.sessionGeneration ? { sessionGeneration: result.sessionGeneration } : {})
+          }
+        : { status: 'absent' }
     } catch {
-      return null
+      return { status: 'unknown' }
     }
   }
 
@@ -714,6 +831,7 @@ export class DaemonPtyAdapter implements IPtyProvider {
     const killed: string[] = []
 
     for (const session of result.sessions) {
+      this.rememberSessionIdentity(session)
       if (!session.isAlive) {
         continue
       }
@@ -744,8 +862,43 @@ export class DaemonPtyAdapter implements IPtyProvider {
   }
 
   async listProcesses(): Promise<PtyProcessInfo[]> {
+    const activeSnapshots = new Map(
+      [...this.activeSessionIds].map((id) => [id, this.exitFence.snapshot(id)])
+    )
+    const pendingSnapshots = new Map(
+      this.exitFence.pendingEntries().map(([id]) => [id, this.exitFence.snapshot(id)])
+    )
     await this.ensureConnected()
     const result = await this.client.request<ListSessionsResult>('listSessions', undefined)
+    for (const session of result.sessions) {
+      this.rememberSessionIdentity(session)
+      if (session.isAlive) {
+        this.exitFence.rememberGeneration(session.sessionId, session.sessionGeneration)
+        // Why: router startup discovers preserved legacy sessions through this
+        // method; spawn must know the ID is already live before createOrAttach.
+        this.activeSessionIds.add(session.sessionId)
+      } else {
+        this.activeSessionIds.delete(session.sessionId)
+      }
+    }
+    const liveIds = new Set(
+      result.sessions.filter((session) => session.isAlive).map((session) => session.sessionId)
+    )
+    for (const [id, snapshot] of activeSnapshots) {
+      if (!liveIds.has(id) && this.exitFence.isStable(id, snapshot)) {
+        this.finalizeExitEvent(id, this.exitFence.getPending(id)?.code ?? -1)
+      }
+    }
+    for (const [id, exit] of this.exitFence.pendingEntries()) {
+      if (liveIds.has(id)) {
+        this.exitFence.clearPending(id)
+      } else if (
+        pendingSnapshots.has(id) &&
+        this.exitFence.isStable(id, pendingSnapshots.get(id))
+      ) {
+        this.finalizeExitEvent(id, exit.code)
+      }
+    }
     return result.sessions
       .filter((s) => s.isAlive)
       .map((s) => ({
@@ -763,6 +916,9 @@ export class DaemonPtyAdapter implements IPtyProvider {
   async listSessions(): Promise<SessionInfo[]> {
     await this.ensureConnected()
     const result = await this.client.request<ListSessionsResult>('listSessions', undefined)
+    for (const session of result.sessions) {
+      this.rememberSessionIdentity(session)
+    }
     return result.sessions.filter((s) => s.isAlive)
   }
 
@@ -785,6 +941,7 @@ export class DaemonPtyAdapter implements IPtyProvider {
     this.sessionsNeedingFullCheckpoint.clear()
     this.pausedProducerSessionIds.clear()
     this.producerResumesOwedOnReconnect.clear()
+    this.exitFence.clear()
     this.stopCheckpointTimer()
     for (const id of ids) {
       this.coldRestoreCache.delete(id)
@@ -860,6 +1017,7 @@ export class DaemonPtyAdapter implements IPtyProvider {
     this.coldRestoreCache.clear()
     this.pausedProducerSessionIds.clear()
     this.producerResumesOwedOnReconnect.clear()
+    this.exitFence.clear()
     this.removeEventListener?.()
     this.removeEventListener = null
     // Why: final checkpoints are written daemon-side in TerminalHost.dispose()
@@ -903,6 +1061,7 @@ export class DaemonPtyAdapter implements IPtyProvider {
     }
     this.pausedProducerSessionIds.clear()
     this.producerResumesOwedOnReconnect.clear()
+    this.exitFence.clear()
     this.removeEventListener?.()
     this.removeEventListener = null
     this.client.disconnect()
@@ -1316,37 +1475,151 @@ export class DaemonPtyAdapter implements IPtyProvider {
           fact: event.payload
         })
       } else if (event.event === 'exit') {
-        this.activeSessionIds.delete(event.sessionId)
-        this.dirtySessionVersions.delete(event.sessionId)
-        // Why: an exited session must not be owed a resume on reconnect — a
-        // reused sessionId would receive a stray resumePty. Same for the
-        // background set: a reused id must start un-thinned.
-        this.pausedProducerSessionIds.delete(event.sessionId)
-        this.producerResumesOwedOnReconnect.delete(event.sessionId)
-        this.backgroundedSessionIds.delete(event.sessionId)
-        if (!this.sleepRestoreSessionIds.has(event.sessionId)) {
-          this.coldRestoreCache.delete(event.sessionId)
-        }
-        // Why: an exited session can never be checkpointed again, so its pending
-        // full-checkpoint flag is dead state. Without this, a cold-restored
-        // session that exits before its first checkpoint leaks a permanent entry.
-        this.sessionsNeedingFullCheckpoint.delete(event.sessionId)
-        // Why: a reused sessionId (renderer respawns a persisted ptyId) must
-        // not inherit the dead session's snapshot cooldown.
-        this.lastFullCheckpointAt.delete(event.sessionId)
-        this.stopCheckpointTimerIfIdle()
-        if (this.historyManager) {
-          void this.historyManager
-            .closeSession(event.sessionId, event.payload.code)
-            .catch((err) => console.warn('[history] closeSession failed:', event.sessionId, err))
-        }
-        this.initialCwds.delete(event.sessionId)
-        // oxlint-disable-next-line unicorn/no-useless-spread -- copy-safe: listeners may unsubscribe during iteration
-        for (const listener of [...this.exitListeners]) {
-          listener({ id: event.sessionId, code: event.payload.code })
-        }
+        void this.handleExitEvent(
+          event.sessionId,
+          event.payload.code,
+          event.payload.sessionGeneration
+        )
       }
     })
+  }
+
+  private async handleExitEvent(
+    sessionId: string,
+    code: number,
+    sessionGeneration?: string
+  ): Promise<void> {
+    if (this.exitFence.isStaleGeneration(sessionId, sessionGeneration)) {
+      return
+    }
+    const exit: PendingDaemonExit = { code, ...(sessionGeneration ? { sessionGeneration } : {}) }
+    if (this.exitFence.isAdmissionActive(sessionId)) {
+      // Why before any readback await: create replies and stream exits use
+      // separate sockets, so admission completion must see the queued exit.
+      this.exitFence.defer(sessionId, exit)
+      return
+    }
+    const fenceSnapshot = this.exitFence.snapshot(sessionId)
+    // Why: control and stream sockets can reorder a replacement create reply
+    // ahead of the old process's queued exit. Targeted liveness proof prevents
+    // that stale exit from deleting the replacement's same-id ownership.
+    const readback = await this.readAppliedSize(sessionId)
+    if (readback.status === 'alive') {
+      if (!this.exitFence.isStable(sessionId, fenceSnapshot)) {
+        return
+      }
+      this.exitFence.rememberGeneration(sessionId, readback.sessionGeneration)
+      this.exitFence.clearPending(sessionId)
+      return
+    }
+    if (!this.exitFence.isStable(sessionId, fenceSnapshot)) {
+      this.exitFence.defer(sessionId, exit)
+      // Why: admission may have completed while the old readback was in
+      // flight, before spawn's finally block could observe this deferred exit.
+      await this.reconcilePendingExitAfterAdmission(sessionId)
+      return
+    }
+    if (readback.status === 'unknown') {
+      if (!this.activeSessionIds.has(sessionId)) {
+        this.finalizeExitEvent(sessionId, code)
+        return
+      }
+      // Why: a failed control-socket probe is not absence proof. Retain the
+      // active id until authoritative listing; this also bounds retention to
+      // the adapter's already-owned sessions instead of arbitrary exit ids.
+      this.exitFence.defer(sessionId, exit)
+      return
+    }
+    this.finalizeExitEvent(sessionId, code)
+  }
+
+  private finalizeExitEvent(sessionId: string, code: number): void {
+    this.exitFence.forget(sessionId)
+    this.activeSessionIds.delete(sessionId)
+    this.dirtySessionVersions.delete(sessionId)
+    this.pausedProducerSessionIds.delete(sessionId)
+    this.producerResumesOwedOnReconnect.delete(sessionId)
+    this.backgroundedSessionIds.delete(sessionId)
+    if (!this.sleepRestoreSessionIds.has(sessionId)) {
+      this.coldRestoreCache.delete(sessionId)
+      this.paneIdentityBySessionId.delete(sessionId)
+    }
+    this.sessionsNeedingFullCheckpoint.delete(sessionId)
+    this.lastFullCheckpointAt.delete(sessionId)
+    this.stopCheckpointTimerIfIdle()
+    if (this.historyManager) {
+      void this.historyManager
+        .closeSession(sessionId, code)
+        .catch((err) => console.warn('[history] closeSession failed:', sessionId, err))
+    }
+    this.initialCwds.delete(sessionId)
+    // oxlint-disable-next-line unicorn/no-useless-spread -- copy-safe: listeners may unsubscribe during iteration
+    for (const listener of [...this.exitListeners]) {
+      listener({ id: sessionId, code })
+    }
+  }
+
+  private async reconcilePendingExitAfterAdmission(sessionId: string): Promise<boolean> {
+    const pending = this.exitFence.getPending(sessionId)
+    if (!pending || this.exitFence.isStaleGeneration(sessionId, pending.sessionGeneration)) {
+      this.exitFence.clearPending(sessionId)
+      return false
+    }
+    const fenceSnapshot = this.exitFence.snapshot(sessionId)
+    const readback = await this.readAppliedSize(sessionId)
+    if (!this.exitFence.isStable(sessionId, fenceSnapshot)) {
+      return false
+    }
+    if (readback.status === 'alive') {
+      this.exitFence.rememberGeneration(sessionId, readback.sessionGeneration)
+      this.exitFence.clearPending(sessionId)
+      return false
+    } else if (readback.status === 'absent') {
+      this.finalizeExitEvent(sessionId, pending.code)
+      return true
+    } else if (!this.activeSessionIds.has(sessionId)) {
+      // Why: the exit event is authoritative for an admission that never
+      // published ownership; an inconclusive probe must not retain fence maps.
+      this.finalizeExitEvent(sessionId, pending.code)
+      return true
+    }
+    return false
+  }
+
+  private async finishAdmission(
+    sessionId: string,
+    admission: DaemonSessionAdmission,
+    rejectIfExited: boolean
+  ): Promise<void> {
+    admission.complete()
+    const exited = await this.reconcilePendingExitAfterAdmission(sessionId)
+    if (rejectIfExited && exited) {
+      throw new Error(`${DAEMON_PTY_EXITED_DURING_ADMISSION} for "${sessionId}"`)
+    }
+    if (!rejectIfExited && !this.activeSessionIds.has(sessionId)) {
+      this.exitFence.forget(sessionId)
+    }
+  }
+
+  private async withSerializedSessionAdmission<T>(
+    sessionId: string,
+    action: () => Promise<T>
+  ): Promise<T> {
+    const previous = this.sessionAdmissionTails.get(sessionId) ?? Promise.resolve()
+    let release!: () => void
+    const current = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    this.sessionAdmissionTails.set(sessionId, current)
+    await previous
+    try {
+      return await action()
+    } finally {
+      release()
+      if (this.sessionAdmissionTails.get(sessionId) === current) {
+        this.sessionAdmissionTails.delete(sessionId)
+      }
+    }
   }
 }
 

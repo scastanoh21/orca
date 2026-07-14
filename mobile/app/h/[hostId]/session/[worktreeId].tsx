@@ -1080,6 +1080,13 @@ export default function SessionScreen() {
   // the row) without any window-dim change. Tracking the measured width lets the
   // refit hook re-fit the PTY on those resizes — see terminal-viewport-refit.ts.
   const [terminalFrameWidth, setTerminalFrameWidth] = useState(0)
+  // Why: a new agent terminal can fit before the accessory/live-input dock lays
+  // out, over-fitting the PTY so its bottom-pinned input box hides behind the
+  // dock; tracking the settled height lets the refit hook correct it.
+  const [terminalFrameHeight, setTerminalFrameHeight] = useState(0)
+  // Why: lets the height refit skip keyboard-driven resizes (never reflow the
+  // PTY per keystroke); mirrors keyboardHeight but readable synchronously.
+  const keyboardVisibleRef = useRef(false)
 
   const activeSessionTab = sessionTabs.find((tab) => tab.id === activeSessionTabId) ?? null
   const {
@@ -2528,6 +2535,7 @@ export default function SessionScreen() {
     }
   }, [])
 
+  const pendingForegroundRecoveryRef = useRef(false)
   useEffect(() => {
     let previousAppState: AppStateStatus | null = AppState.currentState
     const sub = AppState.addEventListener('change', (nextAppState: AppStateStatus) => {
@@ -2546,7 +2554,7 @@ export default function SessionScreen() {
       // Why: iOS can resume a live WKWebView with a blank xterm backing store
       // without firing web-ready/reconnect; invalidate the native readiness
       // latch before replay so init waits for the document's pong.
-      recoverActiveTerminalAfterForeground({
+      const outcome = recoverActiveTerminalAfterForeground({
         activeHandleRef,
         terminalRefs,
         initializedHandlesRef,
@@ -2555,11 +2563,35 @@ export default function SessionScreen() {
         subscribeToTerminal,
         schedule: scheduleDelayedAction
       })
+      pendingForegroundRecoveryRef.current = outcome === 'deferred'
     })
     return () => {
       sub.remove()
     }
   }, [scheduleDelayedAction, subscribeToTerminal, unsubscribeTerminal])
+
+  // Why: resume usually lands mid-reconnect (the socket dies after ~60-80s of
+  // background), so the recovery above defers. Re-run it once the connection
+  // is back; otherwise a blanked WKWebView whose socket was merely probed (no
+  // stream replay) stays stale until a manual tab switch.
+  useEffect(() => {
+    if (connState !== 'connected' || !pendingForegroundRecoveryRef.current) {
+      return
+    }
+    pendingForegroundRecoveryRef.current = false
+    if (AppState.currentState !== 'active') {
+      return
+    }
+    recoverActiveTerminalAfterForeground({
+      activeHandleRef,
+      terminalRefs,
+      initializedHandlesRef,
+      connStateRef,
+      unsubscribeTerminal,
+      subscribeToTerminal,
+      schedule: scheduleDelayedAction
+    })
+  }, [connState, scheduleDelayedAction, subscribeToTerminal, unsubscribeTerminal])
 
   // Why: viewport refits for layout changes outside the subscribe path
   // (tab strip toggling, fold/unfold, rotation) live in a dedicated hook —
@@ -2577,15 +2609,19 @@ export default function SessionScreen() {
     tabStripVisible: terminals.length > 1,
     textScale: terminalTextScale,
     terminalFrameWidth,
+    terminalFrameHeight,
+    keyboardVisibleRef,
     unsubscribeTerminal,
     subscribeToTerminal
   })
 
   useEffect(() => {
     const onShow = (e: KeyboardEvent) => {
+      keyboardVisibleRef.current = true
       setKeyboardHeight(e.endCoordinates?.height ?? 0)
     }
     const onHide = () => {
+      keyboardVisibleRef.current = false
       setKeyboardHeight(0)
     }
     const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow'
@@ -3046,10 +3082,15 @@ export default function SessionScreen() {
       // this, subscribe(viewport=null) lands on the server first and the
       // post-scrollback measure path's resubscribe sees alreadyMeasured=true
       // (because measureViewportOnce won the race) and silently skips.
-      if (handle === activeHandleRef.current && !terminalUnsubsRef.current.has(handle)) {
+      // Why: a just-created tab can briefly lose activeHandleRef to a lagging
+      // session-tab snapshot; honor the pending marker so its one web-ready
+      // subscribe still fires (see handleCreateTerminal).
+      const isIntendedActive = () =>
+        handle === activeHandleRef.current || handle === pendingActiveTerminalHandleRef.current
+      if (isIntendedActive() && !terminalUnsubsRef.current.has(handle)) {
         void (async () => {
           await measureViewportOnce(handle)
-          if (handle === activeHandleRef.current && !terminalUnsubsRef.current.has(handle)) {
+          if (isIntendedActive() && !terminalUnsubsRef.current.has(handle)) {
             subscribeToTerminal(handle)
           }
         })()
@@ -3937,6 +3978,11 @@ export default function SessionScreen() {
         if (typeof created.terminal === 'string') {
           const createdHandle = created.terminal
           defaultTerminalHandlesToLiveInput([createdHandle])
+          // Why: session-tab snapshots can lag the create RPC. Without the
+          // handle marker, applySessionTabs snaps activeHandleRef back to the
+          // previous terminal, and the new pane's web-ready subscribe (gated
+          // on the active handle) is skipped — blank tab until a manual switch.
+          pendingActiveTerminalHandleRef.current = createdHandle
           activeHandleRef.current = createdHandle
           setActiveHandle(createdHandle)
           setTerminals((prev) => {
@@ -3991,6 +4037,9 @@ export default function SessionScreen() {
               })
           }
         } else {
+          // Why: a prior pending handle must not outlive a create that returned
+          // no terminal; web-ready subscribe gates on this ref as active.
+          pendingActiveTerminalHandleRef.current = null
           activeHandleRef.current = null
           setActiveHandle(null)
         }
@@ -4793,10 +4842,12 @@ export default function SessionScreen() {
                 style={styles.terminalFrame}
                 onLayout={(e) => {
                   terminalFrameHeightRef.current = e.nativeEvent.layout.height
-                  // Trigger a refit only when the width actually changes (sidebar
-                  // resize, fold, rotation) — avoids churn on height-only changes.
+                  // Track width AND height so the refit hook re-fits on sidebar/
+                  // fold/rotation (width) and on the dock settling (height).
                   const nextWidth = Math.round(e.nativeEvent.layout.width)
+                  const nextHeight = Math.round(e.nativeEvent.layout.height)
                   setTerminalFrameWidth((prev) => (prev === nextWidth ? prev : nextWidth))
+                  setTerminalFrameHeight((prev) => (prev === nextHeight ? prev : nextHeight))
                 }}
               >
                 {terminals.map((terminal) => (

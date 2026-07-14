@@ -1,4 +1,5 @@
 /* oxlint-disable max-lines */
+import { randomUUID } from 'node:crypto'
 import { HeadlessEmulator } from './headless-emulator'
 import { isValidPtySize, normalizePtySize } from './daemon-pty-size'
 import { PostReadyFlushGate } from './post-ready-flush-gate'
@@ -23,6 +24,8 @@ const SHELL_READY_TIMEOUT_MS = 15_000
 // older daemon/local paths that still report shell-ready support for Codex.
 export const CODEX_SHELL_READY_TIMEOUT_MS = 300
 const KILL_TIMEOUT_MS = 5_000
+const EXIT_PROOF_POLL_MS = 1_000
+const SHUTDOWN_DRAIN_RETRY_MS = 100
 // Why: pending records exist so the 5s checkpoint can persist increments
 // instead of re-serializing the whole buffer. If no client drains them (main
 // process gone, history disabled), memory must stay bounded — past the cap we
@@ -48,6 +51,10 @@ export type SubprocessHandle = {
   /** True when shell launch args already delivered the startup command, so the
    *  terminal host must skip its stdin fallback write. */
   startupCommandDeliveredInShellArgs?: boolean
+  /** Shell the subprocess actually spawned, after Unix/Windows fallbacks. The
+   *  host reconciles the caller's shell-ready assumption against it so a
+   *  fallback shell without a ready marker never gates startup commands. */
+  shellPath?: string
   write(data: string): void
   resize(cols: number, rows: number): void
   /** Stop reading the PTY fd (node-pty pause()) so the kernel/ConPTY buffer
@@ -61,17 +68,22 @@ export type SubprocessHandle = {
   clear?(): void
   kill(): void
   forceKill(): void
+  /** Conservative OS/onExit proof; false includes unknown and still alive. */
+  hasExited?(): boolean
+  /** Windows ConPTY may accept a pre-ready close before it can act on it. */
   signal(sig: string): void
   onData(cb: (data: string) => void): void
   onExit(cb: (code: number) => void): void
   /** Release the native PTY handle via node-pty's own destroy() path.
    *  Idempotent. Safe to call after exit. Called by Session on every teardown
-   *  path (natural exit, kill, force-kill, native throw, session dispose). */
+   *  path after physical exit proof, or during whole-session disposal. */
   dispose(): void
 }
 
 export type SessionOptions = {
   sessionId: string
+  paneKey?: string
+  tabId?: string
   cols: number
   rows: number
   terminalHandle?: string
@@ -81,6 +93,9 @@ export type SessionOptions = {
   shellReadyTimeoutMs?: number
   historySeed?: string
   scrollback?: number
+  // Why: TerminalHost must publish the Session and attach its first client
+  // before node-pty flushes buffered data/exit synchronously on subscription.
+  deferSubprocessSubscription?: boolean
   // Why: fired once the session reaches a terminal state (natural exit or
   // kill-timeout force-dispose) so the owner (TerminalHost) can reap it —
   // dispose the headless emulator and drop it from its session map. Without a
@@ -92,11 +107,14 @@ export type SessionOptions = {
 type AttachedClient = {
   token: symbol
   onData: (data: string) => void
-  onExit: (code: number) => void
+  onExit: (code: number, sessionGeneration: string) => void
 }
 
 export class Session {
   readonly sessionId: string
+  readonly generation = randomUUID()
+  readonly paneKey: string | null
+  readonly tabId: string | null
   readonly terminalHandle: string | null
   readonly launchAgent: TuiAgent | null
   private _state: SessionState = 'running'
@@ -112,6 +130,9 @@ export class Session {
   private shellReadyScanState: ShellReadyScanState | null = null
   private shellReadyTimer: ReturnType<typeof setTimeout> | null = null
   private killTimer: ReturnType<typeof setTimeout> | null = null
+  private forceKillAccepted = false
+  private forceKillFailureCount = 0
+  private forceKillRetryDelayMs = KILL_TIMEOUT_MS
   private postReadyFlushGate: PostReadyFlushGate
   private pendingOutputRecords: PendingOutputRecord[] = []
   private pendingOutputBytes = 0
@@ -121,13 +142,21 @@ export class Session {
   private producerPaused = false
   private producerPauseFailsafeTimer: ReturnType<typeof setTimeout> | null = null
   private readonly _historySeeded: boolean | undefined
+  private readonly exitProofPromise: Promise<void>
+  private resolveExitProof!: () => void
+  private subprocessSubscriptionStarted = false
 
   constructor(opts: SessionOptions) {
     this.sessionId = opts.sessionId
+    this.paneKey = opts.paneKey ?? null
+    this.tabId = opts.tabId ?? null
     this.terminalHandle = opts.terminalHandle ?? null
     this.launchAgent = opts.launchAgent ?? null
     this.subprocess = opts.subprocess
     this.onSessionExit = opts.onExit
+    this.exitProofPromise = new Promise((resolve) => {
+      this.resolveExitProof = resolve
+    })
     const size = normalizePtySize(opts.cols, opts.rows)
     this.emulator = new HeadlessEmulator({
       cols: size.cols,
@@ -154,6 +183,16 @@ export class Session {
     }
 
     this.postReadyFlushGate = new PostReadyFlushGate(() => this.flushPreReadyQueue())
+    if (!opts.deferSubprocessSubscription) {
+      this.startSubprocessSubscription()
+    }
+  }
+
+  startSubprocessSubscription(): void {
+    if (this.subprocessSubscriptionStarted) {
+      return
+    }
+    this.subprocessSubscriptionStarted = true
     this.subprocess.onData((data) => this.handleSubprocessData(data))
     this.subprocess.onExit((code) => this.handleSubprocessExit(code))
   }
@@ -180,6 +219,10 @@ export class Session {
 
   get isTerminating(): boolean {
     return this._isTerminating
+  }
+
+  waitForExitProof(): Promise<void> {
+    return this._state === 'exited' ? Promise.resolve() : this.exitProofPromise
   }
 
   get pid(): number {
@@ -263,13 +306,53 @@ export class Session {
     // Why: a paused child can be blocked inside write(); resume before
     // signalling so it can run signal handlers and actually exit.
     this.releaseProducerPause({ resume: true })
-    this.subprocess.kill()
+    try {
+      this.subprocess.kill()
+    } catch (error) {
+      this._isTerminating = false
+      throw error
+    }
 
-    this.killTimer = setTimeout(() => {
-      if (this._state !== 'exited') {
-        this.forceDispose()
-      }
-    }, KILL_TIMEOUT_MS)
+    this.scheduleForceShutdownCheck(KILL_TIMEOUT_MS)
+  }
+
+  /** Request immediate shutdown while retaining the session until exit proof. */
+  requestImmediateShutdown(): void {
+    if (this._state === 'exited' || this.forceKillAccepted) {
+      return
+    }
+    this._isTerminating = true
+    this.releaseProducerPause({ resume: true })
+    try {
+      this.issueForceShutdown()
+    } catch (error) {
+      this._isTerminating = false
+      throw error
+    }
+    this.scheduleForceShutdownCheck(this.nextForceShutdownCheckDelay())
+  }
+
+  /** Whole-process shutdown keeps retry/listener ownership until exit proof. */
+  beginShutdownDrain(): void {
+    if (this._state === 'exited') {
+      return
+    }
+    this.forceKillRetryDelayMs = SHUTDOWN_DRAIN_RETRY_MS
+    // Why: a prior graceful/accepted kill may own a 5s timer, longer than the
+    // process drain budget. Re-arm it on the bounded shutdown cadence.
+    if (this.killTimer) {
+      clearTimeout(this.killTimer)
+      this.killTimer = null
+    }
+    try {
+      this.requestImmediateShutdown()
+    } catch (error) {
+      this._isTerminating = true
+      this.recordForceKillFailure(error)
+    }
+    if (this.isAlive) {
+      this.scheduleForceShutdownCheck(this.nextForceShutdownCheckDelay())
+    }
   }
 
   signal(sig: string): void {
@@ -279,7 +362,10 @@ export class Session {
     this.subprocess.signal(sig)
   }
 
-  attachClient(client: { onData: (data: string) => void; onExit: (code: number) => void }): symbol {
+  attachClient(client: {
+    onData: (data: string) => void
+    onExit: (code: number, sessionGeneration: string) => void
+  }): symbol {
     const token = Symbol('attach')
     this.attachedClients.push({ token, ...client })
     return token
@@ -444,7 +530,7 @@ export class Session {
     this.emulator.dispose()
 
     for (const client of clientsToNotify) {
-      client.onExit(-1)
+      client.onExit(-1, this.generation)
     }
   }
 
@@ -547,7 +633,7 @@ export class Session {
   }
 
   private handleSubprocessData(data: string): void {
-    if (this._disposed) {
+    if (this._disposed || this._state === 'exited') {
       return
     }
 
@@ -584,12 +670,13 @@ export class Session {
   }
 
   private handleSubprocessExit(code: number): void {
-    if (this._disposed) {
+    if (this._disposed || this._state === 'exited') {
       return
     }
 
     this._exitCode = code
     this._state = 'exited'
+    this.resolveExitProof()
     // Why resume:false — the child is reaped, so there is nothing to unblock;
     // only the failsafe timer must not outlive the session.
     this.releaseProducerPause({ resume: false })
@@ -619,7 +706,7 @@ export class Session {
     }
 
     for (const client of this.attachedClients) {
-      client.onExit(code)
+      client.onExit(code, this.generation)
     }
 
     // Why: hand off to the owner's reaper so the emulator is disposed and the
@@ -672,40 +759,59 @@ export class Session {
     }
   }
 
-  private forceDispose(): void {
+  private issueForceShutdown(): void {
     if (this._state === 'exited') {
       return
     }
-    // Why: forceKill BEFORE #teardownSubprocess. Order is load-bearing — the
-    // helper's subprocess.dispose() neutralizes proc.kill on POSIX (to defuse
-    // the SIGHUP-to-recycled-pid hazard inside node-pty). forceKill uses
-    // process.kill(pid, 'SIGKILL') directly and is unaffected by that
-    // neutralization. Must NOT flip `_disposed` here before #teardownSubprocess
-    // runs, or the helper would early-return and skip subprocess.dispose() —
-    // the ptmx fd would leak on every kill-timeout (this whole doc's target).
-    try {
-      this.subprocess.forceKill()
-    } catch {
-      /* already dead */
+    this.subprocess.forceKill()
+    if (!this.isAlive) {
+      return
     }
-    this._exitCode = -1
-    this._isTerminating = false
-
-    this.#teardownSubprocess()
-    this._state = 'exited'
-
-    const clients = this.attachedClients
-    this.attachedClients = []
-    this.preReadyStdinQueue = []
-    this.postReadyFlushGate.clear()
-    this.emulator.dispose()
-
-    for (const client of clients) {
-      client.onExit(-1)
+    this.forceKillAccepted = true
+    this.forceKillFailureCount = 0
+    if (this.subprocess.hasExited?.() === true) {
+      this.handleSubprocessExit(-1)
     }
+  }
 
-    // Why: reap from the host map on the kill-timeout path too (emulator already
-    // disposed above; reapSession's dispose() call is a no-op and just drops it).
-    this.onSessionExit?.(-1)
+  private scheduleForceShutdownCheck(delayMs: number): void {
+    if (this.killTimer || this._state === 'exited') {
+      return
+    }
+    this.killTimer = setTimeout(() => {
+      this.killTimer = null
+      if (this._state === 'exited') {
+        return
+      }
+      if (this.forceKillAccepted) {
+        if (this.subprocess.hasExited?.() === true) {
+          this.handleSubprocessExit(-1)
+          return
+        }
+        // Why: a successful Windows native close is one-shot. Poll for the
+        // exit event/proof without closing the same ConPTY handle twice.
+        this.scheduleForceShutdownCheck(this.nextForceShutdownCheckDelay())
+        return
+      }
+      try {
+        this.issueForceShutdown()
+      } catch (error) {
+        this.recordForceKillFailure(error)
+      }
+      if (this.isAlive) {
+        this.scheduleForceShutdownCheck(this.nextForceShutdownCheckDelay())
+      }
+    }, delayMs)
+  }
+
+  private nextForceShutdownCheckDelay(): number {
+    return this.forceKillAccepted ? EXIT_PROOF_POLL_MS : this.forceKillRetryDelayMs
+  }
+
+  private recordForceKillFailure(error: unknown): void {
+    this.forceKillFailureCount += 1
+    if (this.forceKillFailureCount <= 2 || this.forceKillFailureCount === 8) {
+      console.warn('[Session] retained force shutdown failed:', error)
+    }
   }
 }

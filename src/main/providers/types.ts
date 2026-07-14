@@ -144,6 +144,14 @@ export type PtySpawnResult = {
   }
 }
 
+export type PtyShutdownOptions = {
+  immediate?: boolean
+  keepHistory?: boolean
+  /** Relay generations can recycle pty-N; identity prevents stale shutdown. */
+  expectedPaneKey?: string
+  expectedTabId?: string
+}
+
 export type PtyProcessInfo = {
   id: string
   cwd: string
@@ -153,6 +161,9 @@ export type PtyProcessInfo = {
 }
 
 export type IPtyProvider = {
+  /** A returned kill request is only acceptance; retain ownership until an
+   * exit event or listProcesses readback proves the backing process is gone. */
+  readonly requiresShutdownExitProof?: boolean
   spawn(opts: PtySpawnOptions): Promise<PtySpawnResult>
   attach(id: string): Promise<void>
   hasPty?: (id: string) => boolean
@@ -201,7 +212,7 @@ export type IPtyProvider = {
    */
   getAppliedSize?: (id: string) => Promise<{ cols: number; rows: number } | null>
 
-  shutdown(id: string, opts: { immediate?: boolean; keepHistory?: boolean }): Promise<void>
+  shutdown(id: string, opts: PtyShutdownOptions): Promise<void>
   sendSignal(id: string, signal: string): Promise<void>
   getCwd(id: string): Promise<string>
   getInitialCwd(id: string): Promise<string>
@@ -250,6 +261,7 @@ export type IFilesystemProvider = {
     options: TerminalArtifactAccessOptions
   ): Promise<FileReadResult>
   downloadFile?(sourcePath: string, destinationPath: string): Promise<void>
+  openFileUploadSession?(): Promise<FileUploadSession>
   getTempDir?(): Promise<string>
   writeFile(filePath: string, content: string): Promise<void>
   writeTerminalArtifact?(
@@ -278,7 +290,20 @@ export type IFilesystemProvider = {
     rootPath: string,
     options?: { signal?: AbortSignal }
   ): Promise<WorkspaceSpaceDirectoryScanResult>
-  watch(rootPath: string, callback: (events: FsChangeEvent[]) => void): Promise<() => void>
+  watch(
+    rootPath: string,
+    callback: (events: FsChangeEvent[]) => void,
+    options?: { signal?: AbortSignal }
+  ): Promise<() => void>
+}
+
+export type FileUploadSession = {
+  uploadFile(
+    sourcePath: string,
+    destinationPath: string,
+    options?: { exclusive?: boolean }
+  ): Promise<void>
+  close(): void
 }
 
 export type TerminalArtifactAccessOptions = {

@@ -202,15 +202,14 @@ describe('attachMainWindowServices', () => {
   it('reloads the app renderer through main and marks expected renderer teardown', async () => {
     const onBeforeRendererReload = vi.fn()
     const mainWindow = createMainWindow()
+    const store = createStore()
+    const runtime = createRuntime()
 
-    attachMainWindowServices(
-      mainWindow as never,
-      createStore(),
-      createRuntime() as never,
-      undefined,
-      undefined,
-      { onBeforeRendererReload }
-    )
+    attachMainWindowServices(mainWindow as never, store, runtime as never, undefined, undefined, {
+      onBeforeRendererReload
+    })
+
+    expect(registerRepoHandlersMock).toHaveBeenCalledWith(mainWindow, store, runtime)
 
     expect(removeHandlerMock).toHaveBeenCalledWith('app:reload')
     const reloadHandler = handleMock.mock.calls.find(([channel]) => channel === 'app:reload')?.[1]
@@ -631,13 +630,20 @@ describe('attachMainWindowServices', () => {
     const notifier = runtime.setNotifier.mock.calls[0][0] as {
       revealTerminalSession: (
         worktreeId: string,
-        opts: { ptyId: string; title?: string; cwd?: string; activate?: boolean }
+        opts: {
+          ptyId: string
+          title?: string
+          cwd?: string
+          viewMode?: 'terminal' | 'chat'
+          activate?: boolean
+        }
       ) => Promise<{ tabId: string; title?: string }>
     }
     const revealPromise = notifier.revealTerminalSession('wt-1', {
       ptyId: 'pty-1',
       title: 'SSH tmux',
-      cwd: '/repo/packages/web'
+      cwd: '/repo/packages/web',
+      viewMode: 'chat'
     })
     const sentPayload = sendMock.mock.calls.find(
       ([channel]) => channel === 'ui:createTerminal'
@@ -645,7 +651,7 @@ describe('attachMainWindowServices', () => {
     const handler = onMock.mock.calls.find(
       ([channel]) => channel === 'terminal:tabCreateReply'
     )?.[1]
-    expect(sentPayload.cwd).toBe('/repo/packages/web')
+    expect(sentPayload).toMatchObject({ cwd: '/repo/packages/web', viewMode: 'chat' })
 
     handler?.(
       { sender: { send: vi.fn() } },

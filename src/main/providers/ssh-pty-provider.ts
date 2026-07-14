@@ -1,6 +1,12 @@
 import type { SshChannelMultiplexer } from '../ssh/ssh-channel-multiplexer'
-import type { IPtyProvider, PtyProcessInfo, PtySpawnOptions, PtySpawnResult } from './types'
-import { toAppSshPtyId, toRelaySshPtyId } from './ssh-pty-id'
+import type {
+  IPtyProvider,
+  PtyProcessInfo,
+  PtyShutdownOptions,
+  PtySpawnOptions,
+  PtySpawnResult
+} from './types'
+import { parseAppSshPtyId, toAppSshPtyId, toRelaySshPtyId } from './ssh-pty-id'
 import { seedPowerlevel10kWizardEnv } from '../pty/powerlevel10k-wizard-env'
 
 type DataCallback = (payload: { id: string; data: string }) => void
@@ -33,6 +39,7 @@ export function isSshPtyIdentityMismatchError(err: unknown): boolean {
  * as LocalPtyProvider so the dispatch layer can route transparently.
  */
 export class SshPtyProvider implements IPtyProvider {
+  readonly requiresShutdownExitProof = true
   private mux: SshChannelMultiplexer
   private connectionId: string
   private dataListeners = new Set<DataCallback>()
@@ -46,7 +53,8 @@ export class SshPtyProvider implements IPtyProvider {
   constructor(
     connectionId: string,
     mux: SshChannelMultiplexer,
-    private readonly remoteCliBridgeEnv?: RemoteCliBridgeEnv
+    private readonly remoteCliBridgeEnv?: RemoteCliBridgeEnv,
+    private readonly relayInstanceId?: string
   ) {
     this.connectionId = connectionId
     this.mux = mux
@@ -89,12 +97,26 @@ export class SshPtyProvider implements IPtyProvider {
     return this.connectionId
   }
 
+  getRelayInstanceId(): string | undefined {
+    return this.relayInstanceId
+  }
+
   private toRelayPtyId(id: string): string {
+    const parsed = parseAppSshPtyId(id)
+    if (
+      parsed?.relayInstanceId &&
+      this.relayInstanceId &&
+      parsed.relayInstanceId !== this.relayInstanceId
+    ) {
+      throw new Error(
+        `${SSH_PTY_IDENTITY_MISMATCH_ERROR}: PTY "${id}" not found (relay generation mismatch)`
+      )
+    }
     return toRelaySshPtyId(this.connectionId, id)
   }
 
   private toAppPtyId(id: string): string {
-    return toAppSshPtyId(this.connectionId, id)
+    return toAppSshPtyId(this.connectionId, id, this.relayInstanceId)
   }
 
   async spawn(opts: PtySpawnOptions): Promise<PtySpawnResult> {
@@ -234,11 +256,13 @@ export class SshPtyProvider implements IPtyProvider {
     this.mux.notify('pty.resize', { id: this.toRelayPtyId(id), cols, rows })
   }
 
-  async shutdown(id: string, opts: { immediate?: boolean; keepHistory?: boolean }): Promise<void> {
+  async shutdown(id: string, opts: PtyShutdownOptions): Promise<void> {
     await this.mux.request('pty.shutdown', {
       id: this.toRelayPtyId(id),
       immediate: opts.immediate ?? false,
-      keepHistory: opts.keepHistory ?? false
+      keepHistory: opts.keepHistory ?? false,
+      ...(opts.expectedPaneKey ? { expectedPaneKey: opts.expectedPaneKey } : {}),
+      ...(opts.expectedTabId ? { expectedTabId: opts.expectedTabId } : {})
     })
   }
 

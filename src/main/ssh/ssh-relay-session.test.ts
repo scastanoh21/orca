@@ -73,6 +73,8 @@ vi.mock('../ipc/pty', () => ({
   clearPtyOwnershipForConnection: vi.fn(),
   clearProviderPtyState: vi.fn(),
   deletePtyOwnership: vi.fn(),
+  hasPendingSshShutdown: vi.fn().mockReturnValue(false),
+  releasePendingSshShutdown: vi.fn(),
   setPtyOwnership: vi.fn(),
   answerStartupTerminalColorQueriesForPty: vi.fn((_id: string, data: string) => data)
 }))
@@ -424,7 +426,7 @@ describe('SshRelaySession', () => {
     expect(registerSshPtyProvider).toHaveBeenCalledWith('target-1', expect.anything())
   })
 
-  it('installs a native Windows Orca CLI bridge without POSIX shell commands', async () => {
+  it('compiles a native Windows Orca CLI bridge without a cmd.exe shim', async () => {
     const { mockStore, mockPortForward, getMainWindow } = createMockDeps()
     const mockConn = {
       writeFile: vi.fn().mockResolvedValue(undefined)
@@ -447,20 +449,20 @@ describe('SshRelaySession', () => {
 
     await session.establish(mockConn)
 
-    expect(execCommand).toHaveBeenCalledTimes(1)
+    expect(execCommand).toHaveBeenCalledTimes(2)
     expect(vi.mocked(execCommand).mock.calls[0]?.[1]).toContain('powershell.exe')
     expect(vi.mocked(execCommand).mock.calls[0]?.[2]).toEqual({ wrapCommand: false })
     expect(mockConn.writeFile).toHaveBeenCalledWith(
-      'C:/Users/me/.orca-relay/bin/orca.cmd',
-      expect.stringContaining('@echo off'),
+      'C:/Users/me/.orca-relay/bin/orca-launcher.cs',
+      expect.stringContaining('ProcessStartInfo'),
       { hostPlatform: getRemoteHostPlatform('win32-x64') }
     )
-    const shim = vi.mocked(mockConn.writeFile).mock.calls[0]?.[1] as string
-    expect(shim).toContain('C:/Users/me/.orca-remote/relay-v1')
-    expect(shim).toContain('\\\\.\\pipe\\orca-relay-123')
-    expect(shim).not.toContain('if not exist "%ORCA_RELAY_SOCKET_PATH%"')
-    expect(shim).not.toContain('Orca SSH CLI bridge cannot find the relay socket')
-    expect(shim).not.toContain('#!/usr/bin/env sh')
+    const launcherSource = vi.mocked(mockConn.writeFile).mock.calls[0]?.[1] as string
+    expect(launcherSource).toContain('ORCA_RELAY_SOCKET_PATH')
+    expect(launcherSource).not.toContain('cmd.exe')
+    expect(launcherSource).not.toContain('%*')
+    expect(vi.mocked(execCommand).mock.calls[1]?.[1]).toContain('powershell.exe')
+    expect(vi.mocked(execCommand).mock.calls[1]?.[2]).toEqual({ wrapCommand: false })
     expect(vi.mocked(execCommand).mock.calls.some(([, command]) => command.includes('chmod'))).toBe(
       false
     )
@@ -553,31 +555,11 @@ describe('SshRelaySession', () => {
 
     expect(mockAttach).toHaveBeenCalledWith('pty-1')
     expect(setPtyOwnership).toHaveBeenCalledWith('ssh:target-1@@pty-1', 'target-1')
-    expect(mockStore.markSshRemotePtyLease).toHaveBeenCalledWith('target-1', 'pty-1', 'attached')
-  })
-
-  it('establish re-attaches durable leases after app restart', async () => {
-    const { mockConn, mockStore, mockPortForward, getMainWindow } = createMockDeps()
-    const { getSshPtyProvider } = await import('../ipc/pty')
-    const mockAttach = vi.fn().mockResolvedValue(undefined)
-    vi.mocked(getSshPtyProvider).mockReturnValue({
-      attachForReconnect: mockAttach,
-      dispose: vi.fn()
-    } as unknown as ReturnType<typeof getSshPtyProvider>)
-    vi.mocked(getPtyIdsForConnection).mockReturnValue([])
-    vi.mocked(mockStore.getSshRemotePtyLeases).mockReturnValue([
-      { targetId: 'target-1', ptyId: 'pty-live', state: 'detached' },
-      { targetId: 'target-1', ptyId: 'pty-expired', state: 'expired' }
-    ] as ReturnType<typeof mockStore.getSshRemotePtyLeases>)
-
-    const session = new SshRelaySession('target-1', getMainWindow, mockStore, mockPortForward)
-
-    await session.establish(mockConn)
-
-    expect(mockAttach).toHaveBeenCalledWith('pty-live')
-    expect(mockAttach).not.toHaveBeenCalledWith('pty-expired')
-    expect(setPtyOwnership).toHaveBeenCalledWith('ssh:target-1@@pty-live', 'target-1')
-    expect(mockStore.markSshRemotePtyLease).toHaveBeenCalledWith('target-1', 'pty-live', 'attached')
+    expect(mockStore.markSshRemotePtyLease).toHaveBeenCalledWith(
+      'target-1',
+      'ssh:target-1@@pty-1',
+      'attached'
+    )
   })
 
   it('forwards a lease tab identity to reattach so a reset relay cannot cross-wire it', async () => {

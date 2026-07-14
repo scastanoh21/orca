@@ -7,6 +7,7 @@ import { randomUUID } from 'node:crypto'
 import { homedir } from 'node:os'
 import { z } from 'zod'
 import type { Store } from '../persistence'
+import type { OrcaRuntimeService } from '../runtime/orca-runtime'
 import type {
   BaseRefSearchResult,
   Project,
@@ -1114,7 +1115,11 @@ async function runNestedRepoScanForIpc(
   }
 }
 
-export function registerRepoHandlers(mainWindow: BrowserWindow, store: Store): void {
+export function registerRepoHandlers(
+  mainWindow: BrowserWindow,
+  store: Store,
+  runtime?: OrcaRuntimeService
+): void {
   // Remove any previously registered handlers so we can re-register them
   // (e.g. when macOS re-activates the app and creates a new window).
   ipcMain.removeHandler('repos:list')
@@ -1924,7 +1929,11 @@ export function registerRepoHandlers(mainWindow: BrowserWindow, store: Store): v
   )
 
   ipcMain.handle('repos:remove', async (_event, args: { repoId: string }) => {
-    store.removeProject(args.repoId)
+    if (runtime) {
+      await runtime.removeProject(`id:${args.repoId}`)
+    } else {
+      store.removeProject(args.repoId)
+    }
     invalidateAuthorizedRootsCache()
     notifyReposChanged(mainWindow)
   })
@@ -1939,7 +1948,11 @@ export function registerRepoHandlers(mainWindow: BrowserWindow, store: Store): v
       if (!hostId) {
         throw new Error(`Invalid host ID: ${args.hostId}`)
       }
-      store.removeProjectForHost(args.repoId, hostId)
+      if (runtime?.removeProjectForHost) {
+        await runtime.removeProjectForHost(args.repoId, hostId)
+      } else {
+        store.removeProjectForHost(args.repoId, hostId)
+      }
       invalidateAuthorizedRootsCache()
       notifyReposChanged(mainWindow)
     }

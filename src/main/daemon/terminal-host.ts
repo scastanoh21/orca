@@ -1,11 +1,14 @@
 import { Session, type SubprocessHandle } from './session'
 import { normalizePtySize } from './daemon-pty-size'
+import { shellPathSupportsPtyStartupBarrier } from './shell-ready'
 import { resolveProcessCwd } from '../providers/process-cwd'
 import type { StartupCommandDelivery } from '../../shared/codex-startup-delivery'
 import { buildStartupCommandSubmission } from '../../shared/startup-command-submission'
 import type { SessionInfo, TakePendingOutputResult, TerminalSnapshot } from './types'
 import { SessionNotFoundError } from './types'
 import type { CreateOrAttachOptions, CreateOrAttachResult } from './terminal-host-create-contract'
+import { assertPtyPaneIdentity } from '../pty/pty-shutdown-identity'
+import { TerminalHostShutdownDrain } from './terminal-host-shutdown-drain'
 
 export type { CreateOrAttachOptions, CreateOrAttachResult } from './terminal-host-create-contract'
 
@@ -42,13 +45,13 @@ export class TerminalHost {
   private sessions = new Map<string, Session>()
   private killedTombstones = new Map<string, number>()
   private spawnSubprocess: TerminalHostOptions['spawnSubprocess']
-  private onFinalCheckpoint: TerminalHostOptions['onFinalCheckpoint']
   private maxTombstones: number
+  private shutdownDrain: TerminalHostShutdownDrain
 
   constructor(opts: TerminalHostOptions) {
     this.spawnSubprocess = opts.spawnSubprocess
-    this.onFinalCheckpoint = opts.onFinalCheckpoint
     this.maxTombstones = opts.maxTombstones ?? DEFAULT_MAX_TOMBSTONES
+    this.shutdownDrain = new TerminalHostShutdownDrain(this.sessions, opts.onFinalCheckpoint)
   }
 
   /**
@@ -58,14 +61,20 @@ export class TerminalHost {
    * already deliver them through shell launch arguments.
    */
   async createOrAttach(opts: CreateOrAttachOptions): Promise<CreateOrAttachResult> {
-    const existing = this.sessions.get(opts.sessionId)
+    let existing = this.sessions.get(opts.sessionId)
 
-    // Why: a session that has been asked to terminate (kill() called but the
-    // subprocess hasn't exited yet) must not be reattached. Reattaching would
-    // hand the caller a handle that races with the in-flight exit, and any
-    // subsequent operation (write/kill/resize) would fail once the subprocess
-    // finally exits. Treat terminating sessions the same as fully-exited ones.
-    if (existing && existing.isAlive && !existing.isTerminating) {
+    // Why: replacing a terminating session would dispose its exit listener and
+    // retry timer before physical exit proof, orphaning the old native process.
+    while (existing?.isAlive && existing.isTerminating) {
+      await existing.waitForExitProof()
+      existing = this.sessions.get(opts.sessionId)
+    }
+    if (existing?.isAlive) {
+      assertPtyPaneIdentity(
+        opts.sessionId,
+        { paneKey: existing.paneKey, tabId: existing.tabId },
+        { expectedPaneKey: opts.paneKey, expectedTabId: opts.tabId }
+      )
       const snapshot = existing.getSnapshot()
       existing.detachAllClients()
       const token = existing.attachClient(opts.streamClient)
@@ -76,14 +85,16 @@ export class TerminalHost {
         shellState: existing.shellState,
         ...(existing.launchAgent ? { launchAgent: existing.launchAgent } : {}),
         ...(existing.historySeeded !== undefined ? { historySeeded: existing.historySeeded } : {}),
+        sessionGeneration: existing.generation,
         attachToken: token
       }
     }
 
-    // Clean up dead session if present
+    // Clean up only a physically exited session if its exit reaper has not run yet.
     if (existing) {
       existing.dispose()
       this.sessions.delete(opts.sessionId)
+      this.shutdownDrain.notifyIfEmpty()
     }
 
     // Clear tombstone if re-creating a killed session
@@ -104,15 +115,28 @@ export class TerminalHost {
       terminalWindowsPowerShellImplementation: opts.terminalWindowsPowerShellImplementation
     })
 
+    // Why: the caller computed shellReadySupported from the preferred shell,
+    // before spawn. A Unix fallback (e.g. /bin/sh) never emits the ready
+    // marker, so keeping the stale flag would queue startup commands until the
+    // shell-ready timeout and bracketed-paste-wrap them for a line editor
+    // without paste mode.
+    const shellReadySupported =
+      (opts.shellReadySupported ?? false) &&
+      (subprocess.shellPath === undefined ||
+        shellPathSupportsPtyStartupBarrier(subprocess.shellPath))
+
     const session = new Session({
       sessionId: opts.sessionId,
+      paneKey: opts.paneKey,
+      tabId: opts.tabId,
       cols: size.cols,
       rows: size.rows,
       terminalHandle: opts.env?.ORCA_TERMINAL_HANDLE,
       launchAgent: opts.launchAgent,
       subprocess,
-      shellReadySupported: opts.shellReadySupported ?? false,
+      shellReadySupported,
       historySeed: opts.historySeed,
+      deferSubprocessSubscription: true,
       // Why: reap the dead session (dispose emulator + drop from the map) the
       // moment its subprocess exits, instead of retaining it for the daemon's
       // lifetime. Nothing reads a dead session's emulator (getSnapshot/
@@ -126,6 +150,7 @@ export class TerminalHost {
     this.sessions.set(opts.sessionId, session)
 
     const token = session.attachClient(opts.streamClient)
+    session.startSubprocessSubscription()
 
     if (opts.command && !subprocess.startupCommandDeliveredInShellArgs) {
       // Why: startup commands must run inside the long-lived interactive shell
@@ -143,7 +168,7 @@ export class TerminalHost {
       session.write(
         buildStartupCommandSubmission(opts.command, {
           submit,
-          bracketedPasteSafe: opts.shellReadySupported ?? false
+          bracketedPasteSafe: shellReadySupported
         })
       )
     }
@@ -155,6 +180,7 @@ export class TerminalHost {
       shellState: session.shellState,
       ...(session.launchAgent ? { launchAgent: session.launchAgent } : {}),
       ...(session.historySeeded !== undefined ? { historySeeded: session.historySeeded } : {}),
+      sessionGeneration: session.generation,
       attachToken: token
     }
   }
@@ -182,15 +208,17 @@ export class TerminalHost {
     this.sessions.get(sessionId)?.resumeProducer()
   }
 
-  kill(sessionId: string, opts: { immediate?: boolean } = {}): void {
+  kill(
+    sessionId: string,
+    opts: { immediate?: boolean; expectedPaneKey?: string; expectedTabId?: string } = {}
+  ): void {
     const session = this.getAliveSession(sessionId)
+    assertPtyPaneIdentity(sessionId, { paneKey: session.paneKey, tabId: session.tabId }, opts)
     this.recordTombstone(sessionId)
     if (opts.immediate) {
-      session.forceKillAndDisposeSubprocess()
-      // Why: the immediate path tears down synchronously without firing the
-      // session's onExit hook, so reap it here. The graceful path below funnels
-      // through Session.handleSubprocessExit -> onExit -> reapSession.
-      this.reapSession(sessionId)
+      // Why: native force-kill acceptance is not physical-exit proof. The
+      // Session stays listed until onExit or conservative OS readback reaps it.
+      session.requestImmediateShutdown()
       return
     }
     session.kill()
@@ -208,6 +236,7 @@ export class TerminalHost {
     }
     session.dispose()
     this.sessions.delete(sessionId)
+    this.shutdownDrain.notifyIfEmpty()
   }
 
   signal(sessionId: string, sig: string): void {
@@ -288,6 +317,14 @@ export class TerminalHost {
     return session.getAppliedSize()
   }
 
+  getAppliedSizeWithGeneration(
+    sessionId: string
+  ): { size: { cols: number; rows: number }; sessionGeneration: string } | null {
+    const session = this.sessions.get(sessionId)
+    const size = session?.isAlive ? session.getAppliedSize() : null
+    return session && size ? { size, sessionGeneration: session.generation } : null
+  }
+
   // Why: same null-not-throw semantics as getSnapshot — incremental
   // checkpoints are best-effort against sessions that may have just exited.
   takePendingOutput(
@@ -315,6 +352,9 @@ export class TerminalHost {
       const size = session.getAppliedSize()
       result.push({
         sessionId: session.sessionId,
+        sessionGeneration: session.generation,
+        ...(session.paneKey ? { paneKey: session.paneKey } : {}),
+        ...(session.tabId ? { tabId: session.tabId } : {}),
         state: session.state,
         shellState: session.shellState,
         isAlive: true,
@@ -330,41 +370,12 @@ export class TerminalHost {
   }
 
   dispose(): void {
-    // Why: write final checkpoints before killing sessions so graceful shutdown
-    // has zero data loss. The checkpoint callback writes synchronously to disk.
-    if (this.onFinalCheckpoint) {
-      for (const [sessionId, session] of this.sessions) {
-        if (!session.isAlive) {
-          continue
-        }
-        const take = session.takePendingOutput(true, { teardownSnapshot: true })
-        if (take?.snapshot) {
-          try {
-            this.onFinalCheckpoint(sessionId, take.snapshot, take.records)
-          } catch {
-            // Best-effort — don't block shutdown
-          }
-        }
-      }
-    }
+    this.shutdownDrain.disposeImmediately()
+    this.killedTombstones.clear()
+  }
 
-    for (const [, session] of this.sessions) {
-      session.detachAllClients()
-      // Why: live-vs-exited is load-bearing. For LIVE sessions we use
-      // forceKillAndDisposeSubprocess (SIGKILL + destroy) to reap stubborn
-      // children AND release the ptmx fd on the same tick, bypassing the 5s
-      // KILL_TIMEOUT_MS fallback that would otherwise outlive the daemon
-      // process. For sessions that have already exited but are still in the
-      // map, SIGKILL would target a reaped pid — on POSIX that pid can be
-      // recycled to an unrelated process, so we MUST only release the fd via
-      // disposeSubprocess() (destroy without kill). See docs/fix-pty-fd-leak.md.
-      if (session.isAlive) {
-        session.forceKillAndDisposeSubprocess()
-      } else {
-        session.disposeSubprocess()
-      }
-    }
-    this.sessions.clear()
+  async shutdownAndWait(timeoutMs: number): Promise<void> {
+    await this.shutdownDrain.run(timeoutMs)
     this.killedTombstones.clear()
   }
 

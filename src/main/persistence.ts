@@ -17,6 +17,16 @@ import { writeFile, rename, mkdir, rm, copyFile } from 'node:fs/promises'
 import { join, dirname, isAbsolute, resolve, sep } from 'node:path'
 import { homedir } from 'node:os'
 import { createHash, randomUUID } from 'node:crypto'
+import {
+  appendTerminalTeardownIntentMutation,
+  applyTerminalTeardownIntentSnapshot,
+  writeTerminalTeardownIntentSnapshot
+} from './terminal-teardown-intent-snapshot'
+import type { TerminalTeardownIntentMutation } from './terminal-teardown-intent-snapshot'
+import {
+  indexSshRemotePtyLeases,
+  sshRemotePtyLeaseIdentityKey
+} from './ssh/ssh-remote-pty-lease-index'
 import type {
   Automation,
   AutomationCreateInput,
@@ -65,7 +75,9 @@ import type {
   TerminalLayoutSnapshot,
   TerminalTab,
   WorkspaceSessionPatch,
-  WorkspaceSessionState
+  WorkspaceSessionState,
+  PersistedLocalPtyShutdown,
+  PersistedRuntimeTerminalClose
 } from '../shared/types'
 import {
   deriveGlobalWindowsRuntimeDefaultFromLegacySettings,
@@ -104,6 +116,10 @@ import {
   ONBOARDING_FINAL_STEP
 } from '../shared/constants'
 import { parseWorkspaceSession } from '../shared/workspace-session-schema'
+import { normalizeUsagePercentageDisplay } from '../shared/usage-percentage-display'
+import { isExistingPersistedProfile } from '../shared/project-order-manual-default-notice'
+import { resolveUsagePercentageDisplayChangeNoticeDismissed } from '../shared/usage-percentage-display-change-notice'
+import { normalizePRBotAuthorOverrides } from '../shared/pr-bot-author-overrides'
 import {
   LOCAL_EXECUTION_HOST_ID,
   normalizeExecutionHostOrder,
@@ -112,7 +128,7 @@ import {
   toSshExecutionHostId,
   type ExecutionHostId
 } from '../shared/execution-host'
-import { toRelaySshPtyId } from './providers/ssh-pty-id'
+import { parseAppSshPtyId, toRelaySshPtyId } from './providers/ssh-pty-id'
 import {
   migrateUiHostScopeSshTargetId,
   migrateWorkspaceSessionSshTargetId
@@ -1573,6 +1589,7 @@ function normalizeSshRemotePtyLease(value: unknown): SshRemotePtyLease | null {
   return {
     targetId: raw.targetId,
     ptyId: raw.ptyId,
+    ...(typeof raw.relayInstanceId === 'string' ? { relayInstanceId: raw.relayInstanceId } : {}),
     ...(typeof raw.worktreeId === 'string' ? { worktreeId: raw.worktreeId } : {}),
     ...(typeof raw.tabId === 'string' ? { tabId: raw.tabId } : {}),
     ...(typeof raw.leafId === 'string' && raw.leafId.length <= 256 ? { leafId: raw.leafId } : {}),
@@ -1580,7 +1597,46 @@ function normalizeSshRemotePtyLease(value: unknown): SshRemotePtyLease | null {
     createdAt: typeof raw.createdAt === 'number' ? raw.createdAt : now,
     updatedAt: typeof raw.updatedAt === 'number' ? raw.updatedAt : now,
     ...(typeof raw.lastAttachedAt === 'number' ? { lastAttachedAt: raw.lastAttachedAt } : {}),
-    ...(typeof raw.lastDetachedAt === 'number' ? { lastDetachedAt: raw.lastDetachedAt } : {})
+    ...(typeof raw.lastDetachedAt === 'number' ? { lastDetachedAt: raw.lastDetachedAt } : {}),
+    ...(typeof raw.shutdownRequestedAt === 'number'
+      ? { shutdownRequestedAt: raw.shutdownRequestedAt }
+      : {})
+  }
+}
+
+function normalizeLocalPtyShutdown(value: unknown): PersistedLocalPtyShutdown | null {
+  if (!value || typeof value !== 'object') {
+    return null
+  }
+  const raw = value as Partial<PersistedLocalPtyShutdown>
+  if (typeof raw.ptyId !== 'string' || typeof raw.requestedAt !== 'number') {
+    return null
+  }
+  return {
+    ptyId: raw.ptyId,
+    requestedAt: raw.requestedAt,
+    ...(typeof raw.expectedPaneKey === 'string' ? { expectedPaneKey: raw.expectedPaneKey } : {}),
+    ...(typeof raw.expectedTabId === 'string' ? { expectedTabId: raw.expectedTabId } : {})
+  }
+}
+
+function normalizeRuntimeTerminalClose(value: unknown): PersistedRuntimeTerminalClose | null {
+  if (!value || typeof value !== 'object') {
+    return null
+  }
+  const raw = value as Partial<PersistedRuntimeTerminalClose>
+  if (
+    typeof raw.environmentId !== 'string' ||
+    typeof raw.handle !== 'string' ||
+    typeof raw.requestedAt !== 'number'
+  ) {
+    return null
+  }
+  return {
+    environmentId: raw.environmentId,
+    handle: raw.handle,
+    ...(typeof raw.runtimeId === 'string' ? { runtimeId: raw.runtimeId } : {}),
+    requestedAt: raw.requestedAt
   }
 }
 
@@ -2260,9 +2316,32 @@ function normalizeLegacyPaneKeyAliasEntries(value: unknown): LegacyPaneKeyAliasE
       return false
     }
     const legacy = parseLegacyNumericPaneKey(candidate.legacyPaneKey)
+    const relocatedSource = parsePaneKey(candidate.legacyPaneKey)
     const stable = parsePaneKey(candidate.stablePaneKey)
-    return Boolean(legacy && stable && legacy.tabId === stable.tabId)
+    return Boolean(stable && ((legacy && legacy.tabId === stable.tabId) || relocatedSource))
   })
+}
+
+function registerPersistedPaneKeyAlias(entry: LegacyPaneKeyAliasEntry): void {
+  if (parseLegacyNumericPaneKey(entry.legacyPaneKey)) {
+    agentHookServer.registerPaneKeyAlias(
+      entry.legacyPaneKey,
+      entry.stablePaneKey,
+      entry.ptyId,
+      entry.updatedAt,
+      { overwriteExisting: false }
+    )
+    return
+  }
+  // Why: detached agents keep their original UUID pane key across restarts;
+  // restore the physical-to-current-owner mapping before hook replay begins.
+  agentHookServer.transferPaneAuthority(
+    entry.legacyPaneKey,
+    entry.stablePaneKey,
+    entry.ptyId,
+    entry.updatedAt,
+    { authorityVerified: false }
+  )
 }
 
 function mergeLegacyPaneKeyAliasEntries(
@@ -2615,6 +2694,8 @@ export class Store {
   private lastWrittenStateHash: string | null = null
   private firstPendingSaveAt: number | null = null
   private githubCacheDirty = false
+  private terminalTeardownIntentJournalReady = false
+  private sshRemotePtyLeasesByIdentity: Map<string, SshRemotePtyLease> | null = null
   private gitUsernameCache = new Map<string, string>()
   private loadNeedsSave = false
   private settingsChangeListeners = new Set<
@@ -2637,6 +2718,10 @@ export class Store {
       fallbackSnapshotRoot: legacySnapshotRoot === profileSnapshotRoot ? null : legacySnapshotRoot
     }
     const loaded = this.load()
+    this.terminalTeardownIntentJournalReady = applyTerminalTeardownIntentSnapshot(
+      loaded,
+      this.dataFile
+    )
     const normalized = normalizePersistedPaneIdentityState(loaded)
     this.state = normalized.state
     const adaptedProjectGroups = this.adaptFlatFolderScanProjectGroups()
@@ -2644,13 +2729,7 @@ export class Store {
       setMigrationUnsupportedPty(entry)
     }
     for (const entry of normalized.legacyPaneKeyAliasEntries) {
-      agentHookServer.registerPaneKeyAlias(
-        entry.legacyPaneKey,
-        entry.stablePaneKey,
-        entry.ptyId,
-        entry.updatedAt,
-        { overwriteExisting: false }
-      )
+      registerPersistedPaneKeyAlias(entry)
     }
     setMigrationUnsupportedPtyPersistenceListener((entries) => {
       this.state.migrationUnsupportedPtyEntries = entries
@@ -2996,6 +3075,11 @@ export class Store {
         const migratedTerminalLineHeight = normalizeTerminalLineHeight(
           parsed.settings?.terminalLineHeight
         )
+        const terminalRightClickToPasteDefaultedForPlatform =
+          parsed.settings?.terminalRightClickToPasteDefaultedForPlatform === true
+        if (!terminalRightClickToPasteDefaultedForPlatform) {
+          this.loadNeedsSave = true
+        }
         if (
           parsed.settings?.terminalLineHeight !== undefined &&
           parsed.settings.terminalLineHeight !== migratedTerminalLineHeight
@@ -3116,6 +3200,9 @@ export class Store {
             // product intent was only to change the default, and the setting
             // stays user-toggleable.
             ...stripLegacyTerminalScrollbackBytes(parsed.settings),
+            prBotAuthorOverrides: normalizePRBotAuthorOverrides(
+              parsed.settings?.prBotAuthorOverrides
+            ),
             // Why: v1.3.42 renamed the cosmetic sidekick setting to pet. Carry
             // the old persisted flag forward once so enabled users don't lose it.
             experimentalPet:
@@ -3135,6 +3222,15 @@ export class Store {
             ...migratedAutoRenameBranchFromWork,
             ...migratedTerminalCursorStyle,
             terminalLineHeight: migratedTerminalLineHeight,
+            // Why: the old global true default was inherited, while false was
+            // always an explicit opt-out and must survive this one-shot reset.
+            terminalRightClickToPaste: terminalRightClickToPasteDefaultedForPlatform
+              ? (parsed.settings?.terminalRightClickToPaste ??
+                defaults.settings.terminalRightClickToPaste)
+              : parsed.settings?.terminalRightClickToPaste === false
+                ? false
+                : defaults.settings.terminalRightClickToPaste,
+            terminalRightClickToPasteDefaultedForPlatform: true,
             ...migratedTerminalTuiScrollSensitivity.settings,
             experimentalActivity: migratedExperimentalActivity,
             experimentalActivityDefaultedOffForAllUsers: true,
@@ -3305,6 +3401,25 @@ export class Store {
             ) {
               this.loadNeedsSave = true
             }
+            // Why: only upgraded profiles that still use the new default get
+            // the one-time usage-display change notice; brand-new profiles and
+            // users who already chose remaining stay quiet.
+            const usagePercentageDisplayChangeNoticeDismissed =
+              resolveUsagePercentageDisplayChangeNoticeDismissed({
+                rawDismissed: parsed.ui?.usagePercentageDisplayChangeNoticeDismissed,
+                rawUsagePercentageDisplay: parsed.ui?.usagePercentageDisplay,
+                isExistingProfile: isExistingPersistedProfile({
+                  repoCount: parsed.repos?.length ?? 0,
+                  onboardingClosedAt: normalizedOnboarding.closedAt,
+                  ui: parsed.ui
+                })
+              })
+            if (
+              parsed.ui?.usagePercentageDisplayChangeNoticeDismissed !==
+              usagePercentageDisplayChangeNoticeDismissed
+            ) {
+              this.loadNeedsSave = true
+            }
             return {
               ...defaults.ui,
               // Why: missing card properties should follow the persisted card
@@ -3318,6 +3433,7 @@ export class Store {
               rightSidebarOpen,
               rightSidebarTab: normalizeRightSidebarTab(parsed.ui?.rightSidebarTab),
               setupGuideSidebarDismissed,
+              usagePercentageDisplayChangeNoticeDismissed,
               setupGuideBrowserMilestoneMigrated:
                 typeof parsed.ui?.setupGuideBrowserMilestoneMigrated === 'boolean'
                   ? parsed.ui.setupGuideBrowserMilestoneMigrated
@@ -3384,6 +3500,18 @@ export class Store {
           sshRemotePtyLeases: (parsed.sshRemotePtyLeases ?? [])
             .map(normalizeSshRemotePtyLease)
             .filter((lease): lease is SshRemotePtyLease => lease !== null),
+          pendingLocalPtyShutdowns: (parsed.pendingLocalPtyShutdowns ?? [])
+            .map(normalizeLocalPtyShutdown)
+            .filter((request): request is PersistedLocalPtyShutdown => request !== null),
+          pendingRuntimeTerminalCloses: (parsed.pendingRuntimeTerminalCloses ?? [])
+            .map(normalizeRuntimeTerminalClose)
+            .filter((request): request is PersistedRuntimeTerminalClose => request !== null),
+          terminalTeardownIntentRevision:
+            typeof parsed.terminalTeardownIntentRevision === 'number' &&
+            Number.isSafeInteger(parsed.terminalTeardownIntentRevision) &&
+            parsed.terminalTeardownIntentRevision >= 0
+              ? parsed.terminalTeardownIntentRevision
+              : 0,
           claudeLivePtySessionIds: normalizeClaudeLivePtySessionIds(parsed.claudeLivePtySessionIds),
           migrationUnsupportedPtyEntries: normalizeMigrationUnsupportedPtyEntries(
             parsed.migrationUnsupportedPtyEntries
@@ -3682,6 +3810,11 @@ export class Store {
       // is not what the file holds.
       if (this.writeGeneration === gen) {
         this.lastWrittenStateHash = stateHash
+        // Why: a teardown mutation can append while this stale payload is in
+        // flight. Keep its journal record until that newer state reaches disk.
+        if (this.computeStateHash() === stateHash) {
+          this.compactTerminalTeardownIntentJournal()
+        }
       }
     } finally {
       if (!renamed) {
@@ -3732,6 +3865,7 @@ export class Store {
       renameSync(tmpFile, dataFile)
       renamed = true
       this.lastWrittenStateHash = stateHash
+      this.compactTerminalTeardownIntentJournal()
     } finally {
       if (!renamed) {
         try {
@@ -3759,6 +3893,19 @@ export class Store {
     this.writeGeneration++
     this.pendingWrite = null
     this.writeToDiskSync({ force: asyncWriteWasInFlight })
+  }
+
+  private compactTerminalTeardownIntentJournal(): void {
+    try {
+      // Why: per-owner appends stay O(1); each successful full-state save
+      // bounds replay and disk growth to one current checkpoint.
+      writeTerminalTeardownIntentSnapshot(this.state, this.dataFile)
+      this.terminalTeardownIntentJournalReady = true
+    } catch (error) {
+      // The full store already contains this revision, so stale journal records
+      // are fenced on reload and compaction can safely retry on the next save.
+      console.warn('[persistence] Failed to compact terminal teardown intent journal:', error)
+    }
   }
 
   // ── Repos ──────────────────────────────────────────────────────────
@@ -5246,6 +5393,13 @@ export class Store {
     if ('uiLanguage' in updates) {
       sanitizedUpdates.uiLanguage = normalizeUiLanguage(updates.uiLanguage)
     }
+    if ('prBotAuthorOverrides' in updates) {
+      // Why: every writer (desktop IPC, paired web RPC, and migrations) reaches
+      // this boundary, so the persisted list stays bounded and well-formed.
+      sanitizedUpdates.prBotAuthorOverrides = normalizePRBotAuthorOverrides(
+        updates.prBotAuthorOverrides
+      )
+    }
     const historyWithPreviousLayout = buildWorkspaceDirHistoryForUpdate(
       this.state.settings,
       sanitizedUpdates
@@ -5333,6 +5487,9 @@ export class Store {
         this.state.ui?.workspaceBoardColumnWidth
       ),
       syncTaskStatusFromWorkspaceBoard: this.state.ui?.syncTaskStatusFromWorkspaceBoard === true,
+      usagePercentageDisplay: normalizeUsagePercentageDisplay(
+        this.state.ui?.usagePercentageDisplay
+      ),
       // Why: strict boolean coercion so a missing/legacy value reads as false
       // (first-run notice still fires) rather than leaking a non-bool through.
       trayMinimizeNoticeShown: this.state.ui?.trayMinimizeNoticeShown === true,
@@ -5412,6 +5569,9 @@ export class Store {
         sanitizedUpdates.syncTaskStatusFromWorkspaceBoard !== undefined
           ? sanitizedUpdates.syncTaskStatusFromWorkspaceBoard === true
           : this.state.ui?.syncTaskStatusFromWorkspaceBoard === true,
+      usagePercentageDisplay: normalizeUsagePercentageDisplay(
+        sanitizedUpdates.usagePercentageDisplay ?? this.state.ui?.usagePercentageDisplay
+      ),
       markdownTocPanelWidth: clampMarkdownTocPanelWidth(
         sanitizedUpdates.markdownTocPanelWidth ?? this.state.ui?.markdownTocPanelWidth
       ),
@@ -5635,13 +5795,7 @@ export class Store {
       }
     }
     for (const entry of normalized.legacyPaneKeyAliasEntries) {
-      agentHookServer.registerPaneKeyAlias(
-        entry.legacyPaneKey,
-        entry.stablePaneKey,
-        entry.ptyId,
-        entry.updatedAt,
-        { overwriteExisting: false }
-      )
+      registerPersistedPaneKeyAlias(entry)
     }
     session = normalized.session
     const remappedLeases = remapSshRemotePtyLeaseLeafIds(
@@ -5651,6 +5805,7 @@ export class Store {
     )
     if (remappedLeases.changed) {
       this.state.sshRemotePtyLeases = remappedLeases.leases
+      this.sshRemotePtyLeasesByIdentity = null
     }
     if (session && prior) {
       const priorTabs = prior.tabsByWorktree ?? {}
@@ -6207,6 +6362,7 @@ export class Store {
     for (const lease of this.state.sshRemotePtyLeases ?? []) {
       if (lease.targetId === oldTargetId) {
         lease.targetId = newTargetId
+        this.sshRemotePtyLeasesByIdentity = null
         carrierChanged = true
       }
     }
@@ -6254,6 +6410,116 @@ export class Store {
     return leases.filter((lease) => targetId === undefined || lease.targetId === targetId)
   }
 
+  private getSshRemotePtyLeasesByIdentity(): Map<string, SshRemotePtyLease> {
+    this.sshRemotePtyLeasesByIdentity ??= indexSshRemotePtyLeases(
+      this.state.sshRemotePtyLeases ?? []
+    )
+    return this.sshRemotePtyLeasesByIdentity
+  }
+
+  getPendingLocalPtyShutdowns(): PersistedLocalPtyShutdown[] {
+    return [...(this.state.pendingLocalPtyShutdowns ?? [])]
+  }
+
+  private shouldPersistTerminalTeardownMutation(changed: boolean): boolean {
+    // Why: an earlier failed journal write can leave disk behind memory, so an
+    // idempotent retry must checkpoint even after memory already changed.
+    return changed || !this.terminalTeardownIntentJournalReady
+  }
+
+  upsertPendingLocalPtyShutdown(request: PersistedLocalPtyShutdown): void {
+    this.state.pendingLocalPtyShutdowns ??= []
+    const index = this.state.pendingLocalPtyShutdowns.findIndex(
+      (entry) => entry.ptyId === request.ptyId
+    )
+    if (index >= 0) {
+      this.state.pendingLocalPtyShutdowns[index] = request
+    } else {
+      this.state.pendingLocalPtyShutdowns.push(request)
+    }
+    this.persistTerminalTeardownIntents({ kind: 'local-upsert', request })
+  }
+
+  removePendingLocalPtyShutdown(ptyId: string): void {
+    const before = this.state.pendingLocalPtyShutdowns?.length ?? 0
+    this.state.pendingLocalPtyShutdowns = (this.state.pendingLocalPtyShutdowns ?? []).filter(
+      (entry) => entry.ptyId !== ptyId
+    )
+    if (
+      this.shouldPersistTerminalTeardownMutation(
+        this.state.pendingLocalPtyShutdowns.length !== before
+      )
+    ) {
+      this.persistTerminalTeardownIntents({ kind: 'local-remove', ptyId })
+    }
+  }
+
+  getPendingRuntimeTerminalCloses(): PersistedRuntimeTerminalClose[] {
+    return [...(this.state.pendingRuntimeTerminalCloses ?? [])]
+  }
+
+  upsertPendingRuntimeTerminalClose(request: PersistedRuntimeTerminalClose): void {
+    this.state.pendingRuntimeTerminalCloses ??= []
+    const index = this.state.pendingRuntimeTerminalCloses.findIndex(
+      (entry) => entry.environmentId === request.environmentId && entry.handle === request.handle
+    )
+    if (index >= 0) {
+      this.state.pendingRuntimeTerminalCloses[index] = request
+    } else {
+      this.state.pendingRuntimeTerminalCloses.push(request)
+    }
+    this.persistTerminalTeardownIntents({ kind: 'runtime-upsert', request })
+  }
+
+  removePendingRuntimeTerminalClose(environmentId: string, handle: string): void {
+    const before = this.state.pendingRuntimeTerminalCloses?.length ?? 0
+    this.state.pendingRuntimeTerminalCloses = (
+      this.state.pendingRuntimeTerminalCloses ?? []
+    ).filter((entry) => entry.environmentId !== environmentId || entry.handle !== handle)
+    if (
+      this.shouldPersistTerminalTeardownMutation(
+        this.state.pendingRuntimeTerminalCloses.length !== before
+      )
+    ) {
+      this.persistTerminalTeardownIntents({
+        kind: 'runtime-remove',
+        environmentId,
+        handle
+      })
+    }
+  }
+
+  removePendingRuntimeTerminalClosesForEnvironment(environmentId: string): void {
+    const before = this.state.pendingRuntimeTerminalCloses?.length ?? 0
+    this.state.pendingRuntimeTerminalCloses = (
+      this.state.pendingRuntimeTerminalCloses ?? []
+    ).filter((entry) => entry.environmentId !== environmentId)
+    if (
+      this.shouldPersistTerminalTeardownMutation(
+        this.state.pendingRuntimeTerminalCloses.length !== before
+      )
+    ) {
+      this.persistTerminalTeardownIntents({
+        kind: 'runtime-remove-environment',
+        environmentId
+      })
+    }
+  }
+
+  private sshTeardownIntentMutationForLease(
+    lease: Pick<SshRemotePtyLease, 'targetId' | 'ptyId' | 'relayInstanceId' | 'shutdownRequestedAt'>
+  ): TerminalTeardownIntentMutation {
+    return {
+      kind: 'ssh-set',
+      targetId: lease.targetId,
+      ptyId: lease.ptyId,
+      ...(lease.relayInstanceId ? { relayInstanceId: lease.relayInstanceId } : {}),
+      ...(lease.shutdownRequestedAt === undefined
+        ? {}
+        : { shutdownRequestedAt: lease.shutdownRequestedAt })
+    }
+  }
+
   upsertSshRemotePtyLease(
     lease: Omit<SshRemotePtyLease, 'createdAt' | 'updatedAt'> &
       Partial<Pick<SshRemotePtyLease, 'createdAt' | 'updatedAt'>>
@@ -6263,8 +6529,10 @@ export class Store {
     if (normalizedLease.leafId !== undefined && !isTerminalLeafId(normalizedLease.leafId)) {
       delete normalizedLease.leafId
     }
+    const parsedPtyId = parseAppSshPtyId(normalizedLease.ptyId)
+    normalizedLease.relayInstanceId ??= parsedPtyId?.relayInstanceId
     // Why: app-facing SSH PTY ids are globally scoped; durable relay leases
-    // stay target-local so reconnect can call relay pty.attach with raw ids.
+    // keep raw ids plus their boot generation so reconnect can reject reuse.
     normalizedLease.ptyId = this.getRelayPtyIdForSshLeaseStorage(
       normalizedLease.targetId,
       normalizedLease.ptyId
@@ -6275,10 +6543,13 @@ export class Store {
         entry.targetId === normalizedLease.targetId && entry.ptyId === normalizedLease.ptyId
     )
     const existing = existingIndex >= 0 ? this.state.sshRemotePtyLeases[existingIndex] : undefined
+    const sameGeneration = existing?.relayInstanceId === normalizedLease.relayInstanceId
     const next: SshRemotePtyLease = {
-      ...existing,
+      ...(sameGeneration ? existing : undefined),
       ...normalizedLease,
-      createdAt: existing?.createdAt ?? normalizedLease.createdAt ?? now,
+      createdAt: sameGeneration
+        ? (existing?.createdAt ?? normalizedLease.createdAt ?? now)
+        : (normalizedLease.createdAt ?? now),
       updatedAt: normalizedLease.updatedAt ?? now
     }
     if (existingIndex >= 0) {
@@ -6286,7 +6557,9 @@ export class Store {
     } else {
       this.state.sshRemotePtyLeases.push(next)
     }
+    this.sshRemotePtyLeasesByIdentity = null
     this.flush()
+    this.persistTerminalTeardownIntents(this.sshTeardownIntentMutationForLease(next))
   }
 
   markSshRemotePtyLeases(targetId: string, state: SshRemotePtyLease['state']): void {
@@ -6312,6 +6585,10 @@ export class Store {
         }
         changed = true
       }
+      if (shouldClearBindings && lease.shutdownRequestedAt !== undefined) {
+        delete lease.shutdownRequestedAt
+        changed = true
+      }
       if (shouldClearBindings) {
         leasesToClear.push(lease)
       }
@@ -6319,25 +6596,41 @@ export class Store {
     const bindingsChanged = shouldClearBindings
       ? this.clearSshRemotePtyBindingsForLeases(targetId, leasesToClear)
       : false
-    if (changed || bindingsChanged) {
-      this.flush()
+    if (this.shouldPersistTerminalTeardownMutation(changed || bindingsChanged)) {
+      if (shouldClearBindings) {
+        this.persistTerminalTeardownIntents({ kind: 'ssh-remove-target', targetId })
+      } else {
+        this.scheduleSave()
+      }
     }
   }
 
-  markSshRemotePtyLease(targetId: string, ptyId: string, state: SshRemotePtyLease['state']): void {
+  markSshRemotePtyLease(
+    targetId: string,
+    ptyId: string,
+    state: SshRemotePtyLease['state']
+  ): boolean {
+    const requestedGeneration = parseAppSshPtyId(ptyId)?.relayInstanceId
     const relayPtyId = this.getRelayPtyIdForSshLeaseStorage(targetId, ptyId)
-    const lease = this.state.sshRemotePtyLeases?.find(
-      (entry) => entry.targetId === targetId && entry.ptyId === relayPtyId
+    const lease = this.getSshRemotePtyLeasesByIdentity().get(
+      sshRemotePtyLeaseIdentityKey(targetId, relayPtyId, requestedGeneration)
     )
     if (!lease) {
-      return
+      return false
     }
     const shouldClearBindings = state === 'terminated' || state === 'expired'
+    let intentChanged = false
+    if (shouldClearBindings && lease.shutdownRequestedAt !== undefined) {
+      delete lease.shutdownRequestedAt
+      intentChanged = true
+    }
     if (lease.state === state) {
-      if (shouldClearBindings && this.clearSshRemotePtyBindingsForLeases(targetId, [lease])) {
-        this.flush()
+      const bindingsChanged =
+        shouldClearBindings && this.clearSshRemotePtyBindingsForLeases(targetId, [lease])
+      if (this.shouldPersistTerminalTeardownMutation(bindingsChanged || intentChanged)) {
+        this.persistTerminalTeardownIntents(this.sshTeardownIntentMutationForLease(lease))
       }
-      return
+      return true
     }
     const now = Date.now()
     lease.state = state
@@ -6349,22 +6642,86 @@ export class Store {
     }
     if (shouldClearBindings) {
       this.clearSshRemotePtyBindingsForLeases(targetId, [lease])
+      this.persistTerminalTeardownIntents(this.sshTeardownIntentMutationForLease(lease))
+    } else {
+      this.scheduleSave()
     }
-    this.flush()
+    return true
+  }
+
+  migrateLegacySshRemotePtyLeaseGeneration(
+    targetId: string,
+    ptyId: string,
+    relayInstanceId: string
+  ): boolean {
+    const relayPtyId = this.getRelayPtyIdForSshLeaseStorage(targetId, ptyId)
+    const legacyKey = sshRemotePtyLeaseIdentityKey(targetId, relayPtyId)
+    const leasesByIdentity = this.getSshRemotePtyLeasesByIdentity()
+    const lease = leasesByIdentity.get(legacyKey)
+    if (!lease) {
+      return false
+    }
+    leasesByIdentity.delete(legacyKey)
+    const now = Date.now()
+    lease.relayInstanceId = relayInstanceId
+    leasesByIdentity.set(sshRemotePtyLeaseIdentityKey(targetId, relayPtyId, relayInstanceId), lease)
+    lease.state = 'attached'
+    lease.updatedAt = now
+    lease.lastAttachedAt = now
+    // Why: crash-safe adoption must remain O(1) per restored pane instead of
+    // synchronously serializing the full persisted store during startup.
+    this.persistTerminalTeardownIntents({
+      kind: 'ssh-migrate-generation',
+      targetId,
+      ptyId: relayPtyId,
+      relayInstanceId,
+      attachedAt: now
+    })
+    return true
+  }
+
+  markSshRemotePtyShutdownRequested(targetId: string, ptyId: string): boolean {
+    const requestedGeneration = parseAppSshPtyId(ptyId)?.relayInstanceId
+    const relayPtyId = this.getRelayPtyIdForSshLeaseStorage(targetId, ptyId)
+    const lease = this.getSshRemotePtyLeasesByIdentity().get(
+      sshRemotePtyLeaseIdentityKey(targetId, relayPtyId, requestedGeneration)
+    )
+    if (!lease) {
+      return false
+    }
+    lease.shutdownRequestedAt = Date.now()
+    lease.updatedAt = lease.shutdownRequestedAt
+    this.persistTerminalTeardownIntents(this.sshTeardownIntentMutationForLease(lease))
+    return true
   }
 
   removeSshRemotePtyLease(targetId: string, ptyId: string): void {
+    const requestedGeneration = parseAppSshPtyId(ptyId)?.relayInstanceId
     const relayPtyId = this.getRelayPtyIdForSshLeaseStorage(targetId, ptyId)
     const leases = (this.state.sshRemotePtyLeases ?? []).filter(
-      (lease) => lease.targetId === targetId && lease.ptyId === relayPtyId
+      (lease) =>
+        lease.targetId === targetId &&
+        lease.ptyId === relayPtyId &&
+        lease.relayInstanceId === requestedGeneration
     )
     const before = this.state.sshRemotePtyLeases?.length ?? 0
     this.clearSshRemotePtyBindingsForLeases(targetId, leases)
     this.state.sshRemotePtyLeases = (this.state.sshRemotePtyLeases ?? []).filter(
-      (lease) => lease.targetId !== targetId || lease.ptyId !== relayPtyId
+      (lease) =>
+        lease.targetId !== targetId ||
+        lease.ptyId !== relayPtyId ||
+        lease.relayInstanceId !== requestedGeneration
     )
-    if (this.state.sshRemotePtyLeases.length !== before) {
-      this.flush()
+    if (
+      this.shouldPersistTerminalTeardownMutation(this.state.sshRemotePtyLeases.length !== before)
+    ) {
+      this.sshRemotePtyLeasesByIdentity = null
+      this.persistTerminalTeardownIntents({
+        kind: 'ssh-set',
+        targetId,
+        ptyId: relayPtyId,
+        ...(requestedGeneration ? { relayInstanceId: requestedGeneration } : {})
+      })
     }
   }
 
@@ -6375,8 +6732,11 @@ export class Store {
     this.state.sshRemotePtyLeases = this.state.sshRemotePtyLeases.filter(
       (lease) => lease.targetId !== targetId
     )
-    if (this.state.sshRemotePtyLeases.length !== before) {
-      this.flush()
+    if (
+      this.shouldPersistTerminalTeardownMutation(this.state.sshRemotePtyLeases.length !== before)
+    ) {
+      this.sshRemotePtyLeasesByIdentity = null
+      this.persistTerminalTeardownIntents({ kind: 'ssh-remove-target', targetId })
     }
   }
 
@@ -6446,6 +6806,32 @@ export class Store {
   }
 
   // ── Flush (for shutdown) ───────────────────────────────────────────
+
+  private persistTerminalTeardownIntents(mutation: TerminalTeardownIntentMutation): void {
+    if (this.writesFrozen) {
+      return
+    }
+    this.state.terminalTeardownIntentRevision = (this.state.terminalTeardownIntentRevision ?? 0) + 1
+    try {
+      // Why: crash durability is per owner, but an O(1) journal append avoids
+      // rewriting every retained owner and three filesystem calls per mutation.
+      appendTerminalTeardownIntentMutation(
+        this.state,
+        this.dataFile,
+        mutation,
+        this.terminalTeardownIntentJournalReady
+      )
+      this.terminalTeardownIntentJournalReady = true
+      this.scheduleSave()
+    } catch (error) {
+      console.warn('[persistence] Failed to write terminal teardown intent snapshot:', error)
+      // Why: an append may have left a partial record. If the full-store
+      // fallback also fails, the next mutation must checkpoint, never append.
+      this.terminalTeardownIntentJournalReady = false
+      // The full-store sync path is an expensive but durable I/O-failure fallback.
+      this.flushOrThrow()
+    }
+  }
 
   flush(): void {
     try {

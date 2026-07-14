@@ -18,7 +18,8 @@ const {
   mockPortForwardManager,
   mockPortScannerCallbacks,
   mockNextConnectionManagers,
-  mockNextPortForwardManagers
+  mockNextPortForwardManagers,
+  shutdownPtyWithRetainedOwnershipMock
 } = vi.hoisted(() => ({
   handleMock: vi.fn(),
   powerMonitorOffMock: vi.fn(),
@@ -81,7 +82,8 @@ const {
   },
   mockPortScannerCallbacks: new Map<string, unknown>(),
   mockNextConnectionManagers: [] as unknown[],
-  mockNextPortForwardManagers: [] as unknown[]
+  mockNextPortForwardManagers: [] as unknown[],
+  shutdownPtyWithRetainedOwnershipMock: vi.fn()
 }))
 
 vi.mock('electron', () => ({
@@ -157,6 +159,7 @@ vi.mock('../providers/ssh-filesystem-provider', () => ({
 vi.mock('./pty', () => ({
   registerSshPtyProvider: vi.fn(),
   unregisterSshPtyProvider: vi.fn(),
+  releasePendingSshShutdownsForTarget: vi.fn(),
   clearPtyOwnershipForConnection: vi.fn(),
   clearProviderPtyState: vi.fn(),
   deletePtyOwnership: vi.fn(),
@@ -164,7 +167,9 @@ vi.mock('./pty', () => ({
   answerStartupTerminalColorQueriesForPty: vi.fn((_id: string, data: string) => data),
   getSshPtyProvider: vi.fn(),
   getPtyIdsForConnection: vi.fn().mockReturnValue([]),
-  isRendererPtyOutputPaused: vi.fn().mockReturnValue(false)
+  hasPendingSshShutdown: vi.fn().mockReturnValue(false),
+  isRendererPtyOutputPaused: vi.fn().mockReturnValue(false),
+  shutdownPtyWithRetainedOwnership: shutdownPtyWithRetainedOwnershipMock
 }))
 
 vi.mock('../providers/ssh-filesystem-dispatch', () => ({
@@ -219,7 +224,9 @@ import {
   clearProviderPtyState,
   deletePtyOwnership,
   getSshPtyProvider,
-  getPtyIdsForConnection
+  getPtyIdsForConnection,
+  releasePendingSshShutdownsForTarget,
+  shutdownPtyWithRetainedOwnership
 } from './pty'
 
 describe('SSH IPC handlers', () => {
@@ -342,8 +349,19 @@ describe('SSH IPC handlers', () => {
     powerMonitorOffMock.mockReset()
     vi.mocked(getSshPtyProvider).mockReset()
     vi.mocked(getPtyIdsForConnection).mockReset().mockReturnValue([])
+    vi.mocked(releasePendingSshShutdownsForTarget).mockReset()
     vi.mocked(clearProviderPtyState).mockReset()
     vi.mocked(deletePtyOwnership).mockReset()
+    vi.mocked(shutdownPtyWithRetainedOwnership)
+      .mockReset()
+      .mockImplementation(async (args) => {
+        await args.provider.shutdown(args.id, args.options)
+        vi.mocked(clearProviderPtyState)(args.id)
+        vi.mocked(deletePtyOwnership)(args.id)
+        if (args.connectionId) {
+          mockStore.markSshRemotePtyLease(args.connectionId, args.id, 'terminated')
+        }
+      })
 
     registerSshHandlers(mockStore as never, () => mockWindow as never)
   })
@@ -437,7 +455,9 @@ describe('SSH IPC handlers', () => {
       username: 'deploy'
     }
     mockSshStore.getTarget.mockReturnValue(target)
-    mockConnectionManager.connect.mockResolvedValue({})
+    const connection = {}
+    mockConnectionManager.connect.mockResolvedValue(connection)
+    mockConnectionManager.getConnection.mockReturnValue(connection)
     mockConnectionManager.getState.mockReturnValue({
       targetId: 'ssh-1',
       status: 'connected',
@@ -454,8 +474,46 @@ describe('SSH IPC handlers', () => {
     expect(mockMux.dispose).toHaveBeenCalledWith('shutdown')
     expect(mockStore.markSshRemotePtyLeases).toHaveBeenCalledWith('ssh-1', 'terminated')
     expect(mockConnectionManager.disconnect).toHaveBeenCalledWith('ssh-1')
+    expect(mockForceStopRelayForTarget).toHaveBeenCalledWith(connection, 'ssh-1')
     expect(mockStore.removeSshRemotePtyLeases).toHaveBeenCalledWith('ssh-1')
     expect(mockSshStore.removeTarget).toHaveBeenCalledWith('ssh-1')
+  })
+
+  it('ssh:removeTarget preserves target and relay ownership when PTY exit proof fails', async () => {
+    const target: SshTarget = {
+      id: 'ssh-1',
+      label: 'Server',
+      host: 'example.com',
+      port: 22,
+      username: 'deploy'
+    }
+    const connection = {}
+    mockSshStore.getTarget.mockReturnValue(target)
+    mockConnectionManager.connect.mockResolvedValue(connection)
+    mockConnectionManager.getConnection.mockReturnValue(connection)
+    mockConnectionManager.getState.mockReturnValue({
+      targetId: 'ssh-1',
+      status: 'connected',
+      error: null,
+      reconnectAttempt: 0
+    })
+    mockStore.getSshRemotePtyLeases.mockReturnValue([
+      { targetId: 'ssh-1', ptyId: 'pty-1', state: 'detached' }
+    ])
+    vi.mocked(getSshPtyProvider).mockReturnValue(mockPtyProvider as never)
+    vi.mocked(shutdownPtyWithRetainedOwnership).mockRejectedValueOnce(
+      new Error('PTY shutdown still pending')
+    )
+    await handlers.get('ssh:connect')!(null, { targetId: 'ssh-1' })
+
+    await expect(handlers.get('ssh:removeTarget')!(null, { id: 'ssh-1' })).rejects.toThrow(
+      'Failed to terminate SSH host sessions'
+    )
+
+    expect(mockForceStopRelayForTarget).not.toHaveBeenCalled()
+    expect(mockMux.dispose).not.toHaveBeenCalledWith('shutdown')
+    expect(mockStore.removeSshRemotePtyLeases).not.toHaveBeenCalled()
+    expect(mockSshStore.removeTarget).not.toHaveBeenCalled()
   })
 
   it('ssh:importConfig returns imported targets', async () => {
@@ -1196,8 +1254,16 @@ describe('SSH IPC handlers', () => {
       error: null,
       reconnectAttempt: 0
     })
+    const leaseLeafId = '11111111-1111-4111-8111-111111111111'
     mockStore.getSshRemotePtyLeases.mockReturnValue([
-      { targetId: 'ssh-1', ptyId: 'pty-lease', state: 'detached' }
+      {
+        targetId: 'ssh-1',
+        ptyId: 'pty-lease',
+        relayInstanceId: 'boot-a',
+        tabId: 'tab-lease',
+        leafId: leaseLeafId,
+        state: 'detached'
+      }
     ])
     vi.mocked(getSshPtyProvider).mockReturnValue(mockPtyProvider as never)
     vi.mocked(getPtyIdsForConnection).mockReturnValue(['ssh:ssh-1@@pty-live'])
@@ -1210,16 +1276,26 @@ describe('SSH IPC handlers', () => {
       immediate: true,
       keepHistory: false
     })
-    expect(mockPtyProvider.shutdown).toHaveBeenCalledWith('ssh:ssh-1@@pty-lease', {
+    expect(mockPtyProvider.shutdown).toHaveBeenCalledWith('ssh:ssh-1@@boot-a@@pty-lease', {
       immediate: true,
-      keepHistory: false
+      keepHistory: false,
+      expectedPaneKey: `tab-lease:${leaseLeafId}`,
+      expectedTabId: 'tab-lease'
     })
     expect(clearProviderPtyState).toHaveBeenCalledWith('ssh:ssh-1@@pty-live')
-    expect(clearProviderPtyState).toHaveBeenCalledWith('ssh:ssh-1@@pty-lease')
+    expect(clearProviderPtyState).toHaveBeenCalledWith('ssh:ssh-1@@boot-a@@pty-lease')
     expect(deletePtyOwnership).toHaveBeenCalledWith('ssh:ssh-1@@pty-live')
-    expect(deletePtyOwnership).toHaveBeenCalledWith('ssh:ssh-1@@pty-lease')
-    expect(mockStore.markSshRemotePtyLease).toHaveBeenCalledWith('ssh-1', 'pty-live', 'terminated')
-    expect(mockStore.markSshRemotePtyLease).toHaveBeenCalledWith('ssh-1', 'pty-lease', 'terminated')
+    expect(deletePtyOwnership).toHaveBeenCalledWith('ssh:ssh-1@@boot-a@@pty-lease')
+    expect(mockStore.markSshRemotePtyLease).toHaveBeenCalledWith(
+      'ssh-1',
+      'ssh:ssh-1@@pty-live',
+      'terminated'
+    )
+    expect(mockStore.markSshRemotePtyLease).toHaveBeenCalledWith(
+      'ssh-1',
+      'ssh:ssh-1@@boot-a@@pty-lease',
+      'terminated'
+    )
   })
 
   it('ssh:terminateSessions ignores expired leases when disconnected', async () => {
@@ -1259,16 +1335,50 @@ describe('SSH IPC handlers', () => {
 
     expect(mockConnectionManager.connect).toHaveBeenCalledWith(target)
     expect(mockForceStopRelayForTarget).toHaveBeenCalledWith(conn, 'ssh-1')
-    expect(mockStore.markSshRemotePtyLease).toHaveBeenCalledWith('ssh-1', 'pty-1', 'expired')
+    expect(mockStore.markSshRemotePtyLease).toHaveBeenCalledWith(
+      'ssh-1',
+      'ssh:ssh-1@@pty-1',
+      'expired'
+    )
     expect(mockStore.markSshRemotePtyLease).not.toHaveBeenCalledWith(
       'ssh-1',
       'pty-expired',
       'expired'
     )
+    expect(releasePendingSshShutdownsForTarget).toHaveBeenCalledWith('ssh-1')
     expect(mockConnectionManager.disconnect).toHaveBeenCalledWith('ssh-1')
   })
 
-  it('ssh:resetRelay clears scoped live PTYs while expiring raw leases', async () => {
+  it('ssh:resetRelay preserves retained shutdown owners when relay stop is unconfirmed', async () => {
+    const target: SshTarget = {
+      id: 'ssh-1',
+      label: 'Server',
+      host: 'example.com',
+      port: 22,
+      username: 'deploy'
+    }
+    const conn = {}
+    mockSshStore.getTarget.mockReturnValue(target)
+    mockConnectionManager.connect.mockResolvedValue(conn)
+    mockConnectionManager.getConnection.mockReturnValue(undefined)
+    mockForceStopRelayForTarget.mockRejectedValueOnce(new Error('relay stop unconfirmed'))
+    mockStore.getSshRemotePtyLeases.mockReturnValue([
+      { targetId: 'ssh-1', ptyId: 'pty-lease', relayInstanceId: 'boot-a', state: 'detached' }
+    ])
+    vi.mocked(getPtyIdsForConnection).mockReturnValue(['ssh:ssh-1@@boot-a@@pty-live'])
+
+    await expect(handlers.get('ssh:resetRelay')!(null, { targetId: 'ssh-1' })).rejects.toThrow(
+      'relay stop unconfirmed'
+    )
+
+    expect(releasePendingSshShutdownsForTarget).not.toHaveBeenCalled()
+    expect(mockStore.markSshRemotePtyLease).not.toHaveBeenCalled()
+    expect(clearProviderPtyState).not.toHaveBeenCalled()
+    expect(deletePtyOwnership).not.toHaveBeenCalled()
+    expect(mockConnectionManager.disconnect).toHaveBeenCalledWith('ssh-1')
+  })
+
+  it('ssh:resetRelay clears scoped live PTYs and exact generation-qualified leases', async () => {
     const target: SshTarget = {
       id: 'ssh-1',
       label: 'Server',
@@ -1281,17 +1391,21 @@ describe('SSH IPC handlers', () => {
     mockConnectionManager.connect.mockResolvedValue(conn)
     mockConnectionManager.getConnection.mockReturnValue(undefined)
     mockStore.getSshRemotePtyLeases.mockReturnValue([
-      { targetId: 'ssh-1', ptyId: 'pty-lease', state: 'detached' }
+      { targetId: 'ssh-1', ptyId: 'pty-lease', relayInstanceId: 'boot-a', state: 'detached' }
     ])
     vi.mocked(getPtyIdsForConnection).mockReturnValue(['ssh:ssh-1@@pty-live'])
 
     await handlers.get('ssh:resetRelay')!(null, { targetId: 'ssh-1' })
 
-    expect(mockStore.markSshRemotePtyLease).toHaveBeenCalledWith('ssh-1', 'pty-lease', 'expired')
+    expect(mockStore.markSshRemotePtyLease).toHaveBeenCalledWith(
+      'ssh-1',
+      'ssh:ssh-1@@boot-a@@pty-lease',
+      'expired'
+    )
     expect(clearProviderPtyState).toHaveBeenCalledWith('ssh:ssh-1@@pty-live')
-    expect(clearProviderPtyState).toHaveBeenCalledWith('ssh:ssh-1@@pty-lease')
+    expect(clearProviderPtyState).toHaveBeenCalledWith('ssh:ssh-1@@boot-a@@pty-lease')
     expect(deletePtyOwnership).toHaveBeenCalledWith('ssh:ssh-1@@pty-live')
-    expect(deletePtyOwnership).toHaveBeenCalledWith('ssh:ssh-1@@pty-lease')
+    expect(deletePtyOwnership).toHaveBeenCalledWith('ssh:ssh-1@@boot-a@@pty-lease')
     expect(mockConnectionManager.disconnect).toHaveBeenCalledWith('ssh-1')
   })
 
@@ -1594,7 +1708,11 @@ describe('SSH IPC handlers', () => {
 
     expect(mockStore.markSshRemotePtyLeases).not.toHaveBeenCalledWith('ssh-1', 'terminated')
     expect(mockStore.markSshRemotePtyLeases).toHaveBeenCalledWith('ssh-1', 'detached')
-    expect(mockStore.markSshRemotePtyLease).toHaveBeenCalledWith('ssh-1', 'pty-1', 'expired')
+    expect(mockStore.markSshRemotePtyLease).toHaveBeenCalledWith(
+      'ssh-1',
+      'ssh:ssh-1@@pty-1',
+      'expired'
+    )
     expect(mockForceStopRelayForTarget).toHaveBeenCalledWith(conn, 'ssh-1')
   })
 

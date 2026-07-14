@@ -10,6 +10,7 @@ import { HeadlessEmulator } from './headless-emulator'
 import { getHistorySessionDirName } from './history-paths'
 import type { HistoryReader } from './history-reader'
 import type { SubprocessHandle } from './session'
+import type { TerminalHost } from './terminal-host'
 import type * as DaemonHealthModule from './daemon-health'
 import { getDaemonSocketPath } from './daemon-spawner'
 
@@ -31,7 +32,10 @@ function createTestDir(): string {
   return mkdtempSync(join(tmpdir(), 'daemon-adapter-test-'))
 }
 
-function createMockSubprocess(dataOnSubscribe?: string): SubprocessHandle & {
+function createMockSubprocess(
+  dataOnSubscribe?: string,
+  exitOnSubscribe?: number
+): SubprocessHandle & {
   pause: ReturnType<typeof vi.fn<() => void>>
   resume: ReturnType<typeof vi.fn<() => void>>
   _simulateData: (data: string) => void
@@ -49,7 +53,7 @@ function createMockSubprocess(dataOnSubscribe?: string): SubprocessHandle & {
     pause: vi.fn<() => void>(),
     resume: vi.fn<() => void>(),
     kill: vi.fn(() => setTimeout(() => onExitCb?.(0), 5)),
-    forceKill: vi.fn(),
+    forceKill: vi.fn(() => setTimeout(() => onExitCb?.(-1), 5)),
     signal: vi.fn(),
     onData(cb) {
       onDataCb = cb
@@ -59,6 +63,9 @@ function createMockSubprocess(dataOnSubscribe?: string): SubprocessHandle & {
     },
     onExit(cb) {
       onExitCb = cb
+      if (exitOnSubscribe !== undefined) {
+        cb(exitOnSubscribe)
+      }
     },
     dispose: vi.fn(),
     _simulateData(data: string) {
@@ -96,9 +103,13 @@ describe('DaemonPtyAdapter (IPtyProvider)', () => {
     command?: string
   } | null
   let subprocessDataOnSubscribe: string | undefined
+  let subprocessExitOnSubscribe: number | undefined
+  let subprocessSpawnError: Error | undefined
 
   beforeEach(async () => {
     subprocessDataOnSubscribe = undefined
+    subprocessExitOnSubscribe = undefined
+    subprocessSpawnError = undefined
     dir = createTestDir()
     socketPath = getDaemonSocketPath(dir)
     tokenPath = join(dir, 'test.token')
@@ -107,8 +118,11 @@ describe('DaemonPtyAdapter (IPtyProvider)', () => {
       socketPath,
       tokenPath,
       spawnSubprocess: (opts) => {
+        if (subprocessSpawnError) {
+          throw subprocessSpawnError
+        }
         lastSpawnOpts = opts
-        lastSubprocess = createMockSubprocess(subprocessDataOnSubscribe)
+        lastSubprocess = createMockSubprocess(subprocessDataOnSubscribe, subprocessExitOnSubscribe)
         return lastSubprocess
       }
     })
@@ -131,6 +145,150 @@ describe('DaemonPtyAdapter (IPtyProvider)', () => {
       const result = await adapter.spawn({ cols: 80, rows: 24 })
       expect(result.id).toBeDefined()
       expect(typeof result.id).toBe('string')
+    })
+
+    it('rejects a session that exits synchronously before its create reply publishes', async () => {
+      subprocessExitOnSubscribe = 0
+
+      await expect(
+        adapter.spawn({ sessionId: 'synchronous-admission-exit', cols: 80, rows: 24 })
+      ).rejects.toThrow('Daemon PTY exited during admission')
+
+      const daemon = server as unknown as {
+        host: { listSessions(): unknown[] }
+        streamRouteBySessionId: Map<string, unknown>
+      }
+      const internals = adapter as unknown as {
+        exitFence: Record<
+          'revisions' | 'admissions' | 'sessionGenerations' | 'pendingExits',
+          Map<string, unknown>
+        >
+      }
+      expect(adapter.hasPty('synchronous-admission-exit')).toBe(false)
+      expect(daemon.host.listSessions()).toHaveLength(0)
+      expect(daemon.streamRouteBySessionId.size).toBe(0)
+      expect(internals.exitFence.revisions.size).toBe(0)
+      expect(internals.exitFence.admissions.size).toBe(0)
+      expect(internals.exitFence.sessionGenerations.size).toBe(0)
+      expect(internals.exitFence.pendingExits.size).toBe(0)
+    })
+
+    it('serializes same-id admissions before a later failure can overlap ownership', async () => {
+      const daemon = server as unknown as { host: TerminalHost }
+      const originalCreateOrAttach = daemon.host.createOrAttach.bind(daemon.host)
+      let releaseFirst!: () => void
+      const firstGate = new Promise<void>((resolve) => {
+        releaseFirst = resolve
+      })
+      const createOrAttach = vi
+        .spyOn(daemon.host, 'createOrAttach')
+        .mockImplementationOnce(async (options) => {
+          await firstGate
+          return originalCreateOrAttach(options)
+        })
+        .mockRejectedValueOnce(new Error('later admission failed'))
+
+      const first = adapter.spawn({ sessionId: 'serialized-admission', cols: 80, rows: 24 })
+      await waitFor(() => createOrAttach.mock.calls.length === 1)
+      const second = adapter.spawn({ sessionId: 'serialized-admission', cols: 80, rows: 24 })
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      expect(createOrAttach).toHaveBeenCalledTimes(1)
+
+      releaseFirst()
+      await expect(first).resolves.toMatchObject({ id: 'serialized-admission' })
+      await expect(second).rejects.toThrow('later admission failed')
+
+      const internals = adapter as unknown as {
+        sessionAdmissionTails: Map<string, Promise<void>>
+      }
+      expect(createOrAttach).toHaveBeenCalledTimes(2)
+      expect(internals.sessionAdmissionTails.size).toBe(0)
+      expect(adapter.hasPty('serialized-admission')).toBe(true)
+    })
+
+    it('keeps different session admissions concurrent', async () => {
+      const daemon = server as unknown as { host: TerminalHost }
+      const originalCreateOrAttach = daemon.host.createOrAttach.bind(daemon.host)
+      let releaseBoth!: () => void
+      const gate = new Promise<void>((resolve) => {
+        releaseBoth = resolve
+      })
+      const createOrAttach = vi
+        .spyOn(daemon.host, 'createOrAttach')
+        .mockImplementation(async (options) => {
+          await gate
+          return originalCreateOrAttach(options)
+        })
+
+      const first = adapter.spawn({ sessionId: 'parallel-a', cols: 80, rows: 24 })
+      const second = adapter.spawn({ sessionId: 'parallel-b', cols: 80, rows: 24 })
+      await waitFor(() => createOrAttach.mock.calls.length === 2)
+
+      releaseBoth()
+      await expect(Promise.all([first, second])).resolves.toHaveLength(2)
+      const internals = adapter as unknown as {
+        sessionAdmissionTails: Map<string, Promise<void>>
+      }
+      expect(internals.sessionAdmissionTails.size).toBe(0)
+    })
+
+    it('releases fence and queue state after 100 ownerless spawn failures', async () => {
+      subprocessSpawnError = new Error('native spawn failed')
+
+      for (let index = 0; index < 100; index++) {
+        await expect(
+          adapter.spawn({ sessionId: `ownerless-failure-${index}`, cols: 80, rows: 24 })
+        ).rejects.toThrow('native spawn failed')
+      }
+
+      const internals = adapter as unknown as {
+        activeSessionIds: Set<string>
+        sessionAdmissionTails: Map<string, Promise<void>>
+        exitFence: Record<
+          'revisions' | 'admissions' | 'sessionGenerations' | 'pendingExits',
+          Map<string, unknown>
+        >
+      }
+      expect(internals.activeSessionIds.size).toBe(0)
+      expect(internals.sessionAdmissionTails.size).toBe(0)
+      expect(internals.exitFence.revisions.size).toBe(0)
+      expect(internals.exitFence.admissions.size).toBe(0)
+      expect(internals.exitFence.sessionGenerations.size).toBe(0)
+      expect(internals.exitFence.pendingExits.size).toBe(0)
+    })
+
+    it('fails closed when a preserved legacy session has no observable pane identity', async () => {
+      const legacy = new DaemonPtyAdapter({ socketPath, tokenPath, protocolVersion: 21 })
+      const internals = legacy as unknown as {
+        client: {
+          ensureConnected: () => Promise<void>
+          request: () => Promise<unknown>
+        }
+      }
+      vi.spyOn(internals.client, 'ensureConnected').mockResolvedValue(undefined)
+      const request = vi.spyOn(internals.client, 'request').mockResolvedValue({
+        sessions: [
+          {
+            sessionId: 'legacy-session',
+            isAlive: true,
+            cwd: '/repo'
+          }
+        ]
+      })
+      try {
+        await legacy.listProcesses()
+        await expect(
+          legacy.spawn({
+            sessionId: 'legacy-session',
+            cols: 80,
+            rows: 24,
+            env: { ORCA_PANE_KEY: 'tab-b:leaf-b', ORCA_TAB_ID: 'tab-b' }
+          })
+        ).rejects.toThrow('Legacy PTY identity unavailable')
+        expect(request).toHaveBeenCalledOnce()
+      } finally {
+        legacy.dispose()
+      }
     })
 
     it('uses worktreeId as session prefix when provided', async () => {
@@ -377,6 +535,45 @@ describe('DaemonPtyAdapter (IPtyProvider)', () => {
   })
 
   describe('shutdown', () => {
+    it('retires identity-bearing shutdowns that cannot be proven on a restarted legacy adapter', async () => {
+      const legacy = new DaemonPtyAdapter({ socketPath, tokenPath, protocolVersion: 21 })
+      try {
+        await expect(
+          legacy.shutdown('legacy-session', {
+            immediate: true,
+            expectedPaneKey: 'tab-a:leaf-a',
+            expectedTabId: 'tab-a'
+          })
+        ).rejects.toThrow('Legacy PTY identity unavailable')
+      } finally {
+        legacy.dispose()
+      }
+    })
+
+    it('carries pane identity through the daemon and rejects a stale kill', async () => {
+      const { id } = await adapter.spawn({
+        cols: 80,
+        rows: 24,
+        env: { ORCA_PANE_KEY: 'tab-b:leaf-b', ORCA_TAB_ID: 'tab-b' }
+      })
+
+      await expect(
+        adapter.shutdown(id, {
+          immediate: true,
+          expectedPaneKey: 'tab-a:leaf-a',
+          expectedTabId: 'tab-a'
+        })
+      ).rejects.toThrow('PTY identity mismatch')
+      expect(lastSubprocess.forceKill).not.toHaveBeenCalled()
+      expect(await adapter.listProcesses()).toHaveLength(1)
+
+      await adapter.shutdown(id, {
+        immediate: true,
+        expectedPaneKey: 'tab-b:leaf-b',
+        expectedTabId: 'tab-b'
+      })
+    })
+
     it('kills the session', async () => {
       const { id } = await adapter.spawn({ cols: 80, rows: 24 })
       await adapter.shutdown(id, { immediate: false })
@@ -484,6 +681,228 @@ describe('DaemonPtyAdapter (IPtyProvider)', () => {
       await waitFor(() => exits.length > 0)
       expect(exits[0]).toEqual({ id, code: 42 })
     })
+
+    it('suppresses an old exit when targeted readback proves a same-id replacement', async () => {
+      const exits: { id: string; code: number }[] = []
+      adapter.onExit((payload) => exits.push(payload))
+      const { id } = await adapter.spawn({ sessionId: 'same-id', cols: 80, rows: 24 })
+      const internals = adapter as unknown as {
+        readAppliedSize(sessionId: string): Promise<{
+          status: 'alive' | 'absent' | 'unknown'
+          size?: { cols: number; rows: number }
+        }>
+        handleExitEvent(sessionId: string, code: number): Promise<void>
+      }
+      vi.spyOn(internals, 'readAppliedSize').mockResolvedValueOnce({
+        status: 'alive',
+        size: { cols: 80, rows: 24 }
+      })
+
+      await internals.handleExitEvent(id, 0)
+
+      expect(adapter.hasPty(id)).toBe(true)
+      expect(exits).toEqual([])
+    })
+
+    it('rejects an exit from an older daemon session generation without probing', async () => {
+      const exits: { id: string; code: number }[] = []
+      adapter.onExit((payload) => exits.push(payload))
+      const { id } = await adapter.spawn({ sessionId: 'generation-reuse', cols: 80, rows: 24 })
+      const internals = adapter as unknown as {
+        readAppliedSize(sessionId: string): Promise<{ status: 'alive' | 'absent' | 'unknown' }>
+        handleExitEvent(sessionId: string, code: number, sessionGeneration?: string): Promise<void>
+        exitFence: { rememberGeneration(sessionId: string, generation: string): void }
+      }
+      internals.exitFence.rememberGeneration(id, 'replacement-generation')
+      const readback = vi.spyOn(internals, 'readAppliedSize')
+
+      await internals.handleExitEvent(id, 7, 'old-generation')
+
+      expect(readback).not.toHaveBeenCalled()
+      expect(adapter.hasPty(id)).toBe(true)
+      expect(exits).toEqual([])
+    })
+
+    it('retains a replacement exit emitted before admission publishes its generation', async () => {
+      const exits: { id: string; code: number }[] = []
+      adapter.onExit((payload) => exits.push(payload))
+      const { id } = await adapter.spawn({ sessionId: 'pre-reply-exit', cols: 80, rows: 24 })
+      const internals = adapter as unknown as {
+        readAppliedSize(sessionId: string): Promise<{ status: 'alive' | 'absent' | 'unknown' }>
+        handleExitEvent(sessionId: string, code: number, sessionGeneration?: string): Promise<void>
+        reconcilePendingExitAfterAdmission(sessionId: string): Promise<boolean>
+        exitFence: {
+          beginAdmission(sessionId: string): {
+            complete(): void
+          }
+          rememberGeneration(
+            sessionId: string,
+            generation: string,
+            admission?: { complete(): void }
+          ): boolean
+          getPending(sessionId: string): { code: number; sessionGeneration?: string } | undefined
+        }
+      }
+      const admission = internals.exitFence.beginAdmission(id)
+      vi.spyOn(internals, 'readAppliedSize').mockResolvedValue({ status: 'absent' })
+
+      await internals.handleExitEvent(id, 9, 'replacement-generation')
+
+      expect(internals.exitFence.getPending(id)).toEqual({
+        code: 9,
+        sessionGeneration: 'replacement-generation'
+      })
+      internals.exitFence.rememberGeneration(id, 'replacement-generation', admission)
+      admission.complete()
+      await internals.reconcilePendingExitAfterAdmission(id)
+
+      expect(adapter.hasPty(id)).toBe(false)
+      expect(exits).toEqual([{ id, code: 9 }])
+    })
+
+    it('does not let an older alive readback erase a newer deferred exit', async () => {
+      const exits: { id: string; code: number }[] = []
+      adapter.onExit((payload) => exits.push(payload))
+      const { id } = await adapter.spawn({ sessionId: 'overlapping-readback', cols: 80, rows: 24 })
+      let resolveOlderReadback!: (value: { status: 'alive'; sessionGeneration: string }) => void
+      const olderReadback = new Promise<{
+        status: 'alive'
+        sessionGeneration: string
+      }>((resolve) => {
+        resolveOlderReadback = resolve
+      })
+      const internals = adapter as unknown as {
+        readAppliedSize(sessionId: string): Promise<{
+          status: 'alive' | 'absent' | 'unknown'
+          sessionGeneration?: string
+        }>
+        handleExitEvent(sessionId: string, code: number, sessionGeneration?: string): Promise<void>
+        reconcilePendingExitAfterAdmission(sessionId: string): Promise<boolean>
+        exitFence: {
+          beginAdmission(sessionId: string): { complete(): void }
+          rememberGeneration(
+            sessionId: string,
+            generation: string,
+            admission?: { complete(): void }
+          ): boolean
+          getPending(sessionId: string): { code: number; sessionGeneration?: string } | undefined
+        }
+      }
+      const readback = vi
+        .spyOn(internals, 'readAppliedSize')
+        .mockImplementationOnce(() => olderReadback)
+        .mockResolvedValue({ status: 'unknown' })
+      const olderExit = internals.handleExitEvent(id, 0)
+      await waitFor(() => readback.mock.calls.length === 1)
+
+      const admission = internals.exitFence.beginAdmission(id)
+      await internals.handleExitEvent(id, 11, 'replacement-generation')
+      resolveOlderReadback({ status: 'alive', sessionGeneration: 'old-generation' })
+      await olderExit
+
+      expect(internals.exitFence.getPending(id)).toEqual({
+        code: 11,
+        sessionGeneration: 'replacement-generation'
+      })
+      internals.exitFence.rememberGeneration(id, 'replacement-generation', admission)
+      admission.complete()
+      readback.mockResolvedValue({ status: 'absent' })
+      await internals.reconcilePendingExitAfterAdmission(id)
+
+      expect(adapter.hasPty(id)).toBe(false)
+      expect(exits).toEqual([{ id, code: 11 }])
+    })
+
+    it('releases unknown deferred exits after failed admissions publish no owner', async () => {
+      const internals = adapter as unknown as {
+        readAppliedSize(sessionId: string): Promise<{ status: 'alive' | 'absent' | 'unknown' }>
+        reconcilePendingExitAfterAdmission(sessionId: string): Promise<boolean>
+        exitFence: {
+          beginAdmission(sessionId: string): { complete(): void }
+          defer(sessionId: string, exit: { code: number }): void
+          revisions: Map<string, unknown>
+          admissions: Map<string, unknown>
+          sessionGenerations: Map<string, unknown>
+          pendingExits: Map<string, unknown>
+        }
+      }
+      vi.spyOn(internals, 'readAppliedSize').mockResolvedValue({ status: 'unknown' })
+
+      for (let index = 0; index < 100; index++) {
+        const sessionId = `failed-admission-${index}`
+        const admission = internals.exitFence.beginAdmission(sessionId)
+        internals.exitFence.defer(sessionId, { code: index })
+        admission.complete()
+        await expect(internals.reconcilePendingExitAfterAdmission(sessionId)).resolves.toBe(true)
+      }
+
+      expect(internals.exitFence.revisions.size).toBe(0)
+      expect(internals.exitFence.admissions.size).toBe(0)
+      expect(internals.exitFence.sessionGenerations.size).toBe(0)
+      expect(internals.exitFence.pendingExits.size).toBe(0)
+    })
+
+    it('retains an unknown exit until authoritative listing reconciles it', async () => {
+      const exits: { id: string; code: number }[] = []
+      adapter.onExit((payload) => exits.push(payload))
+      const { id } = await adapter.spawn({ sessionId: 'same-id', cols: 80, rows: 24 })
+      const internals = adapter as unknown as {
+        readAppliedSize(sessionId: string): Promise<{ status: 'alive' | 'absent' | 'unknown' }>
+        handleExitEvent(sessionId: string, code: number): Promise<void>
+        exitFence: {
+          getPending(sessionId: string): { code: number } | undefined
+          defer(sessionId: string, exit: { code: number }): void
+        }
+        activeSessionIds: Set<string>
+      }
+      vi.spyOn(internals, 'readAppliedSize').mockResolvedValueOnce({ status: 'unknown' })
+
+      await internals.handleExitEvent(id, 7)
+
+      expect(adapter.hasPty(id)).toBe(true)
+      expect(internals.exitFence.getPending(id)?.code).toBe(7)
+      expect(exits).toEqual([])
+
+      await adapter.listProcesses()
+      expect(internals.exitFence.getPending(id)).toBeUndefined()
+
+      internals.activeSessionIds.add('confirmed-absent')
+      internals.exitFence.defer('confirmed-absent', { code: 9 })
+      await adapter.listProcesses()
+      expect(exits).toContainEqual({ id: 'confirmed-absent', code: 9 })
+    })
+
+    it('retains an old exit when an absent list races a same-id replacement admission', async () => {
+      const exits: { id: string; code: number }[] = []
+      adapter.onExit((payload) => exits.push(payload))
+      const { id } = await adapter.spawn({ sessionId: 'same-id-race', cols: 80, rows: 24 })
+      const internals = adapter as unknown as {
+        client: {
+          request<T>(type: string, payload: unknown): Promise<T>
+        }
+        readAppliedSize(sessionId: string): Promise<{ status: 'alive' | 'absent' | 'unknown' }>
+        handleExitEvent(sessionId: string, code: number): Promise<void>
+        exitFence: {
+          beginAdmission(sessionId: string): { complete(): void }
+          rememberGeneration(sessionId: string, generation: string): boolean
+          getPending(sessionId: string): { code: number } | undefined
+        }
+      }
+      const admission = internals.exitFence.beginAdmission(id)
+      vi.spyOn(internals, 'readAppliedSize').mockResolvedValueOnce({ status: 'unknown' })
+      await internals.handleExitEvent(id, 7)
+
+      const request = vi.spyOn(internals.client, 'request')
+      request.mockResolvedValueOnce({ sessions: [] })
+      const staleList = adapter.listProcesses()
+      admission.complete()
+      internals.exitFence.rememberGeneration(id, 'replacement-generation')
+      await staleList
+
+      expect(adapter.hasPty(id)).toBe(true)
+      expect(internals.exitFence.getPending(id)?.code).toBe(7)
+      expect(exits).toEqual([])
+    })
   })
 
   describe('spawn with sessionId (reattach)', () => {
@@ -559,6 +978,29 @@ describe('DaemonPtyAdapter (IPtyProvider)', () => {
       expect(procs[0]).toHaveProperty('id')
       expect(procs[0]).toHaveProperty('cwd')
       expect(procs[0]).toHaveProperty('title')
+    })
+
+    it('reaps active ownership when an authoritative list omits the session', async () => {
+      const exits: { id: string; code: number }[] = []
+      adapter.onExit((payload) => exits.push(payload))
+      const { id } = await adapter.spawn({ sessionId: 'authoritative-absence', cols: 80, rows: 24 })
+      const internals = adapter as unknown as {
+        client: { request<T>(type: string, payload: unknown): Promise<T> }
+        exitFence: {
+          revisions: Map<string, number>
+          sessionGenerations: Map<string, string>
+          pendingExits: Map<string, unknown>
+        }
+      }
+      vi.spyOn(internals.client, 'request').mockResolvedValueOnce({ sessions: [] })
+
+      await adapter.listProcesses()
+
+      expect(adapter.hasPty(id)).toBe(false)
+      expect(exits).toContainEqual({ id, code: -1 })
+      expect(internals.exitFence.revisions.size).toBe(0)
+      expect(internals.exitFence.sessionGenerations.size).toBe(0)
+      expect(internals.exitFence.pendingExits.size).toBe(0)
     })
   })
 

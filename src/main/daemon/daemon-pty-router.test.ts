@@ -122,6 +122,132 @@ function createAdapter(
 }
 
 describe('DaemonPtyRouter', () => {
+  it('retains the exact adapter route until exit proof', async () => {
+    const current = createAdapter('current')
+    const legacy = createAdapter('legacy', ['shared-session'])
+    vi.mocked(legacy.shutdown).mockResolvedValueOnce(undefined)
+    const router = new DaemonPtyRouter({ current, legacy: [legacy] })
+    await router.discoverLegacySessions()
+
+    expect(router.requiresShutdownExitProof).toBe(true)
+    await router.shutdown('shared-session', { immediate: true })
+    router.write('shared-session', 'before-exit')
+
+    expect(legacy.write).toHaveBeenCalledWith('shared-session', 'before-exit')
+    legacy.emitExit('shared-session', 0)
+    router.write('shared-session', 'after-exit')
+    expect(current.write).toHaveBeenCalledWith('shared-session', 'after-exit')
+  })
+
+  it('fences a late legacy exit after readback and id reuse', async () => {
+    const current = createAdapter('current')
+    const legacy = createAdapter('legacy', ['shared-session'])
+    const router = new DaemonPtyRouter({ current, legacy: [legacy] })
+    const exit = vi.fn()
+    router.onExit(exit)
+    await router.discoverLegacySessions()
+
+    await router.shutdown('shared-session', { immediate: true })
+    await router.listProcesses()
+    await router.spawn({ sessionId: 'shared-session', cols: 80, rows: 24 })
+    legacy.emitExit('shared-session', 0)
+    router.write('shared-session', 'replacement')
+
+    expect(current.write).toHaveBeenCalledWith('shared-session', 'replacement')
+    expect(exit).not.toHaveBeenCalled()
+  })
+
+  it('defers a same-provider old exit until replacement spawn proves the id live', async () => {
+    const sessions: string[] = []
+    const current = createAdapter('current', sessions)
+    const router = new DaemonPtyRouter({ current, legacy: [] })
+    const exit = vi.fn()
+    router.onExit(exit)
+    await router.spawn({ sessionId: 'same-id', cols: 80, rows: 24 })
+    await router.shutdown('same-id', { immediate: true })
+    await router.listProcesses()
+
+    let resolveSpawn!: (result: PtySpawnResult) => void
+    vi.mocked(current.spawn).mockImplementationOnce(
+      () => new Promise((resolve) => (resolveSpawn = resolve))
+    )
+    const replacement = router.spawn({ sessionId: 'same-id', cols: 80, rows: 24 })
+    await vi.waitFor(() => expect(current.spawn).toHaveBeenCalledTimes(2))
+    current.emitExit('same-id', 7)
+    expect(exit).not.toHaveBeenCalled()
+
+    sessions.push('same-id')
+    resolveSpawn({ id: 'same-id' })
+    await replacement
+    router.write('same-id', 'replacement')
+
+    expect(exit).not.toHaveBeenCalled()
+    expect(current.write).toHaveBeenCalledWith('same-id', 'replacement')
+  })
+
+  it('delivers a deferred exit when replacement spawn fails with no live id', async () => {
+    const sessions: string[] = []
+    const current = createAdapter('current', sessions)
+    const router = new DaemonPtyRouter({ current, legacy: [] })
+    const exit = vi.fn()
+    router.onExit(exit)
+    let rejectSpawn!: (error: Error) => void
+    vi.mocked(current.spawn).mockImplementationOnce(
+      () => new Promise((_resolve, reject) => (rejectSpawn = reject))
+    )
+
+    const replacement = router.spawn({ sessionId: 'same-id', cols: 80, rows: 24 })
+    await vi.waitFor(() => expect(current.spawn).toHaveBeenCalledOnce())
+    current.emitExit('same-id', 7)
+    rejectSpawn(new Error('spawn failed'))
+
+    await expect(replacement).rejects.toThrow('spawn failed')
+    expect(exit).toHaveBeenCalledWith({ id: 'same-id', code: 7 })
+  })
+
+  it('rejects overlapping same-id spawn before it can overwrite deferred exit proof', async () => {
+    const current = createAdapter('current')
+    const router = new DaemonPtyRouter({ current, legacy: [] })
+    const exit = vi.fn()
+    router.onExit(exit)
+    let rejectSpawn!: (error: Error) => void
+    vi.mocked(current.spawn).mockImplementationOnce(
+      () => new Promise((_resolve, reject) => (rejectSpawn = reject))
+    )
+
+    const first = router.spawn({ sessionId: 'same-id', cols: 80, rows: 24 })
+    await vi.waitFor(() => expect(current.spawn).toHaveBeenCalledOnce())
+    await expect(router.spawn({ sessionId: 'same-id', cols: 80, rows: 24 })).rejects.toThrow(
+      'PTY spawn already in progress'
+    )
+    current.emitExit('same-id', 7)
+    rejectSpawn(new Error('first spawn failed'))
+
+    await expect(first).rejects.toThrow('first spawn failed')
+    expect(current.spawn).toHaveBeenCalledOnce()
+    expect(exit).toHaveBeenCalledOnce()
+  })
+
+  it('retains a same-adapter replacement across an older process listing', async () => {
+    const current = createAdapter('current')
+    const legacy = createAdapter('legacy', ['shared-session'])
+    const router = new DaemonPtyRouter({ current, legacy: [legacy] })
+    await router.discoverLegacySessions()
+    let finishLegacyListing!: (sessions: []) => void
+    vi.mocked(legacy.listProcesses).mockImplementationOnce(
+      () => new Promise((resolve) => (finishLegacyListing = resolve))
+    )
+
+    const staleListing = router.listProcesses()
+    await router.spawn({ sessionId: 'shared-session', cols: 80, rows: 24 })
+    finishLegacyListing([])
+    await staleListing
+    router.write('shared-session', 'replacement')
+
+    expect(legacy.write).toHaveBeenCalledWith('shared-session', 'replacement')
+    expect(current.write).not.toHaveBeenCalledWith('shared-session', 'replacement')
+  })
+
   it('routes fresh foreground confirmation to the session-owning daemon', async () => {
     const current = createAdapter('current', ['current-session'])
     const legacy = createAdapter('legacy', ['legacy-session'])

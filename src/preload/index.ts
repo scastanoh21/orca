@@ -53,6 +53,7 @@ import type {
   UpdateStatus,
   WorktreeBaseStatusEvent,
   WorktreeDefaultTabsLaunch,
+  WorktreeHeadIdentity,
   WorktreeRemoteBranchConflictEvent
 } from '../shared/types'
 import type { PtyModelRestoreNeededEvent } from '../shared/pty-model-restore-marker'
@@ -708,6 +709,9 @@ const api = {
 
     persistSortOrder: (args) => ipcRenderer.invoke('worktrees:persistSortOrder', args),
 
+    getBranchRenameFailureOutput: (args) =>
+      ipcRenderer.invoke('worktrees:getBranchRenameFailureOutput', args),
+
     onChanged: (
       callback: (data: {
         repoId: string
@@ -720,6 +724,24 @@ const api = {
       ) => callback(data)
       ipcRenderer.on('worktrees:changed', listener)
       return () => ipcRenderer.removeListener('worktrees:changed', listener)
+    },
+
+    onGitStatusMetadataChanged: (callback: (data: { repoId: string }) => void): (() => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, data: { repoId: string }) =>
+        callback(data)
+      ipcRenderer.on('worktrees:gitStatusMetadataChanged', listener)
+      return () => ipcRenderer.removeListener('worktrees:gitStatusMetadataChanged', listener)
+    },
+
+    onHeadIdentitiesChanged: (
+      callback: (data: { repoId: string; identities: WorktreeHeadIdentity[] }) => void
+    ): (() => void) => {
+      const listener = (
+        _event: Electron.IpcRendererEvent,
+        data: { repoId: string; identities: WorktreeHeadIdentity[] }
+      ) => callback(data)
+      ipcRenderer.on('worktrees:headIdentitiesChanged', listener)
+      return () => ipcRenderer.removeListener('worktrees:headIdentitiesChanged', listener)
     },
 
     onBaseStatus: (callback: (data: WorktreeBaseStatusEvent) => void): (() => void) => {
@@ -937,8 +959,10 @@ const api = {
       ipcRenderer.send('pty:terminalViewAttributes', attributes)
     },
 
-    kill: (id: string, opts?: { keepHistory?: boolean }): Promise<void> =>
-      ipcRenderer.invoke('pty:kill', { id, keepHistory: opts?.keepHistory ?? false }),
+    kill: (
+      id: string,
+      opts?: { keepHistory?: boolean; expectedPaneKey?: string; expectedTabId?: string }
+    ): Promise<void> => ipcRenderer.invoke('pty:kill', { id, ...opts }),
 
     listSessions: (): Promise<{ id: string; cwd: string; title: string }[]> =>
       ipcRenderer.invoke('pty:listSessions'),
@@ -1854,6 +1878,9 @@ const api = {
 
     set: (args: Record<string, unknown>): Promise<unknown> =>
       ipcRenderer.invoke('settings:set', args),
+
+    updatePRBotAuthorOverride: (args: { author: string; isBot: boolean }): Promise<unknown> =>
+      ipcRenderer.invoke('settings:update-pr-bot-author-override', args),
 
     listFonts: (): Promise<string[]> => ipcRenderer.invoke('settings:listFonts'),
 
@@ -3420,6 +3447,7 @@ const api = {
         launchConfig?: SleepingAgentLaunchConfig
         launchToken?: string
         launchAgent?: TuiAgent
+        viewMode?: 'terminal' | 'chat'
         title?: string
         ptyId?: string
         activate?: boolean
@@ -3442,6 +3470,7 @@ const api = {
           launchConfig?: SleepingAgentLaunchConfig
           launchToken?: string
           launchAgent?: TuiAgent
+          viewMode?: 'terminal' | 'chat'
           title?: string
           ptyId?: string
           activate?: boolean
@@ -4236,6 +4265,13 @@ const api = {
         }
     > => ipcRenderer.invoke('mobile:getPairingQR', args),
 
+    getWindowsFirewallStatus: (args?: { address?: string }) =>
+      ipcRenderer.invoke('mobile:getWindowsFirewallStatus', args),
+
+    repairWindowsFirewall: () => ipcRenderer.invoke('mobile:repairWindowsFirewall'),
+
+    openWindowsNetworkSettings: () => ipcRenderer.invoke('mobile:openWindowsNetworkSettings'),
+
     getRuntimePairingUrl: (args?: {
       address?: string
       rotate?: boolean
@@ -4314,6 +4350,16 @@ const api = {
      *  explicit tab close even when the renderer has no matching local row. */
     dropByTabPrefix: (tabId: string): void => {
       ipcRenderer.send('agentStatus:dropByTabPrefix', tabId)
+    },
+    retirePaneAuthority: (paneKey: string): void => {
+      ipcRenderer.send('agentStatus:retirePaneAuthority', paneKey)
+    },
+    transferPaneAuthority: (args: {
+      fromPaneKey: string
+      toPaneKey: string
+      ptyId?: string
+    }): void => {
+      ipcRenderer.send('agentStatus:transferPaneAuthority', args)
     }
   },
 

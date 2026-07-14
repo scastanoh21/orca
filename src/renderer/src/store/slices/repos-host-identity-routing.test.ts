@@ -267,7 +267,7 @@ describe('repo slice host identity routing', () => {
     // host-scoped in main to avoid deleting the other host's persisted repo row.
     expect(reposRemoveForHost).toHaveBeenCalledWith({ repoId: 'same-repo', hostId: 'local' })
     expect(reposRemove).not.toHaveBeenCalled()
-    expect(ptyKill).toHaveBeenCalledWith('local-pty')
+    expect(ptyKill).toHaveBeenCalledWith('local-pty', { expectedTabId: 'local-tab' })
     expect(ptyKill).not.toHaveBeenCalledWith('remote-pty')
   })
 
@@ -396,7 +396,7 @@ describe('repo slice host identity routing', () => {
       timeoutMs: 15_000
     })
     expect(reposRemove).not.toHaveBeenCalled()
-    expect(ptyKill).toHaveBeenCalledWith('remote-pty')
+    expect(ptyKill).toHaveBeenCalledWith('remote-pty', { expectedTabId: 'remote-tab' })
     expect(ptyKill).not.toHaveBeenCalledWith('local-pty')
   })
 

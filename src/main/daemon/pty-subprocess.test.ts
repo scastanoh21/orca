@@ -9,10 +9,12 @@ const {
   spawnMock,
   isPwshAvailableMock,
   validateWorkingDirectoryMock,
+  resolveUnixShellPathMock,
   resolveAgentForegroundProcessMock
 } = vi.hoisted(() => ({
   spawnMock: vi.fn(),
   isPwshAvailableMock: vi.fn(),
+  resolveUnixShellPathMock: vi.fn((shellPath: string) => shellPath),
   resolveAgentForegroundProcessMock: vi.fn(),
   validateWorkingDirectoryMock: vi.fn((cwd: string) => {
     if (cwd.includes('definitely-missing')) {
@@ -51,6 +53,7 @@ vi.mock('../providers/local-pty-utils', async (importOriginal) => {
   const actual = await importOriginal<typeof LocalPtyUtils>()
   return {
     ...actual,
+    resolveUnixShellPath: resolveUnixShellPathMock,
     validateWorkingDirectory: validateWorkingDirectoryMock
   }
 })
@@ -116,6 +119,8 @@ describe('createPtySubprocess', () => {
       async (_pid: number, fallbackProcess: string | null) => fallbackProcess
     )
     validateWorkingDirectoryMock.mockClear()
+    resolveUnixShellPathMock.mockReset()
+    resolveUnixShellPathMock.mockImplementation((shellPath: string) => shellPath)
     isPwshAvailableMock.mockReturnValue(false)
     previousUserDataPath = process.env.ORCA_USER_DATA_PATH
     previousPowerlevelWizardDisable = process.env[POWERLEVEL10K_WIZARD_DISABLE_ENV]
@@ -179,6 +184,117 @@ describe('createPtySubprocess', () => {
         name: 'xterm-256color'
       })
     )
+  })
+
+  it('resolves a missing Unix default before spawning node-pty', () => {
+    const proc = mockPtyProcess()
+    spawnMock.mockReturnValue(proc)
+    resolveUnixShellPathMock.mockReturnValue('/bin/sh')
+    const platform = Object.getOwnPropertyDescriptor(process, 'platform')
+    const previousShell = process.env.SHELL
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    Object.defineProperty(process, 'platform', { configurable: true, value: 'linux' })
+    delete process.env.SHELL
+
+    try {
+      createPtySubprocess({ sessionId: 'test', cols: 80, rows: 24, env: {} })
+
+      expect(resolveUnixShellPathMock).toHaveBeenCalledWith('/bin/zsh')
+      expect(spawnMock).toHaveBeenCalledWith(
+        '/bin/sh',
+        ['-l'],
+        expect.objectContaining({ env: expect.objectContaining({ SHELL: '/bin/sh' }) })
+      )
+      expect(warn).toHaveBeenCalledWith(
+        '[daemon/pty] Preferred shell "/bin/zsh" is unavailable, fell back to "/bin/sh"'
+      )
+    } finally {
+      warn.mockRestore()
+      if (platform) {
+        Object.defineProperty(process, 'platform', platform)
+      }
+      if (previousShell === undefined) {
+        delete process.env.SHELL
+      } else {
+        process.env.SHELL = previousShell
+      }
+    }
+  })
+
+  it('derives shell-ready launch config from the resolved fallback shell', () => {
+    const proc = mockPtyProcess()
+    spawnMock.mockReturnValue(proc)
+    resolveUnixShellPathMock.mockReturnValue('/bin/sh')
+    const platform = Object.getOwnPropertyDescriptor(process, 'platform')
+    const previousShell = process.env.SHELL
+    const previousMarker = process.env.ORCA_SHELL_READY_MARKER
+    const previousZdotdir = process.env.ZDOTDIR
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    Object.defineProperty(process, 'platform', { configurable: true, value: 'linux' })
+    delete process.env.SHELL
+    // Why: the test runner itself can execute inside an Orca-wrapped shell
+    // whose exported wrapper vars would leak through the process.env spread.
+    delete process.env.ORCA_SHELL_READY_MARKER
+    delete process.env.ZDOTDIR
+
+    try {
+      const handle = createPtySubprocess({
+        sessionId: 'test',
+        cols: 80,
+        rows: 24,
+        env: {},
+        command: 'echo hi'
+      })
+
+      expect(handle.shellPath).toBe('/bin/sh')
+      const [shellPath, shellArgs, spawnOptions] = spawnMock.mock.calls[0]
+      expect(shellPath).toBe('/bin/sh')
+      expect(shellArgs).toEqual(['-l'])
+      // A launch config derived from the missing preferred zsh would inject
+      // ZDOTDIR and ORCA_SHELL_READY_MARKER; /bin/sh must spawn without them.
+      expect(spawnOptions.env.ZDOTDIR).toBeUndefined()
+      expect(spawnOptions.env.ORCA_SHELL_READY_MARKER).toBeUndefined()
+      expect(spawnOptions.env.SHELL).toBe('/bin/sh')
+    } finally {
+      warn.mockRestore()
+      if (platform) {
+        Object.defineProperty(process, 'platform', platform)
+      }
+      if (previousShell === undefined) {
+        delete process.env.SHELL
+      } else {
+        process.env.SHELL = previousShell
+      }
+      if (previousMarker === undefined) {
+        delete process.env.ORCA_SHELL_READY_MARKER
+      } else {
+        process.env.ORCA_SHELL_READY_MARKER = previousMarker
+      }
+      if (previousZdotdir === undefined) {
+        delete process.env.ZDOTDIR
+      } else {
+        process.env.ZDOTDIR = previousZdotdir
+      }
+    }
+  })
+
+  it('surfaces the no-executable-shell error before node-pty forks', () => {
+    resolveUnixShellPathMock.mockImplementation(() => {
+      throw new Error('No executable Unix shell found (tried: /bin/zsh, /bin/bash, /bin/sh)')
+    })
+    const platform = Object.getOwnPropertyDescriptor(process, 'platform')
+    Object.defineProperty(process, 'platform', { configurable: true, value: 'linux' })
+
+    try {
+      expect(() => createPtySubprocess({ sessionId: 'test', cols: 80, rows: 24, env: {} })).toThrow(
+        'No executable Unix shell found'
+      )
+      expect(spawnMock).not.toHaveBeenCalled()
+    } finally {
+      if (platform) {
+        Object.defineProperty(process, 'platform', platform)
+      }
+    }
   })
 
   it('uses bundled ConPTY for native Windows daemon terminals', () => {
@@ -1132,6 +1248,26 @@ describe('createPtySubprocess', () => {
     handle.forceKill()
 
     expect(killSpy).toHaveBeenCalledWith(77, 'SIGKILL')
+    killSpy.mockRestore()
+  })
+
+  it('propagates force-kill failure while OS liveness still proves the child exists', () => {
+    const proc = mockPtyProcess(77)
+    proc.kill.mockImplementation(() => {
+      throw new Error('native kill failed')
+    })
+    spawnMock.mockReturnValue(proc)
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation((_pid, signal) => {
+      if (signal === 0) {
+        return true
+      }
+      throw new Error('signal kill failed')
+    })
+
+    const handle = createPtySubprocess({ sessionId: 'test', cols: 80, rows: 24 })
+
+    expect(() => handle.forceKill()).toThrow('native kill failed')
+    expect(handle.hasExited?.()).toBe(false)
     killSpy.mockRestore()
   })
 
@@ -2475,6 +2611,7 @@ describe('createPtySubprocess', () => {
       }
       proc.destroy = vi.fn(() => proc.kill())
       spawnMock.mockReturnValue(proc)
+      const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true)
       const origPlatform = Object.getOwnPropertyDescriptor(process, 'platform')
       Object.defineProperty(process, 'platform', { value: 'win32' })
       try {
@@ -2484,11 +2621,12 @@ describe('createPtySubprocess', () => {
         expect(proc.kill).toHaveBeenCalledOnce()
         expect(proc.destroy).not.toHaveBeenCalled()
       } finally {
+        killSpy.mockRestore()
         restorePlatform(origPlatform)
       }
     })
 
-    it('does not issue a second Windows ConPTY kill when force follows graceful kill', () => {
+    it('does not reissue Windows ConPTY close after accepted graceful kill', () => {
       const proc = mockPtyProcess(123456) as ReturnType<typeof mockPtyProcess> & {
         destroy: ReturnType<typeof vi.fn>
       }
@@ -2506,6 +2644,7 @@ describe('createPtySubprocess', () => {
         handle.dispose()
 
         expect(proc.kill).toHaveBeenCalledOnce()
+        expect(proc.kill.mock.calls).toEqual([[]])
         expect(killSpy).not.toHaveBeenCalled()
         expect(proc.destroy).not.toHaveBeenCalled()
       } finally {
@@ -2514,7 +2653,63 @@ describe('createPtySubprocess', () => {
       }
     })
 
-    it('dispose() on Windows skips destroy after forceKill falls back to node-pty kill()', () => {
+    it('retries Windows ConPTY close after graceful native throw', () => {
+      const proc = mockPtyProcess(123456) as ReturnType<typeof mockPtyProcess> & {
+        destroy: ReturnType<typeof vi.fn>
+      }
+      proc.kill.mockImplementationOnce(() => {
+        throw new Error('native close failed')
+      })
+      proc.destroy = vi.fn(() => proc.kill())
+      spawnMock.mockReturnValue(proc)
+      const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true)
+      const origPlatform = Object.getOwnPropertyDescriptor(process, 'platform')
+      Object.defineProperty(process, 'platform', { value: 'win32' })
+      try {
+        const handle = createPtySubprocess({ sessionId: 'test', cols: 80, rows: 24 })
+        expect(() => handle.kill()).toThrow('native close failed')
+        expect(() => handle.forceKill()).not.toThrow()
+        handle.dispose()
+
+        expect(proc.kill.mock.calls).toEqual([[], []])
+        expect(proc.destroy).not.toHaveBeenCalled()
+      } finally {
+        killSpy.mockRestore()
+        restorePlatform(origPlatform)
+      }
+    })
+
+    it('does not reissue Windows ConPTY close after native throw with OS exit proof', () => {
+      const proc = mockPtyProcess(123456) as ReturnType<typeof mockPtyProcess> & {
+        destroy: ReturnType<typeof vi.fn>
+      }
+      proc.kill.mockImplementation(() => {
+        throw new Error('native close raced exit')
+      })
+      proc.destroy = vi.fn(() => proc.kill())
+      spawnMock.mockReturnValue(proc)
+      const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => {
+        const error = new Error('already gone') as NodeJS.ErrnoException
+        error.code = 'ESRCH'
+        throw error
+      })
+      const origPlatform = Object.getOwnPropertyDescriptor(process, 'platform')
+      Object.defineProperty(process, 'platform', { value: 'win32' })
+      try {
+        const handle = createPtySubprocess({ sessionId: 'test', cols: 80, rows: 24 })
+        expect(() => handle.kill()).not.toThrow()
+        handle.forceKill()
+        handle.dispose()
+
+        expect(proc.kill).toHaveBeenCalledOnce()
+        expect(proc.destroy).not.toHaveBeenCalled()
+      } finally {
+        killSpy.mockRestore()
+        restorePlatform(origPlatform)
+      }
+    })
+
+    it('dispose() on Windows skips destroy after signal-free forceKill', () => {
       const proc = mockPtyProcess(123456) as ReturnType<typeof mockPtyProcess> & {
         destroy: ReturnType<typeof vi.fn>
       }
@@ -2529,8 +2724,9 @@ describe('createPtySubprocess', () => {
         const handle = createPtySubprocess({ sessionId: 'test', cols: 80, rows: 24 })
         handle.forceKill()
         handle.dispose()
-        expect(killSpy).toHaveBeenCalledWith(123456, 'SIGKILL')
+        expect(killSpy).not.toHaveBeenCalled()
         expect(proc.kill).toHaveBeenCalledOnce()
+        expect(proc.kill).toHaveBeenCalledWith()
         expect(proc.destroy).not.toHaveBeenCalled()
       } finally {
         killSpy.mockRestore()

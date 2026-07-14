@@ -14,16 +14,31 @@ import {
   iterateTerminalInputChunks
 } from '../../../../shared/terminal-input'
 import { isRuntimeOwnedSshTargetId } from '../../../../shared/execution-host'
+import { ensurePtyDispatcher, getEagerPtyBufferHandle } from './pty-dispatcher'
 import {
   ptyDataHandlers,
-  ptyReplayHandlers,
   ptyExitHandlers,
-  ptyTeardownHandlers,
-  ensurePtyDispatcher,
-  getEagerPtyBufferHandle
-} from './pty-dispatcher'
-import { drainPreHandlerPtyData, drainPreHandlerPtyExit } from './pty-pre-handler-buffer'
+  ptyReplayHandlers,
+  ptyTeardownHandlers
+} from './pty-primary-handler-registry'
+import {
+  clearPreHandlerPtyState,
+  drainPreHandlerPtyData,
+  drainPreHandlerPtyExit,
+  reconcilePreHandlerPtyExitAfterOverflow
+} from './pty-pre-handler-buffer'
 import { createPtyInputWriteQueue } from './pty-input-write-queue'
+import { acquirePtySessionConnectAdmission } from './pty-session-connect-admission'
+import {
+  createPtyPrimaryHandlerOwner,
+  publishPtyPrimaryDataHandlerOwner,
+  publishPtyPrimaryExitHandlerOwner,
+  restorePtyPrimaryHandlersAfterFailedAdmission,
+  revokePtyPrimaryDataHandlerOwner,
+  revokePtyPrimaryExitHandlerOwner,
+  suspendPtyPrimaryHandlersForAdmission
+} from './pty-primary-handler-admission'
+import type { PtyPrimaryHandlerOwner } from './pty-primary-handler-admission'
 import type { PtyDataMeta } from './pty-dispatcher'
 import type { IpcPtyTransportOptions, PtyConnectResult, PtyTransport } from './pty-transport-types'
 import { createBellDetector } from '../../../../shared/terminal-bell-detector'
@@ -37,6 +52,9 @@ import {
 } from '../../../../shared/agent-status-osc'
 import { extractIpcErrorMessage } from '@/lib/ipc-error'
 import { isTuiAgent } from '../../../../shared/tui-agent-config'
+import { killPtyRetainingRetryOwnership } from '@/lib/pty-kill-retry-ownership'
+import { makePaneKey } from '../../../../shared/stable-pane-id'
+import { DAEMON_PTY_EXITED_DURING_ADMISSION } from '../../../../shared/constants'
 
 // Re-export public API so existing consumers keep working.
 export {
@@ -66,6 +84,15 @@ const SSH_SESSION_EXPIRED_ERROR = 'SSH_SESSION_EXPIRED'
 const SSH_PTY_CONNECTION_MISMATCH_MARKER = 'belongs to SSH connection'
 const STALE_TITLE_TIMEOUT = 3000 // ms before stale working title is cleared
 const MAX_PTY_SIDE_EFFECTS_PER_DRAIN = 64
+
+const ptyPrimaryHandlerAdmissionRegistry = {
+  dataHandlers: ptyDataHandlers,
+  replayHandlers: ptyReplayHandlers,
+  exitHandlers: ptyExitHandlers,
+  teardownHandlers: ptyTeardownHandlers,
+  drainData: drainPreHandlerPtyData,
+  drainExit: drainPreHandlerPtyExit
+}
 
 // Why: onAgentStatus callback added to IpcPtyTransportOptions in pty-dispatcher
 // so the OSC 9999 status payloads can be forwarded to the store.
@@ -518,6 +545,7 @@ export function createIpcPtyTransport(opts: IpcPtyTransportOptions = {}): PtyTra
   let connected = false
   let destroyed = false
   let ptyId: string | null = null
+  let bindingGeneration = 0
   // Why: eager PTY buffers contain output produced before the pane attached —
   // often from the previous app session. We still replay that data so titles
   // and scrollback restore correctly, but it must not produce fresh bells,
@@ -541,6 +569,12 @@ export function createIpcPtyTransport(opts: IpcPtyTransportOptions = {}): PtyTra
     onAgentStatus
   })
   let storedCallbacks: Parameters<PtyTransport['connect']>[0]['callbacks'] = {}
+  const shutdownIdentity = tabId
+    ? {
+        ...(leafId ? { expectedPaneKey: makePaneKey(tabId, leafId) } : {}),
+        expectedTabId: tabId
+      }
+    : undefined
 
   // Why: pane->tab detach / split-group moves rehome the React subtree, so a
   // NEW TerminalPane can attach to the same ptyId before the OLD instance's
@@ -550,15 +584,25 @@ export function createIpcPtyTransport(opts: IpcPtyTransportOptions = {}): PtyTra
   // pre-handler buffer forever).
   const ownedDataAndReplayHandlers = new Map<
     string,
-    { data: (data: string, meta?: PtyDataMeta) => void; replay: (data: string) => void }
+    {
+      data: (data: string, meta?: PtyDataMeta) => void
+      replay: (data: string) => void
+      owner: PtyPrimaryHandlerOwner
+    }
   >()
-  const ownedExitHandlers = new Map<string, (code: number) => void>()
+  const ownedExitHandlers = new Map<
+    string,
+    { handler: (code: number) => void; owner: PtyPrimaryHandlerOwner }
+  >()
 
   function unregisterPtyHandlers(id: string): void {
     unregisterPtyDataAndStatusHandlers(id)
     const ownedExit = ownedExitHandlers.get(id)
-    if (ownedExit && ptyExitHandlers.get(id) === ownedExit) {
+    if (ownedExit && ptyExitHandlers.get(id) === ownedExit.handler) {
       ptyExitHandlers.delete(id)
+    }
+    if (ownedExit) {
+      revokePtyPrimaryExitHandlerOwner(id, ownedExit.owner)
     }
     ownedExitHandlers.delete(id)
     if (ptyTeardownHandlers.get(id) === clearAccumulatedState) {
@@ -575,13 +619,16 @@ export function createIpcPtyTransport(opts: IpcPtyTransportOptions = {}): PtyTra
       if (ptyReplayHandlers.get(id) === owned.replay) {
         ptyReplayHandlers.delete(id)
       }
+      // Why: an admission may have temporarily removed the global handlers;
+      // revoking the local owner still prevents failed admission from reviving them.
+      revokePtyPrimaryDataHandlerOwner(id, owned.owner)
     }
     ownedDataAndReplayHandlers.delete(id)
   }
 
   // Why: shared by connect() and attach() to avoid duplicating title/bell/exit
   // logic across the two code paths that register a PTY.
-  function registerPtyDataHandler(id: string): void {
+  function registerPtyDataHandler(id: string) {
     // Why: relay pty.attach sends replay data via a dedicated pty:replay IPC
     // channel. Route it through onReplayData so the renderer engages the
     // replay guard and xterm auto-replies do not leak into the shell.
@@ -609,9 +656,11 @@ export function createIpcPtyTransport(opts: IpcPtyTransportOptions = {}): PtyTra
         meta
       )
     }
+    const owner = createPtyPrimaryHandlerOwner()
     ptyDataHandlers.set(id, dataHandler)
-    ownedDataAndReplayHandlers.set(id, { data: dataHandler, replay: replayHandler })
-    drainPreHandlerPtyData(id, dataHandler)
+    ownedDataAndReplayHandlers.set(id, { data: dataHandler, replay: replayHandler, owner })
+    publishPtyPrimaryDataHandlerOwner(id, owner)
+    return { dataHandler, owner }
   }
 
   function clearAccumulatedState(): void {
@@ -649,7 +698,7 @@ export function createIpcPtyTransport(opts: IpcPtyTransportOptions = {}): PtyTra
     }
   }
 
-  function registerPtyExitHandler(id: string): void {
+  function registerPtyExitHandler(id: string) {
     const exitHandler = (code: number): void => {
       if (ptyId !== null && ptyId !== id) {
         // Why: a preserved sleep/reconnect session can report its old exit
@@ -665,8 +714,10 @@ export function createIpcPtyTransport(opts: IpcPtyTransportOptions = {}): PtyTra
       storedCallbacks.onDisconnect?.()
       onPtyExit?.(id)
     }
+    const owner = createPtyPrimaryHandlerOwner()
     ptyExitHandlers.set(id, exitHandler)
-    ownedExitHandlers.set(id, exitHandler)
+    ownedExitHandlers.set(id, { handler: exitHandler, owner })
+    publishPtyPrimaryExitHandlerOwner(id, owner)
     // Why: shutdownWorktreeTerminals bypasses the transport layer — it
     // kills PTYs directly via IPC without calling disconnect()/destroy().
     // This teardown callback lets unregisterPtyDataHandlers cancel
@@ -674,19 +725,63 @@ export function createIpcPtyTransport(opts: IpcPtyTransportOptions = {}): PtyTra
     // would otherwise fire stale notifications after the data handler
     // is removed but before the exit event arrives.
     ptyTeardownHandlers.set(id, clearAccumulatedState)
-    drainPreHandlerPtyExit(id, exitHandler)
+    return { exitHandler, owner }
+  }
+
+  function drainRegisteredPtyHandlers(
+    id: string,
+    dataRegistration: ReturnType<typeof registerPtyDataHandler>,
+    exitRegistration: ReturnType<typeof registerPtyExitHandler>
+  ): boolean {
+    const isDataCurrent = (): boolean =>
+      dataRegistration.owner.active &&
+      ownedDataAndReplayHandlers.get(id)?.owner === dataRegistration.owner &&
+      ptyDataHandlers.get(id) === dataRegistration.dataHandler
+    const isExitCurrent = (): boolean =>
+      exitRegistration.owner.active &&
+      ownedExitHandlers.get(id)?.owner === exitRegistration.owner &&
+      ptyExitHandlers.get(id) === exitRegistration.exitHandler
+    drainPreHandlerPtyData(id, dataRegistration.dataHandler, isDataCurrent)
+    if (!isExitCurrent()) {
+      return false
+    }
+    if (!drainPreHandlerPtyExit(id, exitRegistration.exitHandler)) {
+      reconcilePreHandlerPtyExitAfterOverflow(
+        id,
+        window.api.pty.hasPty,
+        exitRegistration.exitHandler,
+        isExitCurrent
+      )
+    }
+    return isDataCurrent() && isExitCurrent()
   }
 
   return {
     async connect(options) {
-      storedCallbacks = options.callbacks
       ensurePtyDispatcher()
-
-      if (destroyed) {
-        return
-      }
-
+      // Why: rejected-generation cleanup is ID-scoped, so a replacement with
+      // the same session ID must not publish until its predecessor releases.
+      const releaseSessionAdmission = options.sessionId
+        ? await acquirePtySessionConnectAdmission(options.sessionId)
+        : undefined
+      const suspendedHandlers = options.sessionId
+        ? suspendPtyPrimaryHandlersForAdmission(
+            ptyPrimaryHandlerAdmissionRegistry,
+            options.sessionId
+          )
+        : undefined
+      let restoreSuspendedHandlers = suspendedHandlers !== undefined
       try {
+        if (options.sessionId) {
+          // Why: admission starts a new renderer generation; buffered events
+          // that predate this boundary belong to the previous same-ID owner.
+          clearPreHandlerPtyState(options.sessionId)
+        }
+        storedCallbacks = options.callbacks
+        if (destroyed) {
+          return
+        }
+
         // Why: missing-cwd recovery is only valid for fresh local spawns —
         // reattach must keep the session's exact cwd and SSH-tagged transports
         // resolve cwd on the remote host.
@@ -725,21 +820,30 @@ export function createIpcPtyTransport(opts: IpcPtyTransportOptions = {}): PtyTra
           ...(terminalColorQueryReplies ? { terminalColorQueryReplies } : {}),
           ...(telemetry ? { telemetry } : {})
         })
+        // The host accepted a new generation; the prior primary handlers must
+        // never be restored even if this transport is destroyed before binding.
+        restoreSuspendedHandlers = false
         const spawnResult = result as PtyConnectResult & { isReattach?: boolean }
         const resultLaunchAgent = isTuiAgent(spawnResult.launchAgent)
           ? spawnResult.launchAgent
           : undefined
 
-        // If destroyed while spawn was in flight, kill the new pty and bail
+        // If destroyed while the connect was in flight, kill only what this
+        // connect actually created. Reattaches remain owned by tab lifecycle.
         if (destroyed) {
-          void window.api.pty.kill(spawnResult.id).catch((error) => {
-            console.warn('[pty] Failed to stop PTY spawned after transport teardown', error)
-          })
+          if (!spawnResult.isReattach) {
+            void killPtyRetainingRetryOwnership(
+              spawnResult.id,
+              '[pty] Failed to stop PTY spawned after transport teardown',
+              shutdownIdentity
+            ).catch(() => {})
+          }
           return
         }
 
         ptyId = spawnResult.id
         connected = true
+        const currentBindingGeneration = ++bindingGeneration
 
         // Why: for deferred reattach (Option 2), the daemon returns snapshot/
         // coldRestore data from createOrAttach. Skip onPtySpawn for reattach —
@@ -748,9 +852,18 @@ export function createIpcPtyTransport(opts: IpcPtyTransportOptions = {}): PtyTra
           onPtySpawn?.(spawnResult.id)
         }
 
-        registerPtyDataHandler(spawnResult.id)
-        registerPtyExitHandler(spawnResult.id)
-        if (!connected || ptyId !== spawnResult.id) {
+        const dataRegistration = registerPtyDataHandler(spawnResult.id)
+        const exitRegistration = registerPtyExitHandler(spawnResult.id)
+        const handlersCurrent = drainRegisteredPtyHandlers(
+          spawnResult.id,
+          dataRegistration,
+          exitRegistration
+        )
+        if (!handlersCurrent || !connected || ptyId !== spawnResult.id) {
+          if (bindingGeneration === currentBindingGeneration) {
+            connected = false
+            ptyId = null
+          }
           return undefined
         }
 
@@ -785,12 +898,19 @@ export function createIpcPtyTransport(opts: IpcPtyTransportOptions = {}): PtyTra
         return spawnResult.id
       } catch (err) {
         const msg = extractIpcErrorMessage(err, err instanceof Error ? err.message : String(err))
+        if (options.sessionId && msg.includes(DAEMON_PTY_EXITED_DURING_ADMISSION)) {
+          restoreSuspendedHandlers = false
+          // Why: this exit belongs to the rejected generation; retaining its
+          // bytes or exit would tear down a later successful same-id spawn.
+          clearPreHandlerPtyState(options.sessionId)
+        }
         if (
           connectionId &&
           options.sessionId &&
           (msg.includes(SSH_SESSION_EXPIRED_ERROR) ||
             msg.includes(SSH_PTY_CONNECTION_MISMATCH_MARKER))
         ) {
+          restoreSuspendedHandlers = false
           return {
             id: options.sessionId,
             sessionExpired: true
@@ -810,6 +930,7 @@ export function createIpcPtyTransport(opts: IpcPtyTransportOptions = {}): PtyTra
         // error type (see src/main/daemon/daemon-pty-adapter.ts), so a
         // substring match is safe.
         if (msg.includes('was explicitly killed')) {
+          restoreSuspendedHandlers = false
           return undefined
         }
         // Why: on cold start, SSH provider isn't registered yet so pty:spawn
@@ -828,6 +949,14 @@ export function createIpcPtyTransport(opts: IpcPtyTransportOptions = {}): PtyTra
           storedCallbacks.onError?.(msg)
         }
         return undefined
+      } finally {
+        if (restoreSuspendedHandlers && suspendedHandlers) {
+          restorePtyPrimaryHandlersAfterFailedAdmission(
+            ptyPrimaryHandlerAdmissionRegistry,
+            suspendedHandlers
+          )
+        }
+        releaseSessionAdmission?.()
       }
     },
 
@@ -842,11 +971,17 @@ export function createIpcPtyTransport(opts: IpcPtyTransportOptions = {}): PtyTra
       const id = options.existingPtyId
       ptyId = id
       connected = true
+      const currentBindingGeneration = ++bindingGeneration
       // Why: skip onPtySpawn — it would reset lastActivityAt and destroy the
       // recency sort order that reconnectPersistedTerminals preserved.
-      registerPtyDataHandler(id)
-      registerPtyExitHandler(id)
-      if (!connected || ptyId !== id) {
+      const dataRegistration = registerPtyDataHandler(id)
+      const exitRegistration = registerPtyExitHandler(id)
+      const handlersCurrent = drainRegisteredPtyHandlers(id, dataRegistration, exitRegistration)
+      if (!handlersCurrent || !connected || ptyId !== id) {
+        if (bindingGeneration === currentBindingGeneration) {
+          connected = false
+          ptyId = null
+        }
         return
       }
 
@@ -920,9 +1055,11 @@ export function createIpcPtyTransport(opts: IpcPtyTransportOptions = {}): PtyTra
       inputWriteQueue.clear()
       if (ptyId) {
         const id = ptyId
-        void window.api.pty.kill(id).catch((error) => {
-          console.warn('[pty] Failed to stop disconnected PTY', error)
-        })
+        void killPtyRetainingRetryOwnership(
+          id,
+          '[pty] Failed to stop disconnected PTY',
+          shutdownIdentity
+        ).catch(() => {})
         connected = false
         ptyId = null
         unregisterPtyHandlers(id)
@@ -1017,8 +1154,8 @@ export function createIpcPtyTransport(opts: IpcPtyTransportOptions = {}): PtyTra
       if (connectionId) {
         return null
       }
-      // Why: paste/runtime diagnostics must follow the launched PTY session,
-      // not later project setting changes.
+      // Why: input routing and diagnostics must follow the launched PTY
+      // session, not later project setting changes.
       return {
         ...(cwd ? { cwd } : {}),
         ...(shellOverride ? { shellOverride } : {})

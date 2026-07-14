@@ -3,6 +3,7 @@ import { BACKGROUND_MOUNT_TERMINAL_WORKTREE_EVENT } from '@/constants/terminal'
 import { createCompatibleRuntimeStatusResponseIfNeeded } from '@/runtime/runtime-compatibility-test-fixture'
 import { clearRuntimeCompatibilityCacheForTests } from '@/runtime/runtime-rpc-client'
 import { resetRemoteRuntimeTerminalMultiplexersForTests } from '@/runtime/remote-runtime-terminal-multiplexer'
+import { registerLaunchAgentBackgroundSessionRetirementCases } from './launch-agent-background-session-retirement-cases'
 
 const mockSpawn = vi.fn()
 const mockKill = vi.fn()
@@ -68,6 +69,7 @@ const state = {
       }
     ]
   },
+  tabsByWorktree: { 'wt-1': [] as { id: string; title: string }[] },
   allWorktrees: vi.fn(() => state.worktreesByRepo['repo-1']),
   createTab: mockCreateTab,
   setTabCustomTitle: mockSetTabCustomTitle,
@@ -143,7 +145,15 @@ describe('launchAgentBackgroundSession', () => {
         }
       ]
     }
-    mockCreateTab.mockReturnValue({ id: 'tab-1', title: 'Terminal 1' })
+    state.tabsByWorktree = { 'wt-1': [] }
+    mockCreateTab.mockImplementation(() => {
+      const tab = { id: 'tab-1', title: 'Terminal 1' }
+      state.tabsByWorktree['wt-1'].push(tab)
+      return tab
+    })
+    mockCloseTab.mockImplementation((tabId: string) => {
+      state.tabsByWorktree['wt-1'] = state.tabsByWorktree['wt-1'].filter((tab) => tab.id !== tabId)
+    })
     mockSpawn.mockResolvedValue({ id: 'pty-1' })
     mockRuntimeEnvironmentCall.mockResolvedValue({
       ok: true,
@@ -271,6 +281,18 @@ describe('launchAgentBackgroundSession', () => {
     expect(mockDispatchEvent).toHaveBeenCalledWith(
       expect.objectContaining({ detail: { worktreeId: 'wt-1', tabIds: ['tab-1'] } })
     )
+  })
+
+  registerLaunchAgentBackgroundSessionRetirementCases({
+    state,
+    mockSpawn,
+    mockCreateTab,
+    mockKill,
+    mockUpdateTabPtyId,
+    mockSubscribeToPtyData,
+    mockDispatchEvent,
+    mockRuntimeEnvironmentCall,
+    mockRuntimeEnvironmentSubscribe
   })
 
   it('records effective launch config returned by local PTY spawn', async () => {
@@ -474,6 +496,28 @@ describe('launchAgentBackgroundSession', () => {
 
     expect(mockCloseTab).toHaveBeenCalledWith('tab-1', { recordInteraction: false })
     expect(mockUpdateTabPtyId).not.toHaveBeenCalled()
+  })
+
+  it('delegates exact PTY retry ownership to main when cleanup after local spawn fails', async () => {
+    mockRegisterEagerPtyBuffer.mockImplementationOnce(() => {
+      throw new Error('subscription setup failed')
+    })
+    mockKill
+      .mockRejectedValueOnce(new Error('provider unavailable'))
+      .mockResolvedValueOnce(undefined)
+    const { launchAgentBackgroundSession } = await import('./launch-agent-background-session')
+
+    await expect(
+      launchAgentBackgroundSession({
+        agent: 'claude',
+        worktreeId: 'wt-1',
+        prompt: 'run the automation'
+      })
+    ).rejects.toThrow('subscription setup failed')
+
+    expect(mockKill).toHaveBeenCalledWith('pty-1', { expectedTabId: 'tab-1' })
+    expect(mockKill).toHaveBeenCalledTimes(1)
+    expect(mockCloseTab).toHaveBeenCalledWith('tab-1', { recordInteraction: false })
   })
 
   it('submits prompts for stdin-after-start agents in background mode', async () => {
@@ -769,6 +813,20 @@ describe('launchAgentBackgroundSession', () => {
       activeRuntimeEnvironmentId: 'env-1',
       terminalMainSideEffectAuthority: undefined
     }
+    let closeAttempts = 0
+    mockRuntimeEnvironmentCall.mockImplementation(async (args) => {
+      if (args.method === 'terminal.close') {
+        closeAttempts += 1
+        if (closeAttempts === 1) {
+          throw new Error('runtime disconnected')
+        }
+        return { ok: true, result: { status: 'closed' } }
+      }
+      return {
+        ok: true,
+        result: { terminal: { handle: 'terminal-1', worktreeId: 'wt-1', title: null } }
+      }
+    })
     mockRuntimeEnvironmentSubscribe.mockRejectedValueOnce(new Error('subscription failed'))
     const { launchAgentBackgroundSession } = await import('./launch-agent-background-session')
 
@@ -786,6 +844,7 @@ describe('launchAgentBackgroundSession', () => {
       params: { terminal: 'terminal-1' },
       timeoutMs: undefined
     })
+    expect(closeAttempts).toBe(1)
     expect(state.clearTabPtyId).toHaveBeenCalledWith('tab-1', 'remote:env-1@@terminal-1')
     expect(state.clearAgentLaunchConfig).toHaveBeenCalledWith(expect.stringMatching(/^tab-1:/))
     expect(mockCloseTab).toHaveBeenCalledWith('tab-1', { recordInteraction: false })

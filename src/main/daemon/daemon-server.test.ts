@@ -8,6 +8,7 @@ import { DaemonClient } from './client'
 import { encodeNdjson } from './ndjson'
 import { PROTOCOL_VERSION, type DaemonRequest } from './types'
 import type { SubprocessHandle } from './session'
+import type { TerminalHost } from './terminal-host'
 import { getDaemonSocketPath } from './daemon-spawner'
 
 const confirmForegroundProcessMock = vi.fn(async () => 'droid')
@@ -29,7 +30,7 @@ function createMockSubprocess(): SubprocessHandle & {
     write: vi.fn(),
     resize: vi.fn(),
     kill: vi.fn(() => setTimeout(() => onExitCb?.(0), 5)),
-    forceKill: vi.fn(),
+    forceKill: vi.fn(() => setTimeout(() => onExitCb?.(-1), 5)),
     signal: vi.fn(),
     onData(cb) {
       onDataCb = cb
@@ -49,6 +50,8 @@ function createMockSubprocess(): SubprocessHandle & {
 
 type DaemonServerPrivate = {
   server: Server | null
+  host: TerminalHost
+  streamRouteBySessionId: Map<string, { clientId: string; active: boolean }>
   clients: Map<
     string,
     {
@@ -174,8 +177,195 @@ describe('DaemonServer', () => {
 
       expect(result).toMatchObject({
         isNew: true,
-        pid: 55555
+        pid: 55555,
+        sessionGeneration: expect.any(String)
       })
+    })
+
+    it('does not retain routes when subscription flushes output and exit synchronously', async () => {
+      server = new DaemonServer({
+        socketPath,
+        tokenPath,
+        spawnSubprocess: () => {
+          const subprocess = createMockSubprocess()
+          subprocess.onData = vi.fn((callback) => callback('BOOT'))
+          subprocess.onExit = vi.fn((callback) => callback(0))
+          return subprocess
+        }
+      })
+      await server.start()
+      const c = await connectClient()
+      const daemon = server as unknown as DaemonServerPrivate
+
+      for (let index = 0; index < 100; index++) {
+        await c.request('createOrAttach', {
+          sessionId: `synchronous-exit-${index}`,
+          cols: 80,
+          rows: 24
+        })
+        expect(daemon.streamRouteBySessionId.size).toBe(0)
+        expect(daemon.host.listSessions()).toHaveLength(0)
+      }
+    })
+
+    it('restores the prior route when a new attach fails before taking ownership', async () => {
+      server = new DaemonServer({
+        socketPath,
+        tokenPath,
+        spawnSubprocess: () => {
+          throw new Error('spawn failed')
+        }
+      })
+      const daemon = server as unknown as DaemonServerPrivate
+      const previousRoute = { clientId: 'previous-client', active: true }
+      daemon.streamRouteBySessionId.set('failed-attach', previousRoute)
+
+      await expect(
+        daemon.routeRequest('replacement-client', {
+          id: 'failed-request',
+          type: 'createOrAttach',
+          payload: { sessionId: 'failed-attach', cols: 80, rows: 24 }
+        })
+      ).rejects.toThrow('spawn failed')
+
+      expect(daemon.streamRouteBySessionId.get('failed-attach')).toBe(previousRoute)
+    })
+
+    it('does not resurrect an older failed route when overlapping attaches both fail', async () => {
+      server = new DaemonServer({
+        socketPath,
+        tokenPath,
+        spawnSubprocess: () => createMockSubprocess()
+      })
+      const daemon = server as unknown as DaemonServerPrivate
+      await daemon.routeRequest('previous-client', {
+        id: 'previous-request',
+        type: 'createOrAttach',
+        payload: { sessionId: 'overlapping-failure', cols: 80, rows: 24 }
+      })
+      expect(daemon.host.listSessions()).toHaveLength(1)
+      let rejectOlder!: (reason: unknown) => void
+      let rejectNewer!: (reason: unknown) => void
+      const olderResult = new Promise<never>((_resolve, reject) => {
+        rejectOlder = reject
+      })
+      const newerResult = new Promise<never>((_resolve, reject) => {
+        rejectNewer = reject
+      })
+      vi.spyOn(daemon.host, 'createOrAttach')
+        .mockReturnValueOnce(olderResult)
+        .mockReturnValueOnce(newerResult)
+
+      const olderRequest = daemon.routeRequest('older-client', {
+        id: 'older-request',
+        type: 'createOrAttach',
+        payload: { sessionId: 'overlapping-failure', cols: 80, rows: 24 }
+      })
+      const newerRequest = daemon.routeRequest('newer-client', {
+        id: 'newer-request',
+        type: 'createOrAttach',
+        payload: { sessionId: 'overlapping-failure', cols: 80, rows: 24 }
+      })
+
+      rejectOlder(new Error('older failed'))
+      await expect(olderRequest).rejects.toThrow('older failed')
+      expect(daemon.streamRouteBySessionId.get('overlapping-failure')).toMatchObject({
+        clientId: 'newer-client',
+        active: true
+      })
+
+      rejectNewer(new Error('newer failed'))
+      await expect(newerRequest).rejects.toThrow('newer failed')
+      expect(daemon.streamRouteBySessionId.get('overlapping-failure')).toMatchObject({
+        clientId: 'previous-client',
+        active: true
+      })
+      expect(daemon.host.listSessions()).toHaveLength(1)
+    })
+
+    it('keeps a newer successful route when an overlapping older attach fails', async () => {
+      server = new DaemonServer({
+        socketPath,
+        tokenPath,
+        spawnSubprocess: () => createMockSubprocess()
+      })
+      const daemon = server as unknown as DaemonServerPrivate
+      let rejectOlder!: (reason: unknown) => void
+      const olderResult = new Promise<never>((_resolve, reject) => {
+        rejectOlder = reject
+      })
+      vi.spyOn(daemon.host, 'createOrAttach')
+        .mockReturnValueOnce(olderResult)
+        .mockResolvedValueOnce({
+          isNew: true,
+          snapshot: null,
+          pid: 55555,
+          shellState: 'ready',
+          sessionGeneration: 'newer-generation',
+          attachToken: Symbol('newer-attach')
+        })
+
+      const olderRequest = daemon.routeRequest('older-client', {
+        id: 'older-request',
+        type: 'createOrAttach',
+        payload: { sessionId: 'overlapping-success', cols: 80, rows: 24 }
+      })
+      const newerRequest = daemon.routeRequest('newer-client', {
+        id: 'newer-request',
+        type: 'createOrAttach',
+        payload: { sessionId: 'overlapping-success', cols: 80, rows: 24 }
+      })
+
+      rejectOlder(new Error('older failed'))
+      await expect(olderRequest).rejects.toThrow('older failed')
+      await expect(newerRequest).resolves.toMatchObject({
+        sessionGeneration: 'newer-generation'
+      })
+      expect(daemon.streamRouteBySessionId.get('overlapping-success')).toMatchObject({
+        clientId: 'newer-client',
+        active: true
+      })
+    })
+
+    it('carries one immutable session generation through create, list, size, and exit', async () => {
+      let subprocess: ReturnType<typeof createMockSubprocess>
+      server = new DaemonServer({
+        socketPath,
+        tokenPath,
+        spawnSubprocess: () => {
+          subprocess = createMockSubprocess()
+          return subprocess
+        }
+      })
+      await server.start()
+      const c = await connectClient()
+      const created = await c.request<{ sessionGeneration: string }>('createOrAttach', {
+        sessionId: 'generation-session',
+        cols: 80,
+        rows: 24
+      })
+      const listed = await c.request<{
+        sessions: { sessionGeneration: string }[]
+      }>('listSessions', undefined)
+      const sized = await c.request<{ sessionGeneration: string }>('getSize', {
+        sessionId: 'generation-session'
+      })
+      const exitEvent = new Promise<unknown>((resolve) => c.onEvent(resolve))
+
+      subprocess!._simulateExit(42)
+
+      expect(listed.sessions[0]?.sessionGeneration).toBe(created.sessionGeneration)
+      expect(sized.sessionGeneration).toBe(created.sessionGeneration)
+      await expect(exitEvent).resolves.toMatchObject({
+        event: 'exit',
+        payload: { code: 42, sessionGeneration: created.sessionGeneration }
+      })
+      const replacement = await c.request<{ sessionGeneration: string }>('createOrAttach', {
+        sessionId: 'generation-session',
+        cols: 80,
+        rows: 24
+      })
+      expect(replacement.sessionGeneration).not.toBe(created.sessionGeneration)
     })
 
     it('persists only an allowlisted launch identity across reattach', async () => {
@@ -625,6 +815,30 @@ describe('DaemonServer', () => {
 
       const c = new DaemonClient({ socketPath, tokenPath })
       await expect(c.ensureConnected()).rejects.toThrow()
+    })
+
+    it('contains an RPC drain rejection and requests process exit', async () => {
+      const requestProcessExit = vi.fn()
+      server = new DaemonServer({
+        socketPath,
+        tokenPath,
+        requestProcessExit,
+        spawnSubprocess: () => createMockSubprocess()
+      })
+      const daemon = server as unknown as DaemonServerPrivate
+      const drain = vi
+        .spyOn(daemon.host, 'shutdownAndWait')
+        .mockRejectedValue(new Error('native drain failed'))
+
+      await daemon.routeRequest('rpc-client', {
+        id: 'shutdown-1',
+        type: 'shutdown',
+        payload: { killSessions: true }
+      })
+      await new Promise<void>((resolve) => process.nextTick(resolve))
+      await vi.waitFor(() => expect(requestProcessExit).toHaveBeenCalledWith(1))
+
+      drain.mockRestore()
     })
   })
 })

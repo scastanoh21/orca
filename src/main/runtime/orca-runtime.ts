@@ -4,6 +4,7 @@
 import {
   detectAgentStatusFromTitle,
   isClaudeManagementTitle,
+  isCursorAgentTitle,
   isCursorNativeAgentTitle,
   isShellProcess,
   normalizeTerminalTitle
@@ -26,6 +27,7 @@ import type {
 import type { TerminalGitHubPRLink } from '../../shared/terminal-github-pr-link-detector'
 import {
   AGENT_STATUS_STALE_AFTER_MS,
+  isFreshNonDoneAgentStatus,
   type AgentStatusIpcPayload,
   type ParsedAgentStatusPayload,
   type AgentStatusOrchestrationContext,
@@ -142,8 +144,11 @@ import type {
 } from '../../shared/types'
 import { assertWorktreeUnlockedForRemoval } from '../../shared/worktree-removal'
 import {
+  LOCAL_EXECUTION_HOST_ID,
   getRepoExecutionHostId,
+  normalizeExecutionHostId,
   parseExecutionHostId,
+  toSshExecutionHostId,
   type ExecutionHostId
 } from '../../shared/execution-host'
 import type { SleepingAgentLaunchConfig } from '../../shared/agent-session-resume'
@@ -170,6 +175,10 @@ import type {
   LinearStatusSetResult
 } from '../../shared/linear-agent-access'
 import {
+  HEADLESS_RUNTIME_WINDOW_ID,
+  type RuntimeDesktopWindowStatus
+} from '../../shared/runtime-types'
+import {
   LINEAR_SEARCH_MAX_LIMIT,
   LINEAR_WRITE_BODY_CAP,
   clampLinearSearchLimit
@@ -179,6 +188,7 @@ import type { FeatureInteractionId } from '../../shared/feature-interactions'
 import type { TerminalPaneSplitSource } from '../../shared/feature-education-telemetry'
 import {
   FOLDER_WORKSPACE_INSTANCE_SEPARATOR,
+  WORKTREE_ID_SEPARATOR,
   splitWorktreeId,
   splitWorktreeIdForFilesystem
 } from '../../shared/worktree-id'
@@ -462,9 +472,13 @@ import {
 import {
   getLocalProjectGitExecOptions,
   getLocalProjectWorktreeGitOptions,
-  resolveLocalProjectRuntimeForRepo
+  getLocalProjectWorktreeGitOptionsForRuntime,
+  resolveLocalProjectRuntimeForRepo,
+  resolveLocalProjectRuntimesForRepos
 } from '../project-runtime-git-options'
+import { resolveLocalProjectRuntimeForWorktreeId } from '../local-project-runtime-resolution'
 import type { ProjectExecutionRuntimeResolution } from '../../shared/project-execution-runtime'
+import { resolveTerminalOrchestrationCliCommand } from './orchestration/cli-command'
 import {
   getLocalWorktreePathAccess,
   removeLocalWorktreePath,
@@ -686,6 +700,7 @@ import {
   shouldSetDisplayName,
   areWorktreePathsEqual
 } from '../ipc/worktree-logic'
+import { worktreePathComparisonKey } from '../ipc/worktree-path-comparison'
 import {
   assertWorktreeDoesNotContainRegisteredWorktree,
   canCleanupUnregisteredOrcaLeftoverDirectory,
@@ -713,6 +728,10 @@ import {
   registerTerminalViewAttributesApplier
 } from './terminal-view-attribute-store'
 import { killAllProcessesForWorktree } from './worktree-teardown'
+import {
+  MobileNotificationReplayBuffer,
+  type ReplayableMobileNotification
+} from './mobile-notification-replay'
 import { MOBILE_SUBSCRIBE_SCROLLBACK_ROWS } from './scrollback-limits'
 import {
   createMobileSessionTabsNotifyCoalescer,
@@ -739,6 +758,7 @@ import type { ClaudeAccountService } from '../claude-accounts/service'
 import type { CodexAccountService } from '../codex-accounts/service'
 import type { RateLimitService } from '../rate-limits/service'
 import type { ClaudeRateLimitAccountsState, CodexRateLimitAccountsState } from '../../shared/types'
+import { applyPRBotAuthorOverride } from '../../shared/pr-bot-author-overrides'
 import type { RateLimitState } from '../../shared/rate-limit-types'
 import type { VoiceSettings } from '../../shared/speech-types'
 import { getSpeechModelManager, getSpeechSttService } from '../speech/speech-runtime-service'
@@ -802,6 +822,7 @@ type RuntimeStore = {
   updateFolderWorkspace?: Store['updateFolderWorkspace']
   removeFolderWorkspace?: Store['removeFolderWorkspace']
   removeProject?: Store['removeProject']
+  removeProjectForHost?: Store['removeProjectForHost']
   reorderRepos?: Store['reorderRepos']
   getAllWorktreeMeta: Store['getAllWorktreeMeta']
   getWorktreeMeta: Store['getWorktreeMeta']
@@ -852,8 +873,8 @@ type RuntimeStore = {
     compactWorktreeCards?: GlobalSettings['compactWorktreeCards']
     minimaxGroupId?: GlobalSettings['minimaxGroupId']
     minimaxUsageModels?: GlobalSettings['minimaxUsageModels']
+    prBotAuthorOverrides?: GlobalSettings['prBotAuthorOverrides']
     gitlabProjects?: GlobalSettings['gitlabProjects']
-    experimentalWorktreeSymlinks?: boolean
     mobileAutoRestoreFitMs?: number | null
     mobileEmulatorEnabled?: boolean
     mobileEmulatorDefaultDeviceUdid?: string | null
@@ -965,28 +986,13 @@ function isCursorAgentOrchestrationTarget(
   return [leaf.lastOscTitle, leaf.paneTitle, tabTitle].some(isCursorAgentTitle)
 }
 
-function isCursorAgentTitle(title: string | null | undefined): boolean {
-  if (typeof title !== 'string') {
-    return false
-  }
-  const trimmed = title.trim()
-  const lower = trimmed.toLowerCase()
-  if (
-    lower === 'cursor agent' ||
-    lower === 'cursor ready' ||
-    lower === 'cursor - action required'
-  ) {
-    return true
-  }
-  // Why: display labels can mention Cursor in another agent's task text. Only
-  // treat the controlled synthetic Cursor spinner title as Cursor identity.
-  return /^[\u2800-\u28ff] Cursor Agent$/u.test(trimmed)
-}
-
 type RuntimePtyWorktreeRecord = {
   ptyId: string
   worktreeId: string
   connectionId: string | null
+  // Why: a Windows host can own both native and WSL panes; preamble command
+  // selection must follow the pane that executes it, not process.platform.
+  isWsl: boolean | null
   // Why: background CLI PTYs can outlive a failed renderer reveal. Preserve the
   // spawn-time tab/pane identity so later reveals can adopt under the env key.
   tabId: string | null
@@ -1026,6 +1032,7 @@ type TerminalCreateOptions = {
   launchConfig?: WorktreeStartupLaunch['launchConfig']
   launchToken?: string
   launchAgent?: TuiAgent
+  viewMode?: 'terminal' | 'chat'
   startupCommandDelivery?: WorktreeStartupLaunch['startupCommandDelivery']
   telemetry?: WorktreeStartupLaunch['telemetry']
   title?: string
@@ -1206,10 +1213,11 @@ type RuntimePtyController = {
   stopAndWait?(ptyId: string, opts?: { keepHistory?: boolean }): Promise<boolean>
   getCwd?(ptyId: string): Promise<string | null>
   getForegroundProcess(ptyId: string): Promise<string | null>
+  confirmForegroundProcess?(ptyId: string): Promise<string | null>
   hasChildProcesses?(ptyId: string): Promise<boolean>
   clearBuffer?(ptyId: string): Promise<void>
   resize?(ptyId: string, cols: number, rows: number): boolean
-  listProcesses?(): Promise<PtyProcessInfo[]>
+  listProcesses?(connectionId?: string | null): Promise<PtyProcessInfo[]>
   serializeBuffer?(
     ptyId: string,
     opts?: { scrollbackRows?: number; altScreenForcesZeroRows?: boolean }
@@ -1257,6 +1265,7 @@ const BRACKETED_PASTE_END = '\x1b[201~'
 const BRACKETED_PASTE_QUIET_MS = 1500
 const DRAFT_PASTE_READY_TIMEOUT_MS = 8000
 const MOBILE_TERMINAL_SURFACE_TIMEOUT_MS = 10_000
+const GLOBAL_TERMINAL_ADMISSION_KEY = '__global_renderer_terminal_admission__'
 const MOBILE_TERMINAL_READY_FALLBACK_MS = 1000
 const RECENT_PTY_OUTPUT_LIMIT = 64 * 1024
 const RECENT_PTY_PATH_CANDIDATE_LIMIT = 1024
@@ -1323,6 +1332,7 @@ type RuntimeNotifier = {
       launchConfig?: SleepingAgentLaunchConfig
       launchToken?: string
       launchAgent?: TuiAgent
+      viewMode?: 'terminal' | 'chat'
       activate?: boolean
       presentation?: RuntimeTerminalPresentation
       tabId?: string
@@ -1482,6 +1492,7 @@ type RuntimeWorktreeRemovalTarget = {
   id: string
   repoId: string
   path: string
+  hostId?: ExecutionHostId
   pushTarget?: GitPushTarget
 }
 
@@ -1937,6 +1948,7 @@ function labelsForIds(
 type TerminalWorkspaceLaunchScope = {
   id: string
   path: string
+  hostId: ExecutionHostId
   connectionId: string | null
   repo: Repo | null
   folderWorkspace: FolderWorkspace | null
@@ -2015,16 +2027,34 @@ class RuntimeLineageError extends Error {
   }
 }
 
-type ResolvedWorktreeCache = {
-  expiresAt: number
+class WorktreeIdRequiresFullPathError extends Error {
+  readonly code = 'worktree_id_requires_full_path'
+
+  constructor() {
+    super(
+      'Worktree id selectors must use the full <repo-id>::<path> value. Use the id from `orca worktree list --json`, or target by path:<path>, branch:<branch>, or issue:<number>.'
+    )
+  }
+}
+
+type ResolvedWorktreeSnapshot = {
   worktrees: ResolvedWorktree[]
+  platformByRepoId: ReadonlyMap<string, NodeJS.Platform>
+}
+
+type ResolvedWorktreeCache = ResolvedWorktreeSnapshot & {
+  expiresAt: number
 }
 
 type ResolvedWorktreeInFlight = {
   generation: number
-  promise: Promise<ResolvedWorktree[]>
+  promise: Promise<ResolvedWorktreeSnapshot>
 }
 
+// Why: notificationSeq is the desktop-assigned monotonic sequence used for
+// mobile reconnect catch-up (#8129). It is added on dispatch (and replay) so a
+// client can watermark the last event it delivered and request exactly the
+// events after it — idempotent, no duplicate local pushes.
 export type MobileNotificationDispatchEvent = {
   type: 'notification'
   source: 'agent-task-complete' | 'terminal-bell' | 'test'
@@ -2032,11 +2062,13 @@ export type MobileNotificationDispatchEvent = {
   body: string
   worktreeId?: string
   notificationId?: string
+  notificationSeq?: number
 }
 
 export type MobileNotificationDismissEvent = {
   type: 'dismiss'
   notificationId: string
+  notificationSeq?: number
 }
 
 export type MobileNotificationEvent =
@@ -2108,6 +2140,43 @@ async function hasLocalWorktreeBaseRef(
   )
 }
 
+export type CreateManagedWorktreeArgs = {
+  repoSelector: string
+  name: string
+  baseBranch?: string
+  compareBaseRef?: string
+  branchNameOverride?: string
+  linkedIssue?: number | null
+  linkedPR?: number | null
+  linkedLinearIssue?: string
+  linkedLinearIssueWorkspaceId?: string | null
+  linkedLinearIssueOrganizationUrlKey?: string | null
+  linkedGitLabMR?: number | null
+  linkedGitLabIssue?: number | null
+  linkedBitbucketPR?: number | null
+  linkedAzureDevOpsPR?: number | null
+  linkedGiteaPR?: number | null
+  comment?: string
+  displayName?: string
+  telemetrySource?: WorkspaceCreateTelemetrySource
+  workspaceStatus?: string
+  manualOrder?: number
+  sparseCheckout?: { directories: string[]; presetId?: string }
+  pushTarget?: GitPushTarget
+  runHooks?: boolean
+  activate?: boolean
+  setupDecision?: 'run' | 'skip' | 'inherit'
+  createdWithAgent?: TuiAgent
+  startupAgent?: TuiAgent
+  startupPrompt?: string
+  pendingFirstAgentMessageRename?: boolean
+  automationProvenance?: AutomationWorkspaceProvenance
+  startup?: WorktreeStartupLaunch
+  startupDraft?: string
+  startupDraftPaste?: WorktreeStartupDraftPaste
+  lineage?: WorktreeLineageInput
+}
+
 export class OrcaRuntimeService {
   private readonly runtimeId = randomUUID()
   private readonly startedAt = Date.now()
@@ -2130,7 +2199,11 @@ export class OrcaRuntimeService {
   // creates so ordinary renderer spawns never publish here.
   private pendingMobileTerminalCreatesByKey = new Map<
     string,
-    { activate: boolean; selectIfNoActiveTab: boolean }
+    {
+      activate: boolean
+      selectIfNoActiveTab: boolean
+      viewMode?: 'terminal' | 'chat'
+    }
   >()
   private mobileSessionTabListeners = new Set<(snapshot: RuntimeMobileSessionTabsResult) => void>()
   // Why: coalesces title/status-driven session.tabs emits so spinner churn
@@ -2211,6 +2284,15 @@ export class OrcaRuntimeService {
   // iterates them all. Listeners are cleaned up via subscriptionCleanups.
   private notificationListeners = new Set<(event: MobileNotificationEvent) => void>()
   private ptysById = new Map<string, RuntimePtyWorktreeRecord>()
+  // Why: repo removal must make verified stop + metadata removal atomic with
+  // respect to paired/mobile terminal creation, or a late spawn is orphaned.
+  private terminalAdmissionBlockedWorktreeIds = new Set<string>()
+  private terminalRemovalGeneration = 0
+  private terminalRemovalGenerationByScope = new Map<string, number>()
+  private unresolvedTerminalAdmissionCount = 0
+  private terminalAdmissionsByWorktreeId = new Map<string, Set<Promise<void>>>()
+  private projectRemovalBlockedRepoIds = new Set<string>()
+  private worktreeCreateAdmissionsByRepoId = new Map<string, Set<Promise<void>>>()
   private titleObservationSequence = 0
   private headlessTerminals = new Map<string, RuntimeHeadlessTerminal>()
   private ptyOutputSequenceById = new Map<string, number>()
@@ -2487,8 +2569,10 @@ export class OrcaRuntimeService {
   private readonly onPtyStopped: ((ptyId: string) => void) | null
   private readonly onTerminalAgentStatus: ((event: RuntimeTerminalAgentStatusEvent) => void) | null
   private readonly onTerminalSideEffects: ((batch: TerminalSideEffectBatch) => void) | null
+  private terminalSideEffectConsumerAvailable = false
   private readonly getAgentStatusSnapshotFn: (() => AgentStatusIpcPayload[]) | null
   private readonly buildAgentHookPtyEnv: (() => Record<string, string>) | null
+  private readonly getDesktopWindowStatusFn: () => RuntimeDesktopWindowStatus
   private accountServices: RuntimeAccountServices | null = null
   private commitMessageAgentEnv: CommitMessageAgentEnvironmentResolvers | null = null
   private automationService: AutomationService | null = null
@@ -2522,6 +2606,7 @@ export class OrcaRuntimeService {
       // managed-Codex sessions. The runtime ctor runs in BOTH window and serve.
       getAdditionalAiVaultCodexHomePaths?: () => readonly string[]
       buildAgentHookPtyEnv?: () => Record<string, string>
+      getDesktopWindowStatus?: () => RuntimeDesktopWindowStatus
     }
   ) {
     this.store = store
@@ -2548,6 +2633,7 @@ export class OrcaRuntimeService {
     this.onPtyStopped = deps?.onPtyStopped ?? null
     this.onTerminalAgentStatus = deps?.onTerminalAgentStatus ?? null
     this.buildAgentHookPtyEnv = deps?.buildAgentHookPtyEnv ?? null
+    this.getDesktopWindowStatusFn = deps?.getDesktopWindowStatus ?? (() => 'openable')
     this.onTerminalSideEffects = deps?.onTerminalSideEffects ?? null
     // Why: the ConPTY spawn mark can land after daemon stream data already
     // created this PTY's emulator; the mark retrofits the DA1 override here
@@ -2619,6 +2705,7 @@ export class OrcaRuntimeService {
     | 'compactWorktreeCards'
     | 'minimaxGroupId'
     | 'minimaxUsageModels'
+    | 'prBotAuthorOverrides'
   > {
     if (!this.store?.getSettings) {
       throw new Error('runtime_unavailable')
@@ -2640,7 +2727,8 @@ export class OrcaRuntimeService {
       experimentalNewWorktreeCardStyle: settings.experimentalNewWorktreeCardStyle === true,
       compactWorktreeCards: settings.compactWorktreeCards === true,
       minimaxGroupId: settings.minimaxGroupId ?? '',
-      minimaxUsageModels: settings.minimaxUsageModels ?? 'general'
+      minimaxUsageModels: settings.minimaxUsageModels ?? 'general',
+      prBotAuthorOverrides: settings.prBotAuthorOverrides ?? []
     }
   }
 
@@ -2662,6 +2750,7 @@ export class OrcaRuntimeService {
       | 'compactWorktreeCards'
       | 'minimaxGroupId'
       | 'minimaxUsageModels'
+      | 'prBotAuthorOverrides'
     >
   ): Pick<
     GlobalSettings,
@@ -2681,6 +2770,7 @@ export class OrcaRuntimeService {
     | 'compactWorktreeCards'
     | 'minimaxGroupId'
     | 'minimaxUsageModels'
+    | 'prBotAuthorOverrides'
   > {
     if (!this.store?.getSettings || !this.store.updateSettings) {
       throw new Error('runtime_unavailable')
@@ -2693,6 +2783,18 @@ export class OrcaRuntimeService {
     ) {
       applyAgentStatusHooksEnabled(updates.agentStatusHooksEnabled)
     }
+    return this.getClientSettings()
+  }
+
+  updateClientPRBotAuthorOverride(args: { author: string; isBot: boolean }) {
+    if (!this.store?.getSettings || !this.store.updateSettings) {
+      throw new Error('runtime_unavailable')
+    }
+    const current = this.store.getSettings().prBotAuthorOverrides
+    this.store.updateSettings(
+      { prBotAuthorOverrides: applyPRBotAuthorOverride(current, args.author, args.isBot) },
+      { notifyListeners: true }
+    )
     return this.getClientSettings()
   }
 
@@ -2934,6 +3036,7 @@ export class OrcaRuntimeService {
       rendererGraphEpoch: this.rendererGraphEpoch,
       graphStatus: this.graphStatus,
       authoritativeWindowId: this.authoritativeWindowId,
+      desktopWindowStatus: hasRenderer ? 'available' : this.getDesktopWindowStatusFn(),
       liveTabCount: this.tabs.size,
       liveLeafCount: this.leaves.size,
       runtimeProtocolVersion: RUNTIME_PROTOCOL_VERSION,
@@ -3048,9 +3151,76 @@ export class OrcaRuntimeService {
   }
 
   attachWindow(windowId: number): void {
+    if (this.authoritativeWindowId === HEADLESS_RUNTIME_WINDOW_ID) {
+      // Why: promotion is a renderer reload of the same graph owner, not a new
+      // runtime; stale handles must transition before the real window publishes.
+      this.persistWindowlessPtyBindingsForDesktopAttach()
+      this.markRendererReloading(HEADLESS_RUNTIME_WINDOW_ID)
+      this.authoritativeWindowId = windowId
+      return
+    }
     if (this.authoritativeWindowId === null) {
+      // Why: a promoted serve can close and later reopen its window while new
+      // background PTYs keep arriving; every windowless gap needs this handoff.
+      this.persistWindowlessPtyBindingsForDesktopAttach()
       this.authoritativeWindowId = windowId
     }
+  }
+
+  private persistWindowlessPtyBindingsForDesktopAttach(): void {
+    const session = this.store?.getWorkspaceSession?.()
+    if (!session || !this.store?.setWorkspaceSession) {
+      return
+    }
+    const promotablePtys = [...this.ptysById.values()].filter((pty) => {
+      if (!pty.connected || !pty.tabId) {
+        return false
+      }
+      const tab = session.tabsByWorktree[pty.worktreeId]?.find(
+        (candidate) => candidate.id === pty.tabId
+      )
+      if (!tab) {
+        return false
+      }
+      const layoutPtyIds = Object.values(
+        session.terminalLayoutsByTabId[pty.tabId]?.ptyIdsByLeafId ?? {}
+      )
+      return tab.ptyId === pty.ptyId || layoutPtyIds.includes(pty.ptyId)
+    })
+    if (promotablePtys.length === 0) {
+      return
+    }
+
+    // Why: renderer hydration treats an explicitly-present shutdown list as
+    // authoritative. A windowless owner has no renderer shutdown pass, so seed
+    // that existing reattach contract before its next desktop window loads.
+    const activeWorktreeIdsOnShutdown = [
+      ...new Set([
+        ...(session.activeWorktreeIdsOnShutdown ?? []),
+        ...promotablePtys.map((pty) => pty.worktreeId)
+      ])
+    ]
+    const activeConnectionIdsAtShutdown = [
+      ...new Set([
+        ...(session.activeConnectionIdsAtShutdown ?? []),
+        ...promotablePtys
+          .map((pty) => pty.connectionId)
+          .filter((connectionId): connectionId is string => connectionId !== null)
+      ])
+    ]
+    const remoteSessionIdsByTabId = { ...session.remoteSessionIdsByTabId }
+    for (const pty of promotablePtys) {
+      if (pty.connectionId && pty.tabId) {
+        remoteSessionIdsByTabId[pty.tabId] = pty.ptyId
+      }
+    }
+
+    this.store.setWorkspaceSession({
+      ...session,
+      activeWorktreeIdsOnShutdown,
+      ...(activeConnectionIdsAtShutdown.length > 0 ? { activeConnectionIdsAtShutdown } : {}),
+      ...(Object.keys(remoteSessionIdsByTabId).length > 0 ? { remoteSessionIdsByTabId } : {})
+    })
   }
 
   syncWindowGraph(windowId: number, graph: RuntimeSyncWindowGraph): RuntimeSyncWindowGraphResult {
@@ -3177,6 +3347,7 @@ export class OrcaRuntimeService {
     this.rebuildLeafPtyIndex()
     this.notifyMobileSessionTabSnapshots()
     this.graphStatus = 'ready'
+    this.setTerminalSideEffectConsumerAvailable(windowId !== HEADLESS_RUNTIME_WINDOW_ID)
     this.refreshWritableFlags()
     for (const leaf of this.leaves.values()) {
       this.adoptPreAllocatedHandle(leaf)
@@ -3196,7 +3367,7 @@ export class OrcaRuntimeService {
   }
 
   async listMobileSessionTabs(worktreeSelector: string): Promise<RuntimeMobileSessionTabsResult> {
-    const explicitWorktreeId = getExplicitWorktreeIdSelector(worktreeSelector)
+    const explicitWorktreeId = this.getValidatedExplicitWorktreeIdSelector(worktreeSelector)
     if (explicitWorktreeId) {
       this.hydrateHeadlessMobileSessionTabsFromWorkspaceSession(explicitWorktreeId)
       await this.refreshMobileSessionPtyRecords()
@@ -3638,6 +3809,7 @@ export class OrcaRuntimeService {
       activate: boolean
       selectIfNoActiveTab?: boolean
       startupCwd?: string
+      viewMode?: 'terminal' | 'chat'
       split?: { splitFromLeafId: string; direction: 'horizontal' | 'vertical' }
     }
   ): void {
@@ -3669,6 +3841,17 @@ export class OrcaRuntimeService {
       baseLayout,
       args.split
     )
+    // Why: a main-side PTY rescue or split publication must not erase the
+    // host's explicit tab mode before the renderer graph catches up.
+    const viewMode =
+      args.viewMode ??
+      existingTab?.viewMode ??
+      existing?.tabs.find(
+        (candidate): candidate is RuntimeMobileSessionTerminalTab =>
+          candidate.type === 'terminal' &&
+          candidate.parentTabId === args.tabId &&
+          candidate.viewMode !== undefined
+      )?.viewMode
     const tab: RuntimeMobileSessionTerminalTab = {
       type: 'terminal',
       id: `${args.tabId}::${args.leafId}`,
@@ -3678,6 +3861,7 @@ export class OrcaRuntimeService {
       title,
       ...(pty.launchAgent ? { launchAgent: pty.launchAgent } : {}),
       ...(args.startupCwd ? { startupCwd: args.startupCwd } : {}),
+      ...(viewMode ? { viewMode } : {}),
       parentLayout,
       isActive:
         args.activate || (args.selectIfNoActiveTab !== false && existing?.activeTabId == null)
@@ -4180,7 +4364,7 @@ export class OrcaRuntimeService {
     leafId?: string,
     opts: { notifyClients?: boolean } = {}
   ): Promise<RuntimeMobileSessionTabsResult> {
-    const explicitWorktreeId = getExplicitWorktreeIdSelector(worktreeSelector)
+    const explicitWorktreeId = this.getValidatedExplicitWorktreeIdSelector(worktreeSelector)
     const worktreeId =
       explicitWorktreeId ?? (await this.resolveWorktreeSelector(worktreeSelector)).id
     this.hydrateHeadlessMobileSessionTabsFromWorkspaceSession(worktreeId)
@@ -4456,7 +4640,7 @@ export class OrcaRuntimeService {
   }
 
   async closeMobileSessionTab(worktreeSelector: string, tabId: string): Promise<{ closed: true }> {
-    const explicitWorktreeId = getExplicitWorktreeIdSelector(worktreeSelector)
+    const explicitWorktreeId = this.getValidatedExplicitWorktreeIdSelector(worktreeSelector)
     const worktreeId =
       explicitWorktreeId ?? (await this.resolveWorktreeSelector(worktreeSelector)).id
     this.hydrateHeadlessMobileSessionTabsFromWorkspaceSession(worktreeId)
@@ -4475,7 +4659,9 @@ export class OrcaRuntimeService {
     }
     if (tab.type === 'terminal') {
       if (!this.notifier?.closeTerminal) {
-        this.closeHeadlessMobileTerminalTab(worktreeId, snapshot!, tab)
+        if (!this.closeHeadlessMobileTerminalTab(worktreeId, snapshot!, tab)) {
+          throw new Error('terminal_close_not_retained')
+        }
         return { closed: true }
       }
       // Why: a runtime-owned headless tab whose whole parent is being closed must
@@ -4489,14 +4675,18 @@ export class OrcaRuntimeService {
       ).length
       const closingWholeParent = tab.id !== tabId || parentLeafCount <= 1
       if (closingWholeParent && this.isRuntimeOwnedHeadlessMobileTab(worktreeId, tab)) {
-        this.closeHeadlessMobileTerminalTab(worktreeId, snapshot!, tab)
+        if (!this.closeHeadlessMobileTerminalTab(worktreeId, snapshot!, tab)) {
+          throw new Error('terminal_close_not_retained')
+        }
         this.notifier?.closeTerminal(tab.parentTabId)
         return { closed: true }
       }
       if (tab.id === tabId) {
         const pty = this.findPtyForMobileTerminalTab(worktreeId, tab)
         if (pty) {
-          this.ptyController?.kill(pty.ptyId)
+          if (this.ptyController?.kill(pty.ptyId) !== true) {
+            throw new Error('terminal_close_not_retained')
+          }
         } else {
           this.notifier?.closeTerminal(tab.parentTabId)
         }
@@ -4608,25 +4798,28 @@ export class OrcaRuntimeService {
     worktreeId: string,
     snapshot: RuntimeMobileSessionTabsSnapshot,
     tab: RuntimeMobileSessionTerminalTab
-  ): void {
+  ): boolean {
     const closedParentTabId = tab.parentTabId
-    const nextTabs = snapshot.tabs.filter((candidate) => {
-      if (candidate.type !== 'terminal' || candidate.parentTabId !== closedParentTabId) {
-        return true
-      }
+    const closingTabs = snapshot.tabs.filter(
+      (candidate): candidate is RuntimeMobileSessionTerminalTab =>
+        candidate.type === 'terminal' && candidate.parentTabId === closedParentTabId
+    )
+    for (const candidate of closingTabs) {
       const pty = this.findPtyForMobileTerminalTab(worktreeId, candidate)
-      if (pty?.connected) {
-        this.ptyController?.kill(pty.ptyId)
-      } else {
-        const persistedSshPtyId = this.getPersistedSshPtyIdForMobileTerminalTab(candidate)
-        if (persistedSshPtyId) {
-          // Why: close is an explicit deletion. Hydrated SSH PTYs can be known
-          // only by durable id before reconnect repopulates pane metadata.
-          this.ptyController?.kill(persistedSshPtyId)
-        }
+      // Why: close is an explicit deletion. Hydrated SSH PTYs can be known
+      // only by durable id before reconnect repopulates pane metadata.
+      const ptyId = pty?.connected
+        ? pty.ptyId
+        : this.getPersistedSshPtyIdForMobileTerminalTab(candidate)
+      // Why: depersisting is safe after durable owner acceptance, not after a
+      // best-effort provider call that can fail after this method returns.
+      if (ptyId && this.ptyController?.kill(ptyId) !== true) {
+        return false
       }
-      return false
-    })
+    }
+    const nextTabs = snapshot.tabs.filter(
+      (candidate) => candidate.type !== 'terminal' || candidate.parentTabId !== closedParentTabId
+    )
     this.removePersistedHeadlessTerminalTab(worktreeId, closedParentTabId)
     const active = nextTabs.find((candidate) => candidate.isActive) ?? nextTabs[0] ?? null
     const nextSnapshot: RuntimeMobileSessionTabsSnapshot = {
@@ -4645,13 +4838,14 @@ export class OrcaRuntimeService {
     }
     this.mobileSessionTabsByWorktree.set(worktreeId, nextSnapshot)
     this.emitMobileSessionTabsSnapshot(nextSnapshot)
+    return true
   }
 
   async moveMobileSessionTab(
     worktreeSelector: string,
     move: RuntimeMobileSessionTabMove
   ): Promise<RuntimeMobileSessionTabMoveResult> {
-    const explicitWorktreeId = getExplicitWorktreeIdSelector(worktreeSelector)
+    const explicitWorktreeId = this.getValidatedExplicitWorktreeIdSelector(worktreeSelector)
     const worktreeId =
       explicitWorktreeId ?? (await this.resolveWorktreeSelector(worktreeSelector)).id
     this.hydrateHeadlessMobileSessionTabsFromWorkspaceSession(worktreeId)
@@ -4707,7 +4901,7 @@ export class OrcaRuntimeService {
       titlesByLeafId?: Record<string, string>
     }
   ): Promise<{ updated: true }> {
-    const explicitWorktreeId = getExplicitWorktreeIdSelector(worktreeSelector)
+    const explicitWorktreeId = this.getValidatedExplicitWorktreeIdSelector(worktreeSelector)
     const worktreeId =
       explicitWorktreeId ?? (await this.resolveWorktreeSelector(worktreeSelector)).id
     // Why: when a renderer is authoritative (desktop host reached via shared
@@ -4740,7 +4934,7 @@ export class OrcaRuntimeService {
       viewMode?: 'terminal' | 'chat'
     }
   ): Promise<{ updated: true }> {
-    const explicitWorktreeId = getExplicitWorktreeIdSelector(worktreeSelector)
+    const explicitWorktreeId = this.getValidatedExplicitWorktreeIdSelector(worktreeSelector)
     const worktreeId =
       explicitWorktreeId ?? (await this.resolveWorktreeSelector(worktreeSelector)).id
     // Why: a renderer-authoritative host owns + republishes tab props, so a
@@ -5509,7 +5703,8 @@ export class OrcaRuntimeService {
     ptyId: string,
     worktreeId: string,
     connectionId: string | null = null,
-    binding?: { tabId: string; leafId: string }
+    binding?: { tabId: string; leafId: string },
+    isWsl?: boolean
   ): void {
     // Why: record the renderer pane identity at spawn time so a stalled graph
     // sync can't hide that a live PTY already backs a pending mobile create.
@@ -5520,6 +5715,7 @@ export class OrcaRuntimeService {
     this.recordPtyWorktree(ptyId, worktreeId, {
       connected: true,
       connectionId,
+      ...(isWsl !== undefined ? { isWsl } : {}),
       ...(binding && paneKey ? { tabId: binding.tabId, paneKey } : {})
     })
     // Why: the renderer's own PTY spawn is the reliable signal that the pending
@@ -5939,7 +6135,7 @@ export class OrcaRuntimeService {
   /** Record one derived side-effect fact: batched per chunk while applying
    *  bytes, emitted immediately for between-chunk facts (stale-title timer). */
   private recordTerminalSideEffectFact(ptyId: string, fact: TerminalSideEffectFact): void {
-    if (!this.onTerminalSideEffects) {
+    if (!this.onTerminalSideEffects || !this.terminalSideEffectConsumerAvailable) {
       return
     }
     const entry = this.ptyTitleTrackersByPtyId.get(ptyId)
@@ -5955,7 +6151,11 @@ export class OrcaRuntimeService {
     facts: TerminalSideEffectFact[],
     options: { replay?: boolean } = {}
   ): void {
-    if (!this.onTerminalSideEffects || facts.length === 0) {
+    if (
+      !this.onTerminalSideEffects ||
+      !this.terminalSideEffectConsumerAvailable ||
+      facts.length === 0
+    ) {
       return
     }
     const batch: TerminalSideEffectBatch = {
@@ -6134,7 +6334,7 @@ export class OrcaRuntimeService {
         // Why: bell/command-finished/pr-link/2031 facts exist only for the
         // pty:sideEffect channel. Headless serve has no consumer, so skip the
         // per-chunk bell walk and 133/URL/2031 scans entirely.
-        ...(this.onTerminalSideEffects
+        ...(this.terminalSideEffectConsumerAvailable
           ? {
               onBell: () => {
                 this.recordTerminalSideEffectFact(ptyId, { kind: 'bell' })
@@ -6167,7 +6367,7 @@ export class OrcaRuntimeService {
       // headless serve skips the per-chunk scrape entirely. The detector
       // self-arms on the Command Code banner; the spawn command (when main
       // saw one) mirrors the renderer detector's startupCommand fast-arm.
-      commandCodeDetector: this.onTerminalSideEffects
+      commandCodeDetector: this.terminalSideEffectConsumerAvailable
         ? createCommandCodeOutputStatusDetector({
             startupCommand: this.terminalSpawnCommandsByPtyId.get(ptyId) ?? null,
             onWorking: (prompt) => {
@@ -6264,6 +6464,19 @@ export class OrcaRuntimeService {
   private disposePtyTitleTracker(ptyId: string): void {
     this.ptyTitleTrackersByPtyId.get(ptyId)?.tracker.dispose()
     this.ptyTitleTrackersByPtyId.delete(ptyId)
+  }
+
+  private setTerminalSideEffectConsumerAvailable(available: boolean): void {
+    const nextAvailable = available && this.onTerminalSideEffects !== null
+    if (nextAvailable === this.terminalSideEffectConsumerAvailable) {
+      return
+    }
+    this.terminalSideEffectConsumerAvailable = nextAvailable
+    // Why: optional bell/command/link scanners are selected when a tracker is
+    // created. Rebuild at the window boundary so pure headless output stays cheap.
+    for (const ptyId of [...this.ptyTitleTrackersByPtyId.keys()]) {
+      this.disposePtyTitleTracker(ptyId)
+    }
   }
 
   private extractLastOsc7CwdForPty(
@@ -7214,6 +7427,27 @@ export class OrcaRuntimeService {
     return pty ? { worktreeId: pty.worktreeId, connectionId: pty.connectionId } : null
   }
 
+  getTerminalOrchestrationCliCommand(handle: string): 'orca' | 'orca-ide' {
+    let pty: RuntimePtyWorktreeRecord | null = null
+    try {
+      const ptyId = this.resolveLeafForHandle(handle)?.ptyId
+      pty = ptyId ? (this.ptysById.get(ptyId) ?? null) : null
+    } catch {
+      return 'orca'
+    }
+    if (!pty) {
+      return 'orca'
+    }
+    return resolveTerminalOrchestrationCliCommand({
+      connectionId: pty.connectionId,
+      isWsl: pty.isWsl,
+      worktreeId: pty.worktreeId,
+      projectRuntime: this.store
+        ? resolveLocalProjectRuntimeForWorktreeId(this.requireStore(), pty.worktreeId)
+        : undefined
+    })
+  }
+
   hasRecentTerminalOutputPath(handle: string, pathText: string, absolutePath: string): boolean {
     const ptyId = this.resolveLeafForHandle(handle)?.ptyId
     const recentOutput = ptyId ? this.recentPtyOutputById.get(ptyId) : null
@@ -7308,10 +7542,28 @@ export class OrcaRuntimeService {
     return this.notificationListeners.size
   }
 
+  // Why: bounded replay buffer for the mobile reconnect catch-up (#8129).
+  // Every dispatched notification is recorded with a monotonic seq so a
+  // reconnecting client can fetch exactly the events it missed. Kept on the
+  // service instance (not per-client) because the buffer is a global,
+  // idempotent-by-seq source of truth; clients watermark their own position.
+  private readonly mobileNotificationReplay = new MobileNotificationReplayBuffer()
+
   dispatchMobileNotification(event: MobileNotificationEvent): void {
+    const seq = this.mobileNotificationReplay.record(event)
     for (const listener of this.notificationListeners) {
-      listener(event)
+      // Why: surface the desktop-assigned seq to live listeners so they can
+      // watermark the last event delivered and feed it back to getMissedSince
+      // on reconnect (idempotent catch-up, no duplicate local pushes).
+      listener({ ...event, notificationSeq: seq })
     }
+  }
+
+  // Returns notifications dispatched after lastSeenSeq. Idempotent: the same
+  // watermark always yields the same set, so a client cannot be re-pushed an
+  // already-delivered event (the adversarial-review gate for #8129).
+  getMissedNotificationsSince(lastSeenSeq: number): ReplayableMobileNotification[] {
+    return this.mobileNotificationReplay.getMissedSince(lastSeenSeq)
   }
 
   dismissMobileNotification(notificationId: string): void {
@@ -9692,7 +9944,7 @@ export class OrcaRuntimeService {
     }
     const graphEpoch = this.graphStatus === 'ready' ? this.rendererGraphEpoch : null
     const explicitTargetWorktreeId = worktreeSelector
-      ? getExplicitWorktreeIdSelector(worktreeSelector)
+      ? this.getValidatedExplicitWorktreeIdSelector(worktreeSelector)
       : null
     const initialResolvedWorktreeCache = this.resolvedWorktreeCache
     const cachedResolvedWorktrees =
@@ -10081,6 +10333,13 @@ export class OrcaRuntimeService {
     throw new Error('no_active_terminal')
   }
 
+  // Why: orchestration records the pane key as the remint-stable assignee
+  // identity at dispatch time; null (best-effort) rather than throwing so
+  // dispatch still works for handles without a resolvable pane.
+  getTerminalPaneKey(handle: string): string | null {
+    return this.getPaneKeyForTerminalHandle(handle)
+  }
+
   resolveTerminalPane(paneKey: string): RuntimeTerminalResolvePane {
     // Why: the renderer context menu only knows the stable pane key; main owns
     // the runtime terminal handle that agents and CLI commands can address.
@@ -10227,7 +10486,8 @@ export class OrcaRuntimeService {
   }
 
   async getTerminalAgentStatus(handle: string): Promise<RuntimeTerminalAgentStatus> {
-    const terminal = this.getTerminalAgentStatusSnapshot(handle)
+    const ptyId = this.getTerminalAgentStatusPtyId(handle)
+    const terminal = this.getTerminalAgentStatusSnapshot(handle, ptyId)
     const explicitStatus = this.getFreshExplicitAgentStatusForHandle(handle)
     const blockedByWaitText = detectTerminalWaitBlockedReason(terminal.waitText)
     const liveTitleClearsBlockedText =
@@ -10251,7 +10511,8 @@ export class OrcaRuntimeService {
       // Fresh hook state is tighter, but current shell/management evidence wins.
       const isRunningAgent =
         !terminalTitleBlocksExplicitAgentStatus(terminal.title) &&
-        !(await this.terminalHasShellForegroundProcess(handle))
+        !(await this.terminalHasShellForegroundProcess(handle, ptyId))
+      this.assertTerminalAgentStatusPtyBinding(handle, ptyId)
       return {
         handle,
         isRunningAgent,
@@ -10262,14 +10523,42 @@ export class OrcaRuntimeService {
       return { handle, isRunningAgent: true, status: terminal.titleStatus }
     }
 
-    return {
-      handle,
-      isRunningAgent: await this.isTerminalRunningAgent(handle),
-      status: null
-    }
+    const isRunningAgent = await this.isTerminalRunningAgent(handle)
+    this.assertTerminalAgentStatusPtyBinding(handle, ptyId)
+    return { handle, isRunningAgent, status: null }
   }
 
-  private getTerminalAgentStatusSnapshot(handle: string): {
+  private getTerminalAgentStatusPtyId(handle: string): string {
+    const pty = this.getLivePtyForHandle(handle)
+    if (pty) {
+      if (!pty.pty.connected) {
+        throw new Error('terminal_gone')
+      }
+      return pty.pty.ptyId
+    }
+    const { leaf } = this.getLiveLeafForHandle(handle)
+    if (getTerminalState(leaf) !== 'running') {
+      throw new Error('terminal_exited')
+    }
+    if (!leaf.ptyId) {
+      throw new Error('terminal_gone')
+    }
+    return leaf.ptyId
+  }
+
+  private assertTerminalAgentStatusPtyBinding(handle: string, expectedPtyId: string): void {
+    if (this.getTerminalAgentStatusPtyId(handle) === expectedPtyId) {
+      return
+    }
+    // Why: delayed process evidence belongs only to the PTY that started the
+    // read, while callers still rely on the established stale-handle contract.
+    throw new Error('terminal_handle_stale')
+  }
+
+  private getTerminalAgentStatusSnapshot(
+    handle: string,
+    expectedPtyId: string
+  ): {
     waitText: string
     waitBlockedAt: number | null
     title: string | null
@@ -10278,8 +10567,8 @@ export class OrcaRuntimeService {
   } {
     const pty = this.getLivePtyForHandle(handle)
     if (pty) {
-      if (!pty.pty.connected) {
-        throw new Error('terminal_gone')
+      if (!pty.pty.connected || pty.pty.ptyId !== expectedPtyId) {
+        throw new Error('terminal_not_writable')
       }
       const leaf = this.getPrimaryLeafForPty(pty.pty.ptyId)
       const leafTitle = leaf
@@ -10317,6 +10606,9 @@ export class OrcaRuntimeService {
     if (!leaf.ptyId) {
       throw new Error('terminal_gone')
     }
+    if (leaf.ptyId !== expectedPtyId) {
+      throw new Error('terminal_not_writable')
+    }
     const title = getLatestAgentCandidateTitleInfo(
       { title: leaf.paneTitle, updatedAt: leaf.paneTitleUpdatedAt },
       { title: leaf.lastOscTitle, updatedAt: leaf.lastOscTitleAt },
@@ -10331,21 +10623,36 @@ export class OrcaRuntimeService {
     }
   }
 
-  private async terminalHasShellForegroundProcess(handle: string): Promise<boolean> {
+  private async terminalHasShellForegroundProcess(handle: string, ptyId: string): Promise<boolean> {
     if (!this.ptyController) {
       return false
     }
+    let foregroundProcess: string | null
     try {
-      const pty = this.getLivePtyForHandle(handle)
-      const ptyId = pty?.pty.ptyId ?? this.getLiveLeafForHandle(handle).leaf.ptyId
-      if (!ptyId) {
-        return false
-      }
-      const foregroundProcess = await this.ptyController.getForegroundProcess(ptyId)
-      return foregroundProcess !== null && isShellProcess(foregroundProcess)
+      foregroundProcess = await this.ptyController.getForegroundProcess(ptyId)
     } catch {
+      this.assertTerminalAgentStatusPtyBinding(handle, ptyId)
       return false
     }
+    this.assertTerminalAgentStatusPtyBinding(handle, ptyId)
+    if (!foregroundProcess || !isShellProcess(foregroundProcess)) {
+      return false
+    }
+    const confirmationController = this.ptyController
+    if (!confirmationController?.confirmForegroundProcess) {
+      return true
+    }
+    let confirmedProcess: string | null
+    try {
+      confirmedProcess = await confirmationController.confirmForegroundProcess(ptyId)
+    } catch {
+      this.assertTerminalAgentStatusPtyBinding(handle, ptyId)
+      return true
+    }
+    this.assertTerminalAgentStatusPtyBinding(handle, ptyId)
+    // Why: hook identity is generic; strong provider evidence only needs to
+    // prove that some recognized agent still owns this exact PTY.
+    return recognizeAgentProcess(confirmedProcess) === null
   }
 
   private shouldDelayPtyBackedMobileSnapshotForForegroundAgent(
@@ -10852,13 +11159,15 @@ export class OrcaRuntimeService {
     if (!Number.isInteger(limit) || limit <= 0) {
       throw new Error('invalid_limit')
     }
-    const resolvedWorktrees = (await this.listResolvedWorktrees()).filter((worktree) =>
+    const resolvedWorktreeSnapshot = await this.listResolvedWorktreeSnapshot()
+    const resolvedWorktrees = resolvedWorktreeSnapshot.worktrees.filter((worktree) =>
       this.isRuntimeWorktreeVisible(worktree)
     )
     // Why: worktree.ps backs the mobile sidebar, so it must use the same
     // host-owned imported-worktree visibility gate as worktree.list/desktop.
     await this.refreshPtyWorktreeRecordsFromController(resolvedWorktrees)
     const repoById = new Map((this.store?.getRepos() ?? []).map((repo) => [repo.id, repo]))
+    const platformByRepoId = resolvedWorktreeSnapshot.platformByRepoId
     const summaries = new Map<string, RuntimeWorktreePsSummary>()
 
     // Why: the GitHub cache is keyed by `repoPath::branch` (no refs/heads/ prefix),
@@ -10887,7 +11196,7 @@ export class OrcaRuntimeService {
       if (!linkedPR && meta?.linkedPR != null) {
         linkedPR = { number: meta.linkedPR, state: 'unknown' }
       }
-      const terminalPlatform = repo ? this.getAgentLaunchPlatformForRepo(repo) : process.platform
+      const terminalPlatform = platformByRepoId.get(worktree.repoId) ?? process.platform
       // Why: use the instance-validated lineage from attachLineageToResolvedWorktrees,
       // not the raw store entry — shipped mobile clients trust parentWorktreeId as-is,
       // so a stale same-path entry would nest replacement checkouts under old parents.
@@ -10987,11 +11296,18 @@ export class OrcaRuntimeService {
       })
     }
 
+    const runtimeWorktreeSummaryPathIndex = buildRuntimeWorktreeSummaryPathIndex(
+      summaries,
+      resolvedWorktrees,
+      platformByRepoId
+    )
+    const missingRuntimeWorktreeIds = new Set<string>()
     const countedPtyIds = new Set<string>()
     for (const leaf of this.leaves.values()) {
       const summary = this.getSummaryForRuntimeWorktreeId(
         summaries,
-        resolvedWorktrees,
+        runtimeWorktreeSummaryPathIndex,
+        missingRuntimeWorktreeIds,
         leaf.worktreeId
       )
       if (!summary) {
@@ -11025,7 +11341,8 @@ export class OrcaRuntimeService {
       }
       const summary = this.getSummaryForRuntimeWorktreeId(
         summaries,
-        resolvedWorktrees,
+        runtimeWorktreeSummaryPathIndex,
+        missingRuntimeWorktreeIds,
         pty.worktreeId
       )
       if (!summary) {
@@ -11049,7 +11366,12 @@ export class OrcaRuntimeService {
       if (tabs.length === 0) {
         continue
       }
-      const summary = this.getSummaryForRuntimeWorktreeId(summaries, resolvedWorktrees, worktreeId)
+      const summary = this.getSummaryForRuntimeWorktreeId(
+        summaries,
+        runtimeWorktreeSummaryPathIndex,
+        missingRuntimeWorktreeIds,
+        worktreeId
+      )
       if (!summary) {
         continue
       }
@@ -11075,7 +11397,8 @@ export class OrcaRuntimeService {
     if (session?.activeWorktreeId) {
       const activeSummary = this.getSummaryForRuntimeWorktreeId(
         summaries,
-        resolvedWorktrees,
+        runtimeWorktreeSummaryPathIndex,
+        missingRuntimeWorktreeIds,
         session.activeWorktreeId
       )
       if (activeSummary) {
@@ -11083,7 +11406,26 @@ export class OrcaRuntimeService {
       }
     }
 
-    this.attachAgentRowsToSummaries(summaries)
+    const mirroredWorktreeIdByTabId = new Map<string, string>()
+    for (const [worktreeId, tabs] of Object.entries(session?.tabsByWorktree ?? {})) {
+      for (const tab of tabs) {
+        mirroredWorktreeIdByTabId.set(tab.id, worktreeId)
+      }
+    }
+    // Why: a live renderer graph may precede persistence, but persisted tab
+    // ownership wins when an automatic workspace rename has already rekeyed it.
+    for (const [tabId, tab] of this.tabs) {
+      if (!mirroredWorktreeIdByTabId.has(tabId)) {
+        mirroredWorktreeIdByTabId.set(tabId, tab.worktreeId)
+      }
+    }
+
+    this.attachAgentRowsToSummaries(
+      summaries,
+      runtimeWorktreeSummaryPathIndex,
+      missingRuntimeWorktreeIds,
+      mirroredWorktreeIdByTabId
+    )
 
     const sorted = [...summaries.values()].sort(compareWorktreePs)
     return {
@@ -11097,7 +11439,12 @@ export class OrcaRuntimeService {
   // agent list, mirroring the desktop sidebar. Lineage parent is resolved from
   // the orchestration db (paneKey-keyed), not the OSC payload, since spawn
   // hierarchy is pane-level state tracked separately from terminal output.
-  private attachAgentRowsToSummaries(summaries: Map<string, RuntimeWorktreePsSummary>): void {
+  private attachAgentRowsToSummaries(
+    summaries: Map<string, RuntimeWorktreePsSummary>,
+    runtimeWorktreeSummaryPathIndex: RuntimeWorktreeSummaryPathIndex,
+    missingRuntimeWorktreeIds: Set<string>,
+    mirroredWorktreeIdByTabId: ReadonlyMap<string, string>
+  ): void {
     // Why: most agents report via hooks (agent-hooks/server), not OSC, so the
     // hook snapshot is the primary source — same one the desktop sidebar reads.
     // OSC-only entries (no hook) are merged in as a fallback, keyed by paneKey.
@@ -11105,6 +11452,7 @@ export class OrcaRuntimeService {
       string,
       {
         paneKey: string
+        tabId?: string
         worktreeId?: string
         state: ParsedAgentStatusPayload['state']
         agentType: string | null
@@ -11121,6 +11469,7 @@ export class OrcaRuntimeService {
       const { payload } = snapshot
       rowSources.set(snapshot.paneKey, {
         paneKey: snapshot.paneKey,
+        tabId: snapshot.tabId,
         worktreeId: snapshot.worktreeId,
         state: payload.state,
         agentType: payload.agentType ?? null,
@@ -11134,8 +11483,15 @@ export class OrcaRuntimeService {
       })
     }
     for (const entry of this.getAgentStatusSnapshotFn?.() ?? []) {
+      const existing = rowSources.get(entry.paneKey)
+      // Why: hook rows win ties, but an older cached hook must not replace a
+      // fresh OSC status and make a running mobile workspace look inactive.
+      if (existing && existing.updatedAt > entry.receivedAt) {
+        continue
+      }
       rowSources.set(entry.paneKey, {
         paneKey: entry.paneKey,
+        tabId: entry.tabId,
         worktreeId: entry.worktreeId,
         state: entry.state,
         agentType: entry.agentType ?? null,
@@ -11153,9 +11509,23 @@ export class OrcaRuntimeService {
     }
     const orchestrationByPaneKey = this.buildAgentOrchestrationByPaneKey()
     const rowsByWorktree = new Map<string, RuntimeWorktreeAgentRow[]>()
+    const now = Date.now()
     for (const src of rowSources.values()) {
-      const worktreeId = src.worktreeId
-      if (!worktreeId || !summaries.has(worktreeId)) {
+      // Why: hooks retain launch-time attribution across automatic workspace
+      // renames; the tab's current mirrored owner is authoritative when present.
+      const tabId = src.tabId ?? parsePaneKey(src.paneKey)?.tabId
+      const worktreeId =
+        (tabId ? mirroredWorktreeIdByTabId.get(tabId) : undefined) ?? src.worktreeId
+      if (!worktreeId) {
+        continue
+      }
+      const summary = this.getSummaryForRuntimeWorktreeId(
+        summaries,
+        runtimeWorktreeSummaryPathIndex,
+        missingRuntimeWorktreeIds,
+        worktreeId
+      )
+      if (!summary) {
         continue
       }
       const taskTitle = orchestrationByPaneKey?.[src.paneKey]?.taskTitle ?? null
@@ -11175,11 +11545,13 @@ export class OrcaRuntimeService {
         stateStartedAt: src.stateStartedAt,
         updatedAt: src.updatedAt
       }
-      const rows = rowsByWorktree.get(worktreeId)
+      // Why: SSH/runtime projections can spell an equivalent path differently;
+      // bucket by the canonical summary id so mobile keeps the agent activity.
+      const rows = rowsByWorktree.get(summary.worktreeId)
       if (rows) {
         rows.push(row)
       } else {
-        rowsByWorktree.set(worktreeId, [row])
+        rowsByWorktree.set(summary.worktreeId, [row])
       }
     }
     for (const [worktreeId, rows] of rowsByWorktree) {
@@ -11188,6 +11560,18 @@ export class OrcaRuntimeService {
       const summary = summaries.get(worktreeId)
       if (summary) {
         summary.agents = rows
+        for (const row of rows) {
+          if (!isFreshNonDoneAgentStatus(row, now)) {
+            continue
+          }
+          // Why: worktree.ps is mobile's host-sidebar parity source, so a live
+          // agent must survive the same temporary PTY gaps as desktop.
+          summary.hasHostSidebarActivity = true
+          summary.status = mergeWorktreeStatus(
+            summary.status,
+            row.state === 'working' ? 'working' : 'permission'
+          )
+        }
       }
     }
   }
@@ -12113,16 +12497,394 @@ export class OrcaRuntimeService {
     return updated
   }
 
+  private admissionScopeKey(id: string, hostId?: ExecutionHostId | null): string {
+    return hostId ? `${hostId}\0${id}` : id
+  }
+
+  private connectionIdForExecutionHost(hostId?: ExecutionHostId | null): string | null | undefined {
+    const parsed = parseExecutionHostId(hostId)
+    if (!parsed || parsed.kind === 'runtime') {
+      return undefined
+    }
+    return parsed.kind === 'ssh' ? parsed.targetId : null
+  }
+
+  private executionHostForWorktree(worktree: Pick<Worktree, 'hostId' | 'repoId'>): ExecutionHostId {
+    const explicitHostId = normalizeExecutionHostId(worktree.hostId)
+    if (explicitHostId) {
+      return explicitHostId
+    }
+    const repoMatches = this.store?.getRepos().filter((repo) => repo.id === worktree.repoId) ?? []
+    if (repoMatches.length === 1) {
+      return getRepoExecutionHostId(this.store?.getRepo(worktree.repoId) ?? repoMatches[0])
+    }
+    return LOCAL_EXECUTION_HOST_ID
+  }
+
+  private isAdmissionBlocked(
+    blocked: ReadonlySet<string>,
+    id: string,
+    hostId?: ExecutionHostId | null
+  ): boolean {
+    if (blocked.has(id)) {
+      return true
+    }
+    if (hostId) {
+      return blocked.has(this.admissionScopeKey(id, hostId))
+    }
+    const suffix = `\0${id}`
+    return [...blocked].some((key) => key.endsWith(suffix))
+  }
+
+  private admissionPromisesForScope(
+    admissionsByScope: ReadonlyMap<string, Set<Promise<void>>>,
+    id: string,
+    hostId?: ExecutionHostId | null,
+    allHosts = false
+  ): Promise<void>[] {
+    const pending = new Set(admissionsByScope.get(id) ?? [])
+    if (hostId) {
+      for (const admission of admissionsByScope.get(this.admissionScopeKey(id, hostId)) ?? []) {
+        pending.add(admission)
+      }
+    } else if (allHosts) {
+      const suffix = `\0${id}`
+      for (const [key, admissions] of admissionsByScope) {
+        if (key.endsWith(suffix)) {
+          for (const admission of admissions) {
+            pending.add(admission)
+          }
+        }
+      }
+    }
+    return [...pending]
+  }
+
+  private beginTerminalAdmission(worktreeId: string, hostId?: ExecutionHostId | null): () => void {
+    if (
+      worktreeId === GLOBAL_TERMINAL_ADMISSION_KEY
+        ? this.terminalAdmissionBlockedWorktreeIds.size > 0
+        : this.isAdmissionBlocked(this.terminalAdmissionBlockedWorktreeIds, worktreeId, hostId)
+    ) {
+      throw new Error('terminal_admission_blocked_for_project_removal')
+    }
+    const scopeKey = this.admissionScopeKey(worktreeId, hostId)
+    let resolveDone = (): void => {}
+    const done = new Promise<void>((resolve) => {
+      resolveDone = resolve
+    })
+    const admissions = this.terminalAdmissionsByWorktreeId.get(scopeKey) ?? new Set()
+    admissions.add(done)
+    this.terminalAdmissionsByWorktreeId.set(scopeKey, admissions)
+    let released = false
+    return () => {
+      if (released) {
+        return
+      }
+      released = true
+      admissions.delete(done)
+      if (admissions.size === 0) {
+        this.terminalAdmissionsByWorktreeId.delete(scopeKey)
+      }
+      resolveDone()
+    }
+  }
+
+  private blockTerminalAdmissionScope(scopeKey: string): void {
+    this.terminalRemovalGeneration += 1
+    // Why: unresolved selectors only need short-lived history while they await
+    // host discovery; clearing it at zero avoids retaining removed worktree IDs.
+    if (this.unresolvedTerminalAdmissionCount > 0) {
+      this.terminalRemovalGenerationByScope.set(scopeKey, this.terminalRemovalGeneration)
+    }
+    this.terminalAdmissionBlockedWorktreeIds.add(scopeKey)
+  }
+
+  private terminalRemovalGenerationForScope(worktreeId: string, hostId: ExecutionHostId): number {
+    return Math.max(
+      this.terminalRemovalGenerationByScope.get(worktreeId) ?? 0,
+      this.terminalRemovalGenerationByScope.get(this.admissionScopeKey(worktreeId, hostId)) ?? 0
+    )
+  }
+
+  private async drainTerminalAdmissions(
+    worktreeIds: readonly string[],
+    hostId?: ExecutionHostId | null,
+    allHosts = false
+  ): Promise<void> {
+    await Promise.all(
+      worktreeIds.flatMap((id) =>
+        this.admissionPromisesForScope(this.terminalAdmissionsByWorktreeId, id, hostId, allHosts)
+      )
+    )
+  }
+
+  private async resolveTerminalCreateWorkspaceWithAdmission(
+    selector: string,
+    hostId?: ExecutionHostId | null
+  ): Promise<{ workspace: TerminalWorkspaceLaunchScope; release: () => void }> {
+    // Why: workspace resolution can await SSH/runtime discovery. Keep removal
+    // aware of the unresolved create, then transfer ownership without a gap.
+    let releaseResolutionAdmission: (() => void) | null = null
+    let removalsActiveAtResolutionStart: ReadonlySet<string> | null = null
+    let removalGenerationAtResolutionStart: number | null = null
+    let tracksRemovalGeneration = false
+    try {
+      releaseResolutionAdmission = this.beginTerminalAdmission(GLOBAL_TERMINAL_ADMISSION_KEY)
+    } catch (error) {
+      if (
+        !(error instanceof Error) ||
+        error.message !== 'terminal_admission_blocked_for_project_removal'
+      ) {
+        throw error
+      }
+      // Why: an unresolved selector might belong to another execution host.
+      // Resolve it, but remember the active removals so a fast completion
+      // cannot reopen the exact stale scope before the atomic transfer.
+      removalsActiveAtResolutionStart = new Set(this.terminalAdmissionBlockedWorktreeIds)
+      removalGenerationAtResolutionStart = this.terminalRemovalGeneration
+      this.unresolvedTerminalAdmissionCount += 1
+      tracksRemovalGeneration = true
+    }
+    try {
+      const workspace = await this.resolveTerminalWorkspaceLaunchScope(selector, hostId)
+      if (
+        removalsActiveAtResolutionStart &&
+        ((removalGenerationAtResolutionStart ?? 0) <
+          this.terminalRemovalGenerationForScope(workspace.id, workspace.hostId) ||
+          this.isAdmissionBlocked(removalsActiveAtResolutionStart, workspace.id, workspace.hostId))
+      ) {
+        throw new Error('terminal_admission_blocked_for_project_removal')
+      }
+      const releaseWorkspaceAdmission = this.beginTerminalAdmission(workspace.id, workspace.hostId)
+      releaseResolutionAdmission?.()
+      return { workspace, release: releaseWorkspaceAdmission }
+    } catch (error) {
+      releaseResolutionAdmission?.()
+      throw error
+    } finally {
+      if (tracksRemovalGeneration) {
+        this.unresolvedTerminalAdmissionCount -= 1
+        if (this.unresolvedTerminalAdmissionCount === 0) {
+          this.terminalRemovalGenerationByScope.clear()
+        }
+      }
+    }
+  }
+
+  private async withTerminalAdmission<T>(
+    worktreeId: string,
+    action: () => Promise<T>,
+    hostId?: ExecutionHostId | null
+  ): Promise<T> {
+    const release = this.beginTerminalAdmission(worktreeId, hostId)
+    try {
+      return await action()
+    } finally {
+      release()
+    }
+  }
+
+  async runWithTerminalCreateAdmission<T>(
+    worktreeId: string | undefined,
+    action: () => Promise<T>,
+    hostId?: ExecutionHostId | null
+  ): Promise<T> {
+    return worktreeId ? this.withTerminalAdmission(worktreeId, action, hostId) : action()
+  }
+
+  private beginWorktreeCreateAdmission(
+    repoId: string,
+    hostId?: ExecutionHostId | null
+  ): () => void {
+    if (this.isAdmissionBlocked(this.projectRemovalBlockedRepoIds, repoId, hostId)) {
+      throw new Error('project_removal_in_progress')
+    }
+    const scopeKey = this.admissionScopeKey(repoId, hostId)
+    let resolveDone = (): void => {}
+    const done = new Promise<void>((resolve) => {
+      resolveDone = resolve
+    })
+    const admissions = this.worktreeCreateAdmissionsByRepoId.get(scopeKey) ?? new Set()
+    admissions.add(done)
+    this.worktreeCreateAdmissionsByRepoId.set(scopeKey, admissions)
+    let released = false
+    return () => {
+      if (released) {
+        return
+      }
+      released = true
+      admissions.delete(done)
+      if (admissions.size === 0) {
+        this.worktreeCreateAdmissionsByRepoId.delete(scopeKey)
+      }
+      resolveDone()
+    }
+  }
+
+  async runWithWorktreeCreateAdmission<T>(
+    repoId: string,
+    action: () => Promise<T>,
+    hostId?: ExecutionHostId | null
+  ): Promise<T> {
+    const release = this.beginWorktreeCreateAdmission(repoId, hostId)
+    try {
+      return await action()
+    } finally {
+      release()
+    }
+  }
+
+  private async drainWorktreeCreateAdmissions(
+    repoId: string,
+    hostId?: ExecutionHostId | null,
+    allHosts = false
+  ): Promise<void> {
+    await Promise.all(
+      this.admissionPromisesForScope(
+        this.worktreeCreateAdmissionsByRepoId,
+        repoId,
+        hostId,
+        allHosts
+      )
+    )
+  }
+
+  async runWithWorktreeRemovalAdmission<T>(
+    worktreeId: string,
+    action: () => Promise<T>,
+    hostId?: ExecutionHostId | null
+  ): Promise<T> {
+    if (this.isAdmissionBlocked(this.terminalAdmissionBlockedWorktreeIds, worktreeId, hostId)) {
+      throw new Error('worktree_removal_in_progress')
+    }
+    const scopeKey = this.admissionScopeKey(worktreeId, hostId)
+    this.blockTerminalAdmissionScope(scopeKey)
+    try {
+      await Promise.all([
+        this.drainTerminalAdmissions([GLOBAL_TERMINAL_ADMISSION_KEY]),
+        this.drainTerminalAdmissions([worktreeId], hostId)
+      ])
+      return await action()
+    } finally {
+      this.terminalAdmissionBlockedWorktreeIds.delete(scopeKey)
+    }
+  }
+
+  async verifyTerminalsStoppedForRemoval(
+    worktreeId: string,
+    hostId?: ExecutionHostId | null
+  ): Promise<void> {
+    const connectionId = this.connectionIdForExecutionHost(hostId)
+    if (!this.ptyController) {
+      if (this.getLivePtyIdsForWorktree(worktreeId, undefined, connectionId).size > 0) {
+        throw new Error('terminal_verified_stop_unavailable')
+      }
+      return
+    }
+    await this.stopTerminalsForWorktree(`id:${worktreeId}`, {
+      allowUnavailableGraph: true,
+      hostId
+    })
+  }
+
+  private async removeProjectWithHostScope(
+    repo: Repo,
+    hostId: ExecutionHostId | null,
+    removePersistedProject: () => void
+  ): Promise<{ removed: true }> {
+    if (!this.store) {
+      throw new Error('runtime_unavailable')
+    }
+    if (this.isAdmissionBlocked(this.projectRemovalBlockedRepoIds, repo.id, hostId)) {
+      throw new Error('project_removal_in_progress')
+    }
+    const projectScopeKey = this.admissionScopeKey(repo.id, hostId)
+    this.projectRemovalBlockedRepoIds.add(projectScopeKey)
+    let worktreeScopes: { id: string; hostId: ExecutionHostId }[] = []
+    try {
+      // Why: a create that already resolved this repo can publish a new
+      // worktree and terminal after a one-time removal snapshot. Block later
+      // creates and let earlier ones finish before enumerating owned worktrees.
+      await this.drainWorktreeCreateAdmissions(repo.id, hostId, hostId === null)
+      worktreeScopes = (await this.listResolvedWorktrees())
+        .filter(
+          (worktree) =>
+            worktree.repoId === repo.id &&
+            (hostId === null || this.executionHostForWorktree(worktree) === hostId)
+        )
+        .map((worktree) => ({
+          id: worktree.id,
+          hostId: this.executionHostForWorktree(worktree)
+        }))
+      if (
+        worktreeScopes.some((scope) =>
+          this.isAdmissionBlocked(
+            this.terminalAdmissionBlockedWorktreeIds,
+            scope.id,
+            hostId === null ? null : scope.hostId
+          )
+        )
+      ) {
+        throw new Error('project_removal_in_progress')
+      }
+      for (const scope of worktreeScopes) {
+        this.blockTerminalAdmissionScope(
+          this.admissionScopeKey(scope.id, hostId === null ? null : scope.hostId)
+        )
+      }
+      // Why: a create that passed admission before the block can still have a
+      // provider spawn in flight. Let it register first so the fresh stop
+      // snapshot sees and terminates it.
+      await Promise.all([
+        this.drainTerminalAdmissions([GLOBAL_TERMINAL_ADMISSION_KEY]),
+        ...worktreeScopes.map((scope) =>
+          this.drainTerminalAdmissions([scope.id], scope.hostId, hostId === null)
+        )
+      ])
+      // Why: hold admission closed across both the fresh liveness proof and
+      // repo mutation. A separate terminal.stop RPC leaves an inter-call gap.
+      for (const scope of worktreeScopes) {
+        await this.verifyTerminalsStoppedForRemoval(scope.id, scope.hostId)
+      }
+      removePersistedProject()
+      this.invalidateResolvedWorktreeCache()
+      invalidateAuthorizedRootsCache()
+      this.notifyReposChanged()
+      return { removed: true }
+    } finally {
+      for (const scope of worktreeScopes) {
+        this.terminalAdmissionBlockedWorktreeIds.delete(
+          this.admissionScopeKey(scope.id, hostId === null ? null : scope.hostId)
+        )
+      }
+      this.projectRemovalBlockedRepoIds.delete(projectScopeKey)
+    }
+  }
+
   async removeProject(repoSelector: string): Promise<{ removed: true }> {
-    if (!this.store?.removeProject) {
+    const store = this.store
+    if (!store?.removeProject) {
       throw new Error('runtime_unavailable')
     }
     const repo = await this.resolveRepoSelector(repoSelector)
-    this.store.removeProject(repo.id)
-    this.invalidateResolvedWorktreeCache()
-    invalidateAuthorizedRootsCache()
-    this.notifyReposChanged()
-    return { removed: true }
+    return this.removeProjectWithHostScope(repo, null, () => store.removeProject!(repo.id))
+  }
+
+  async removeProjectForHost(repoId: string, hostId: ExecutionHostId): Promise<{ removed: true }> {
+    const store = this.store
+    if (!store?.removeProjectForHost) {
+      throw new Error('runtime_unavailable')
+    }
+    const repo = store
+      .getRepos()
+      .find((candidate) => candidate.id === repoId && getRepoExecutionHostId(candidate) === hostId)
+    if (!repo) {
+      throw new Error('repo_not_found')
+    }
+    return this.removeProjectWithHostScope(repo, hostId, () =>
+      store.removeProjectForHost!(repo.id, hostId)
+    )
   }
 
   async inspectTerminalProcess(
@@ -14446,42 +15208,22 @@ export class OrcaRuntimeService {
     })
   }
 
-  async createManagedWorktree(args: {
-    repoSelector: string
-    name: string
-    baseBranch?: string
-    compareBaseRef?: string
-    branchNameOverride?: string
-    linkedIssue?: number | null
-    linkedPR?: number | null
-    linkedLinearIssue?: string
-    linkedLinearIssueWorkspaceId?: string | null
-    linkedLinearIssueOrganizationUrlKey?: string | null
-    linkedGitLabMR?: number | null
-    linkedGitLabIssue?: number | null
-    linkedBitbucketPR?: number | null
-    linkedAzureDevOpsPR?: number | null
-    linkedGiteaPR?: number | null
-    comment?: string
-    displayName?: string
-    telemetrySource?: WorkspaceCreateTelemetrySource
-    workspaceStatus?: string
-    manualOrder?: number
-    sparseCheckout?: { directories: string[]; presetId?: string }
-    pushTarget?: GitPushTarget
-    runHooks?: boolean
-    activate?: boolean
-    setupDecision?: 'run' | 'skip' | 'inherit'
-    createdWithAgent?: TuiAgent
-    startupAgent?: TuiAgent
-    startupPrompt?: string
-    pendingFirstAgentMessageRename?: boolean
-    automationProvenance?: AutomationWorkspaceProvenance
-    startup?: WorktreeStartupLaunch
-    startupDraft?: string
-    startupDraftPaste?: WorktreeStartupDraftPaste
-    lineage?: WorktreeLineageInput
-  }): Promise<CreateWorktreeResult> {
+  async createManagedWorktree(args: CreateManagedWorktreeArgs): Promise<CreateWorktreeResult> {
+    if (!this.store) {
+      throw new Error('runtime_unavailable')
+    }
+
+    const repo = await this.resolveRepoSelector(args.repoSelector)
+    return await this.runWithWorktreeCreateAdmission(
+      repo.id,
+      () => this.runCreateManagedWorktree(args),
+      getRepoExecutionHostId(repo)
+    )
+  }
+
+  private async runCreateManagedWorktree(
+    args: CreateManagedWorktreeArgs
+  ): Promise<CreateWorktreeResult> {
     if (!this.store) {
       throw new Error('runtime_unavailable')
     }
@@ -14570,6 +15312,7 @@ export class OrcaRuntimeService {
       const shouldActivate = args.activate === true || args.runHooks === true
       let warning: string | undefined
       let didSpawnStartup = false
+      let startupTerminal: CreateWorktreeResult['startupTerminal']
       if (effectiveStartup && this.ptyController?.spawn) {
         try {
           const startupTrustAgent = effectiveDraftPaste?.agent ?? effectiveCreatedWithAgent
@@ -14593,6 +15336,14 @@ export class OrcaRuntimeService {
             this.sendStartupFollowupWhenReady(terminal.handle, effectiveStartupFollowup)
           }
           didSpawnStartup = true
+          startupTerminal = {
+            spawned: true,
+            handle: terminal.handle,
+            ...(terminal.tabId ? { tabId: terminal.tabId } : {}),
+            ...(terminal.paneKey ? { paneKey: terminal.paneKey } : {}),
+            ...(terminal.ptyId ? { ptyId: terminal.ptyId } : {}),
+            surface: 'background'
+          }
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err)
           warning = `Failed to create the startup terminal for ${worktree.path}: ${message}`
@@ -14630,6 +15381,7 @@ export class OrcaRuntimeService {
             isMainWorktree: worktree.isMainWorktree
           }
         },
+        ...(startupTerminal ? { startupTerminal } : {}),
         ...(warning ? { warning } : {})
       }
     }
@@ -15142,11 +15894,7 @@ export class OrcaRuntimeService {
       warnings: lineageWarnings
     } = this.recordCreatedWorktreeLineage(worktree, lineageResolution)
 
-    if (
-      settings.experimentalWorktreeSymlinks &&
-      repo.symlinkPaths &&
-      repo.symlinkPaths.length > 0
-    ) {
+    if (repo.symlinkPaths && repo.symlinkPaths.length > 0) {
       await createWorktreeLinkedPaths(repo.path, created.path, repo.symlinkPaths)
     }
 
@@ -16634,7 +17382,8 @@ export class OrcaRuntimeService {
       const removalTarget = {
         id: worktree.id,
         repoId: worktree.repoId,
-        path: worktree.path
+        path: worktree.path,
+        hostId: this.executionHostForWorktree(worktree)
       }
       return worktree.pushTarget
         ? { ...removalTarget, pushTarget: worktree.pushTarget }
@@ -16795,8 +17544,9 @@ export class OrcaRuntimeService {
     }
     const store = this.store
     const removalTarget = await this.resolveWorktreeRemovalTarget(worktreeSelector)
+    const removalScopeKey = this.admissionScopeKey(removalTarget.id, removalTarget.hostId)
     const optionsKey = getRuntimeWorktreeRemovalOptionsKey(force, runHooks)
-    const inFlightRemoval = this.removeManagedWorktreeInFlight.get(removalTarget.id)
+    const inFlightRemoval = this.removeManagedWorktreeInFlight.get(removalScopeKey)
     if (inFlightRemoval) {
       if (inFlightRemoval.optionsKey === optionsKey) {
         return inFlightRemoval.promise
@@ -16806,142 +17556,447 @@ export class OrcaRuntimeService {
 
     // Why: runtime callers can race the same workspace through CLI/mobile
     // retries. Share one destructive Git/filesystem operation per worktree ID.
-    const removal = (async (): Promise<RemoveWorktreeResult & { warning?: string }> => {
-      const repo = store.getRepo(removalTarget.repoId)
-      if (!repo) {
-        throw new Error('repo_not_found')
-      }
-      if (isFolderRepo(repo)) {
-        if (removalTarget.id === getRuntimeFolderWorkspaceRootId(repo)) {
+    const removal = this.runWithWorktreeRemovalAdmission(
+      removalTarget.id,
+      async () => {
+        const repo =
+          store
+            .getRepos()
+            .find(
+              (candidate) =>
+                candidate.id === removalTarget.repoId &&
+                (!removalTarget.hostId ||
+                  getRepoExecutionHostId(candidate) === removalTarget.hostId)
+            ) ??
+          (store.getRepo(removalTarget.repoId) &&
+          (!removalTarget.hostId ||
+            getRepoExecutionHostId(store.getRepo(removalTarget.repoId)!) === removalTarget.hostId)
+            ? store.getRepo(removalTarget.repoId)!
+            : undefined)
+        if (!repo) {
+          throw new Error('repo_not_found')
+        }
+        if (isFolderRepo(repo)) {
+          if (removalTarget.id === getRuntimeFolderWorkspaceRootId(repo)) {
+            throw new Error(
+              'Cannot delete the project root workspace. Remove the folder project instead.'
+            )
+          }
+          const localProvider = this.getLocalProvider()
+          await this.verifyTerminalsStoppedForRemoval(removalTarget.id, removalTarget.hostId)
+          if (localProvider) {
+            // Why: folder workspace deletion has no Git removal phase where PTYs
+            // would otherwise be swept; tear them down before hiding the workspace.
+            await killAllProcessesForWorktree(removalTarget.id, {
+              runtime: this,
+              localProvider,
+              onPtyStopped: this.onPtyStopped ?? undefined
+            }).catch((err) => {
+              console.warn(`[worktree-teardown] failed for ${removalTarget.id}:`, err)
+            })
+          }
+          this.removeWorktreeMetadataAndHistory(store, removalTarget.id)
+          this.preservedBranchCleanupByWorktreeId.delete(removalTarget.id)
+          this.invalidateResolvedWorktreeCache()
+          this.notifyWorktreesChanged(repo.id)
+          return {}
+        }
+        const provider = repo.connectionId ? requireSshGitProvider(repo.connectionId) : null
+        const fsProvider = repo.connectionId ? getSshFilesystemProvider(repo.connectionId) : null
+        const localWorktreeGitOptions = repo.connectionId
+          ? {}
+          : getLocalProjectWorktreeGitOptions(this.requireStore(), repo)
+        const hasLocalWorktreeGitOptions = Object.keys(localWorktreeGitOptions).length > 0
+        const registeredWorktrees = repo.connectionId
+          ? await provider!.listWorktrees(repo.path)
+          : hasLocalWorktreeGitOptions
+            ? await listWorktreesStrict(repo.path, localWorktreeGitOptions)
+            : await listWorktreesStrict(repo.path)
+        const removedMeta = store.getWorktreeMeta(removalTarget.id)
+        const removedPushTarget = removedMeta?.pushTarget ?? removalTarget.pushTarget
+        const registeredWorktree = findRegisteredDeletableWorktree(
+          repo.path,
+          removalTarget.path,
+          registeredWorktrees
+        )
+        if (!registeredWorktree) {
+          let canCleanOrphanedDirectory = false
+          if (
+            canCleanupUnregisteredOrcaWorktreeDirectory({
+              meta: removedMeta
+            })
+          ) {
+            if (repo.connectionId) {
+              if (!fsProvider) {
+                throw new Error('SSH filesystem provider unavailable')
+              }
+              if (!fsProvider.lstat) {
+                throw new Error('SSH filesystem provider lstat unavailable')
+              }
+              canCleanOrphanedDirectory = await canSafelyRemoveOrphanedWorktreeDirectory(
+                removalTarget.path,
+                repo.path,
+                (path) => fsProvider.lstat!(path),
+                (path) => fsProvider.readFile(path)
+              )
+            } else {
+              const access = getLocalWorktreePathAccess(localWorktreeGitOptions)
+              canCleanOrphanedDirectory =
+                !isDangerousWorktreeRemovalPath(removalTarget.path, repo.path) &&
+                (await canSafelyRemoveOrphanedWorktreeDirectory(
+                  toLocalWorktreeRuntimePath(removalTarget.path, localWorktreeGitOptions),
+                  toLocalWorktreeRuntimePath(repo.path, localWorktreeGitOptions),
+                  access.statPath,
+                  access.readPath
+                ))
+            }
+          }
+          if (canCleanOrphanedDirectory) {
+            assertWorktreeDoesNotContainRegisteredWorktree(removalTarget.path, registeredWorktrees)
+            if (!force) {
+              throw new Error(ORPHANED_WORKTREE_DIRECTORY_MESSAGE)
+            }
+            await this.verifyTerminalsStoppedForRemoval(removalTarget.id, removalTarget.hostId)
+            if (repo.connectionId) {
+              await fsProvider!.deletePath(removalTarget.path, true)
+              await cleanupUnusedWorktreePushTargetRemoteSsh(
+                provider!,
+                repo.path,
+                removalTarget.id,
+                removedPushTarget,
+                store
+              )
+            } else {
+              await removeLocalWorktreePath(removalTarget.path, localWorktreeGitOptions)
+              await cleanupUnusedWorktreePushTargetRemote(
+                repo.path,
+                removalTarget.id,
+                removedPushTarget,
+                store,
+                localWorktreeGitOptions
+              )
+            }
+            this.clearOptimisticReconcileToken(removalTarget.id)
+            this.removeWorktreeMetadataAndHistory(store, removalTarget.id)
+            this.preservedBranchCleanupByWorktreeId.delete(removalTarget.id)
+            this.invalidateResolvedWorktreeCache()
+            invalidateAuthorizedRootsCache()
+            this.notifyWorktreesChanged(repo.id)
+            return {}
+          }
+          if (!repo.connectionId) {
+            const access = getLocalWorktreePathAccess(localWorktreeGitOptions)
+            const runtimeWorktreePath = toLocalWorktreeRuntimePath(
+              removalTarget.path,
+              localWorktreeGitOptions
+            )
+            if (
+              await canCleanupUnregisteredOrcaLeftoverDirectory({
+                meta: removedMeta,
+                worktreePath: removalTarget.path,
+                runtimeWorktreePath,
+                repo,
+                runtimeRepoPath: toLocalWorktreeRuntimePath(repo.path, localWorktreeGitOptions),
+                registeredWorktrees,
+                statPath: access.statPath,
+                isGitRepository: (path) =>
+                  isLocalRuntimeGitRepository(path, localWorktreeGitOptions)
+              })
+            ) {
+              if (!force) {
+                throw new Error(ORPHANED_WORKTREE_DIRECTORY_MESSAGE)
+              }
+              await this.verifyTerminalsStoppedForRemoval(removalTarget.id, removalTarget.hostId)
+              await closeLocalWatcherForWorktreePath(removalTarget.path).catch((err) => {
+                console.warn(`[filesystem-watcher] failed to close ${removalTarget.path}:`, err)
+              })
+              await removeLocalWorktreePath(removalTarget.path, localWorktreeGitOptions)
+              await cleanupUnusedWorktreePushTargetRemote(
+                repo.path,
+                removalTarget.id,
+                removedPushTarget,
+                store,
+                localWorktreeGitOptions
+              )
+              this.clearOptimisticReconcileToken(removalTarget.id)
+              this.removeWorktreeMetadataAndHistory(store, removalTarget.id)
+              this.preservedBranchCleanupByWorktreeId.delete(removalTarget.id)
+              this.invalidateResolvedWorktreeCache()
+              invalidateAuthorizedRootsCache()
+              this.notifyWorktreesChanged(repo.id)
+              return {}
+            }
+          }
+          if (
+            await isRuntimeWorktreePathMissing(repo, removalTarget.path, localWorktreeGitOptions)
+          ) {
+            if (!force && !removedMeta) {
+              // Why: without persisted metadata, require the renderer recovery
+              // path before deleting Orca-only state for an unregistered path.
+              throw new Error(UNREGISTERED_MISSING_WORKTREE_MESSAGE)
+            }
+            // Why: a manually deleted worktree is already gone from Git and disk.
+            // Finish runtime metadata cleanup without requiring force or touching
+            // any unregistered path that still exists.
+            await this.verifyTerminalsStoppedForRemoval(removalTarget.id, removalTarget.hostId)
+            await (repo.connectionId
+              ? cleanupUnusedWorktreePushTargetRemoteSsh(
+                  provider!,
+                  repo.path,
+                  removalTarget.id,
+                  removedPushTarget,
+                  store
+                )
+              : cleanupUnusedWorktreePushTargetRemote(
+                  repo.path,
+                  removalTarget.id,
+                  removedPushTarget,
+                  store,
+                  localWorktreeGitOptions
+                ))
+            this.clearOptimisticReconcileToken(removalTarget.id)
+            this.removeWorktreeMetadataAndHistory(store, removalTarget.id)
+            this.preservedBranchCleanupByWorktreeId.delete(removalTarget.id)
+            this.invalidateResolvedWorktreeCache()
+            invalidateAuthorizedRootsCache()
+            this.notifyWorktreesChanged(repo.id)
+            return {}
+          }
+          throw new Error(`Refusing to delete unregistered worktree path: ${removalTarget.path}`)
+        }
+        const canonicalWorktreePath = registeredWorktree.path
+        const deleteBranch = removedMeta?.preserveBranchOnDelete !== true
+
+        // Why: a Git lock must block before archive hooks or linked-path cleanup
+        // mutate the workspace; dirty-file force is a separate permission.
+        try {
+          assertWorktreeUnlockedForRemoval(registeredWorktree)
+        } catch (error) {
+          throw new Error(formatWorktreeRemovalError(error, canonicalWorktreePath, force))
+        }
+
+        // Why: a prior forced Windows recovery can delete the directory but leave
+        // Git's stale registration; recover and verify it before clearing metadata.
+        if (
+          !repo.connectionId &&
+          force === true &&
+          process.platform === 'win32' &&
+          (isWindowsAbsolutePathLike(canonicalWorktreePath) ||
+            !!localWorktreeGitOptions.wslDistro) &&
+          removedMeta &&
+          (await isRuntimeWorktreePathMissing(repo, canonicalWorktreePath, localWorktreeGitOptions))
+        ) {
+          await this.verifyTerminalsStoppedForRemoval(removalTarget.id, removalTarget.hostId)
+          const removalResult = await removeStaleLocalWorktreeRegistrationAfterFilesystemRemoval({
+            canonicalWorktreePath,
+            repoPath: repo.path,
+            localWorktreeGitOptions,
+            registeredWorktree,
+            deleteBranch
+          })
+          await cleanupUnusedWorktreePushTargetRemote(
+            repo.path,
+            removalTarget.id,
+            removedPushTarget,
+            store,
+            localWorktreeGitOptions
+          )
+          this.rememberPreservedBranchCleanupTarget(
+            removalTarget.id,
+            removalResult,
+            registeredWorktree.head,
+            removedPushTarget
+          )
+          this.clearOptimisticReconcileToken(removalTarget.id)
+          this.removeWorktreeMetadataAndHistory(store, removalTarget.id)
+          this.invalidateResolvedWorktreeCache()
+          invalidateAuthorizedRootsCache()
+          this.notifyWorktreesChanged(repo.id)
+          return removalResult ?? {}
+        }
+        if (repo.connectionId) {
+          await this.verifyTerminalsStoppedForRemoval(removalTarget.id, removalTarget.hostId)
+          const remoteRemoveOptions = !deleteBranch ? { deleteBranch } : {}
+          const rawRemovalResult = await (Object.keys(remoteRemoveOptions).length > 0
+            ? provider!.removeWorktree(canonicalWorktreePath, force, remoteRemoveOptions)
+            : provider!.removeWorktree(canonicalWorktreePath, force))
+          const removalResult = this.preserveBranchHeadFallback(
+            rawRemovalResult,
+            registeredWorktree.head
+          )
+          await cleanupUnusedWorktreePushTargetRemoteSsh(
+            provider!,
+            repo.path,
+            removalTarget.id,
+            removedPushTarget,
+            store
+          )
+          this.rememberPreservedBranchCleanupTarget(
+            removalTarget.id,
+            removalResult,
+            registeredWorktree.head,
+            removedPushTarget
+          )
+          this.clearOptimisticReconcileToken(removalTarget.id)
+          this.removeWorktreeMetadataAndHistory(store, removalTarget.id)
+          this.invalidateResolvedWorktreeCache()
+          invalidateAuthorizedRootsCache()
+          this.notifyWorktreesChanged(repo.id)
+          return removalResult ?? {}
+        }
+
+        const hooks = getEffectiveHooks(repo)
+        let warning: string | undefined
+        if (hooks?.scripts.archive && runHooks) {
+          const result = await runHook(
+            'archive',
+            canonicalWorktreePath,
+            repo,
+            undefined,
+            hasLocalWorktreeGitOptions ? localWorktreeGitOptions : undefined
+          )
+          if (!result.success) {
+            console.error(
+              `[hooks] archive hook failed for ${canonicalWorktreePath}:`,
+              result.output
+            )
+          }
+        } else if (hooks?.scripts.archive) {
+          // Runtime RPC calls have no renderer trust prompt, so hooks require explicit CLI opt-in.
+          warning = `orca.yaml archive hook skipped for ${canonicalWorktreePath}; pass --run-hooks to run it.`
+          console.warn(`[hooks] ${warning}`)
+        }
+
+        const refreshedWorktrees = hasLocalWorktreeGitOptions
+          ? await listWorktreesStrict(repo.path, localWorktreeGitOptions)
+          : await listWorktreesStrict(repo.path)
+        const refreshedRegisteredWorktree = findRegisteredDeletableWorktree(
+          repo.path,
+          canonicalWorktreePath,
+          refreshedWorktrees
+        )
+        if (!refreshedRegisteredWorktree) {
           throw new Error(
-            'Cannot delete the project root workspace. Remove the folder project instead.'
+            `Worktree registration changed during deletion: ${canonicalWorktreePath}. Retry deletion.`
           )
         }
+        try {
+          // Why: an archive hook can race another Git client that locks the row;
+          // recheck before linked-path, watcher, or terminal teardown side effects.
+          assertWorktreeUnlockedForRemoval(refreshedRegisteredWorktree)
+        } catch (error) {
+          throw new Error(formatWorktreeRemovalError(error, canonicalWorktreePath, force))
+        }
+
+        let shouldTearDownPtys = true
+        if (repo.symlinkPaths && repo.symlinkPaths.length > 0) {
+          await removeWorktreeLinkedPaths(canonicalWorktreePath, repo.symlinkPaths)
+        }
+        try {
+          await (hasLocalWorktreeGitOptions
+            ? assertWorktreeCleanForRemoval(canonicalWorktreePath, force, localWorktreeGitOptions)
+            : assertWorktreeCleanForRemoval(canonicalWorktreePath, force))
+        } catch (error) {
+          if (!isOrphanCompatiblePreflightError(error)) {
+            throw new Error(formatWorktreeRemovalError(error, canonicalWorktreePath, force))
+          }
+          // Why: orphan cleanup does not need live shells to be killed first,
+          // and preflight did not prove the worktree is cleanly removable.
+          shouldTearDownPtys = false
+        }
+
         const localProvider = this.getLocalProvider()
-        if (localProvider) {
-          // Why: folder workspace deletion has no Git removal phase where PTYs
-          // would otherwise be swept; tear them down before hiding the workspace.
+        await closeLocalWatcherForWorktreePath(canonicalWorktreePath).catch((err) => {
+          console.warn(`[filesystem-watcher] failed to close ${canonicalWorktreePath}:`, err)
+        })
+        await this.verifyTerminalsStoppedForRemoval(removalTarget.id, removalTarget.hostId)
+        if (localProvider && shouldTearDownPtys) {
+          // Why: once preflight proves normal deletion is clean, kill PTYs before
+          // git-level removal so Windows handles cannot keep the directory busy. This also
+          // closes the headless-CLI leak for confirmed-removable worktrees.
           await killAllProcessesForWorktree(removalTarget.id, {
             runtime: this,
             localProvider,
             onPtyStopped: this.onPtyStopped ?? undefined
-          }).catch((err) => {
-            console.warn(`[worktree-teardown] failed for ${removalTarget.id}:`, err)
           })
+            .then((r) => {
+              const total = r.runtimeStopped + r.providerStopped + r.registryStopped
+              if (total > 0) {
+                // Why (design §4.4 observability): breadcrumb lets ops
+                // distinguish a renderer-state-induced leak (diff-path purge
+                // non-empty) from a backend-induced one (nothing to kill but
+                // memory still pinned). Emit only when the sweep actually did
+                // work so steady-state logs stay quiet.
+                console.info(
+                  `[worktree-teardown] ${removalTarget.id} killed runtime=${r.runtimeStopped} provider=${r.providerStopped} registry=${r.registryStopped}`
+                )
+              }
+            })
+            .catch((err) => {
+              console.warn(`[worktree-teardown] failed for ${removalTarget.id}:`, err)
+            })
         }
-        this.removeWorktreeMetadataAndHistory(store, removalTarget.id)
-        this.preservedBranchCleanupByWorktreeId.delete(removalTarget.id)
-        this.invalidateResolvedWorktreeCache()
-        this.notifyWorktreesChanged(repo.id)
-        return {}
-      }
-      const provider = repo.connectionId ? requireSshGitProvider(repo.connectionId) : null
-      const fsProvider = repo.connectionId ? getSshFilesystemProvider(repo.connectionId) : null
-      const localWorktreeGitOptions = repo.connectionId
-        ? {}
-        : getLocalProjectWorktreeGitOptions(this.requireStore(), repo)
-      const hasLocalWorktreeGitOptions = Object.keys(localWorktreeGitOptions).length > 0
-      const registeredWorktrees = repo.connectionId
-        ? await provider!.listWorktrees(repo.path)
-        : hasLocalWorktreeGitOptions
-          ? await listWorktreesStrict(repo.path, localWorktreeGitOptions)
-          : await listWorktreesStrict(repo.path)
-      const removedMeta = store.getWorktreeMeta(removalTarget.id)
-      const removedPushTarget = removedMeta?.pushTarget ?? removalTarget.pushTarget
-      const registeredWorktree = findRegisteredDeletableWorktree(
-        repo.path,
-        removalTarget.path,
-        registeredWorktrees
-      )
-      if (!registeredWorktree) {
-        let canCleanOrphanedDirectory = false
-        if (
-          canCleanupUnregisteredOrcaWorktreeDirectory({
-            meta: removedMeta
+
+        let removalResult: RemoveWorktreeResult | undefined
+        try {
+          const removeOptions = {
+            ...(!deleteBranch ? { deleteBranch } : {}),
+            // Why: removal already validated the Git row under the selected
+            // project runtime; keep branch cleanup on that same canonical row.
+            knownRemovedWorktree: refreshedRegisteredWorktree,
+            ...localWorktreeGitOptions
+          }
+          removalResult = this.preserveBranchHeadFallback(
+            await removeWorktree(repo.path, canonicalWorktreePath, force, removeOptions),
+            refreshedRegisteredWorktree.head
+          )
+        } catch (error) {
+          // Why: Git for Windows can deregister a clean worktree before its
+          // recursive filesystem deletion fails transiently.
+          const recoveredRemovalResult = await recoverLocalWindowsWorktreeRemoval({
+            error,
+            force,
+            canonicalWorktreePath,
+            repoPath: repo.path,
+            localWorktreeGitOptions,
+            registeredWorktree: refreshedRegisteredWorktree,
+            deleteBranch,
+            closeWatcher: (worktreePath) =>
+              closeLocalWatcherForWorktreePath(worktreePath).catch((err) => {
+                console.warn(`[filesystem-watcher] failed to close ${worktreePath}:`, err)
+              })
           })
-        ) {
-          if (repo.connectionId) {
-            if (!fsProvider) {
-              throw new Error('SSH filesystem provider unavailable')
-            }
-            if (!fsProvider.lstat) {
-              throw new Error('SSH filesystem provider lstat unavailable')
-            }
-            canCleanOrphanedDirectory = await canSafelyRemoveOrphanedWorktreeDirectory(
-              removalTarget.path,
-              repo.path,
-              (path) => fsProvider.lstat!(path),
-              (path) => fsProvider.readFile(path)
-            )
-          } else {
+          if (recoveredRemovalResult) {
+            removalResult = recoveredRemovalResult
+          } else if (isOrphanedWorktreeError(error)) {
             const access = getLocalWorktreePathAccess(localWorktreeGitOptions)
-            canCleanOrphanedDirectory =
-              !isDangerousWorktreeRemovalPath(removalTarget.path, repo.path) &&
-              (await canSafelyRemoveOrphanedWorktreeDirectory(
-                toLocalWorktreeRuntimePath(removalTarget.path, localWorktreeGitOptions),
+            if (
+              await canSafelyRemoveOrphanedWorktreeDirectory(
+                toLocalWorktreeRuntimePath(canonicalWorktreePath, localWorktreeGitOptions),
                 toLocalWorktreeRuntimePath(repo.path, localWorktreeGitOptions),
                 access.statPath,
                 access.readPath
-              ))
-          }
-        }
-        if (canCleanOrphanedDirectory) {
-          assertWorktreeDoesNotContainRegisteredWorktree(removalTarget.path, registeredWorktrees)
-          if (!force) {
-            throw new Error(ORPHANED_WORKTREE_DIRECTORY_MESSAGE)
-          }
-          if (repo.connectionId) {
-            await fsProvider!.deletePath(removalTarget.path, true)
-            await cleanupUnusedWorktreePushTargetRemoteSsh(
-              provider!,
-              repo.path,
-              removalTarget.id,
-              removedPushTarget,
-              store
-            )
-          } else {
-            await removeLocalWorktreePath(removalTarget.path, localWorktreeGitOptions)
-            await cleanupUnusedWorktreePushTargetRemote(
-              repo.path,
-              removalTarget.id,
-              removedPushTarget,
-              store,
-              localWorktreeGitOptions
-            )
-          }
-          this.clearOptimisticReconcileToken(removalTarget.id)
-          this.removeWorktreeMetadataAndHistory(store, removalTarget.id)
-          this.preservedBranchCleanupByWorktreeId.delete(removalTarget.id)
-          this.invalidateResolvedWorktreeCache()
-          invalidateAuthorizedRootsCache()
-          this.notifyWorktreesChanged(repo.id)
-          return {}
-        }
-        if (!repo.connectionId) {
-          const access = getLocalWorktreePathAccess(localWorktreeGitOptions)
-          const runtimeWorktreePath = toLocalWorktreeRuntimePath(
-            removalTarget.path,
-            localWorktreeGitOptions
-          )
-          if (
-            await canCleanupUnregisteredOrcaLeftoverDirectory({
-              meta: removedMeta,
-              worktreePath: removalTarget.path,
-              runtimeWorktreePath,
-              repo,
-              runtimeRepoPath: toLocalWorktreeRuntimePath(repo.path, localWorktreeGitOptions),
-              registeredWorktrees,
-              statPath: access.statPath,
-              isGitRepository: (path) => isLocalRuntimeGitRepository(path, localWorktreeGitOptions)
-            })
-          ) {
-            if (!force) {
-              throw new Error(ORPHANED_WORKTREE_DIRECTORY_MESSAGE)
+              )
+            ) {
+              await closeLocalWatcherForWorktreePath(canonicalWorktreePath).catch((err) => {
+                console.warn(`[filesystem-watcher] failed to close ${canonicalWorktreePath}:`, err)
+              })
+              await removeLocalWorktreePath(canonicalWorktreePath, localWorktreeGitOptions).catch(
+                () => {}
+              )
+            } else {
+              console.warn(
+                `[worktrees] Refusing recursive cleanup for unproven worktree directory: ${canonicalWorktreePath}`
+              )
             }
-            await closeLocalWatcherForWorktreePath(removalTarget.path).catch((err) => {
-              console.warn(`[filesystem-watcher] failed to close ${removalTarget.path}:`, err)
-            })
-            await removeLocalWorktreePath(removalTarget.path, localWorktreeGitOptions)
+            // Why: `git worktree remove` failed, so git's internal worktree tracking
+            // (`.git/worktrees/<name>`) is still intact. Without pruning, `git worktree
+            // list` continues to show the stale entry and the branch it had checked out
+            // remains locked — other worktrees cannot check it out.
+            await gitExecFileAsync(['worktree', 'prune'], {
+              cwd: repo.path,
+              ...localWorktreeGitOptions
+            }).catch(() => {})
             await cleanupUnusedWorktreePushTargetRemote(
               repo.path,
               removalTarget.id,
@@ -16955,71 +18010,14 @@ export class OrcaRuntimeService {
             this.invalidateResolvedWorktreeCache()
             invalidateAuthorizedRootsCache()
             this.notifyWorktreesChanged(repo.id)
-            return {}
+            return {
+              ...(warning ? { warning } : {})
+            }
+          } else {
+            throw new Error(formatWorktreeRemovalError(error, canonicalWorktreePath, force))
           }
         }
-        if (await isRuntimeWorktreePathMissing(repo, removalTarget.path, localWorktreeGitOptions)) {
-          if (!force && !removedMeta) {
-            // Why: without persisted metadata, require the renderer recovery
-            // path before deleting Orca-only state for an unregistered path.
-            throw new Error(UNREGISTERED_MISSING_WORKTREE_MESSAGE)
-          }
-          // Why: a manually deleted worktree is already gone from Git and disk.
-          // Finish runtime metadata cleanup without requiring force or touching
-          // any unregistered path that still exists.
-          await (repo.connectionId
-            ? cleanupUnusedWorktreePushTargetRemoteSsh(
-                provider!,
-                repo.path,
-                removalTarget.id,
-                removedPushTarget,
-                store
-              )
-            : cleanupUnusedWorktreePushTargetRemote(
-                repo.path,
-                removalTarget.id,
-                removedPushTarget,
-                store,
-                localWorktreeGitOptions
-              ))
-          this.clearOptimisticReconcileToken(removalTarget.id)
-          this.removeWorktreeMetadataAndHistory(store, removalTarget.id)
-          this.preservedBranchCleanupByWorktreeId.delete(removalTarget.id)
-          this.invalidateResolvedWorktreeCache()
-          invalidateAuthorizedRootsCache()
-          this.notifyWorktreesChanged(repo.id)
-          return {}
-        }
-        throw new Error(`Refusing to delete unregistered worktree path: ${removalTarget.path}`)
-      }
-      const canonicalWorktreePath = registeredWorktree.path
-      const deleteBranch = removedMeta?.preserveBranchOnDelete !== true
 
-      // Why: a Git lock must block before archive hooks or linked-path cleanup
-      // mutate the workspace; dirty-file force is a separate permission.
-      try {
-        assertWorktreeUnlockedForRemoval(registeredWorktree)
-      } catch (error) {
-        throw new Error(formatWorktreeRemovalError(error, canonicalWorktreePath, force))
-      }
-
-      // Why: a prior forced Windows recovery can delete the directory but leave
-      // Git's stale registration; recover and verify it before clearing metadata.
-      if (
-        !repo.connectionId &&
-        force === true &&
-        process.platform === 'win32' &&
-        (isWindowsAbsolutePathLike(canonicalWorktreePath) || !!localWorktreeGitOptions.wslDistro) &&
-        removedMeta &&
-        (await isRuntimeWorktreePathMissing(repo, canonicalWorktreePath, localWorktreeGitOptions))
-      ) {
-        const removalResult = await removeStaleLocalWorktreeRegistrationAfterFilesystemRemoval({
-          canonicalWorktreePath,
-          repoPath: repo.path,
-          localWorktreeGitOptions,
-          registeredWorktree,
-          deleteBranch
-        })
         await cleanupUnusedWorktreePushTargetRemote(
           repo.path,
           removalTarget.id,
@@ -17030,7 +18028,7 @@ export class OrcaRuntimeService {
         this.rememberPreservedBranchCleanupTarget(
           removalTarget.id,
           removalResult,
-          registeredWorktree.head,
+          refreshedRegisteredWorktree.head,
           removedPushTarget
         )
         this.clearOptimisticReconcileToken(removalTarget.id)
@@ -17038,236 +18036,19 @@ export class OrcaRuntimeService {
         this.invalidateResolvedWorktreeCache()
         invalidateAuthorizedRootsCache()
         this.notifyWorktreesChanged(repo.id)
-        return removalResult ?? {}
-      }
-      if (repo.connectionId) {
-        const remoteRemoveOptions = !deleteBranch ? { deleteBranch } : {}
-        const rawRemovalResult = await (Object.keys(remoteRemoveOptions).length > 0
-          ? provider!.removeWorktree(canonicalWorktreePath, force, remoteRemoveOptions)
-          : provider!.removeWorktree(canonicalWorktreePath, force))
-        const removalResult = this.preserveBranchHeadFallback(
-          rawRemovalResult,
-          registeredWorktree.head
-        )
-        await cleanupUnusedWorktreePushTargetRemoteSsh(
-          provider!,
-          repo.path,
-          removalTarget.id,
-          removedPushTarget,
-          store
-        )
-        this.rememberPreservedBranchCleanupTarget(
-          removalTarget.id,
-          removalResult,
-          registeredWorktree.head,
-          removedPushTarget
-        )
-        this.clearOptimisticReconcileToken(removalTarget.id)
-        this.removeWorktreeMetadataAndHistory(store, removalTarget.id)
-        this.invalidateResolvedWorktreeCache()
-        invalidateAuthorizedRootsCache()
-        this.notifyWorktreesChanged(repo.id)
-        return removalResult ?? {}
-      }
-
-      const hooks = getEffectiveHooks(repo)
-      let warning: string | undefined
-      if (hooks?.scripts.archive && runHooks) {
-        const result = await runHook(
-          'archive',
-          canonicalWorktreePath,
-          repo,
-          undefined,
-          hasLocalWorktreeGitOptions ? localWorktreeGitOptions : undefined
-        )
-        if (!result.success) {
-          console.error(`[hooks] archive hook failed for ${canonicalWorktreePath}:`, result.output)
+        return {
+          ...removalResult,
+          ...(warning ? { warning } : {})
         }
-      } else if (hooks?.scripts.archive) {
-        // Runtime RPC calls have no renderer trust prompt, so hooks require explicit CLI opt-in.
-        warning = `orca.yaml archive hook skipped for ${canonicalWorktreePath}; pass --run-hooks to run it.`
-        console.warn(`[hooks] ${warning}`)
-      }
-
-      const refreshedWorktrees = hasLocalWorktreeGitOptions
-        ? await listWorktreesStrict(repo.path, localWorktreeGitOptions)
-        : await listWorktreesStrict(repo.path)
-      const refreshedRegisteredWorktree = findRegisteredDeletableWorktree(
-        repo.path,
-        canonicalWorktreePath,
-        refreshedWorktrees
-      )
-      if (!refreshedRegisteredWorktree) {
-        throw new Error(
-          `Worktree registration changed during deletion: ${canonicalWorktreePath}. Retry deletion.`
-        )
-      }
-      try {
-        // Why: an archive hook can race another Git client that locks the row;
-        // recheck before linked-path, watcher, or terminal teardown side effects.
-        assertWorktreeUnlockedForRemoval(refreshedRegisteredWorktree)
-      } catch (error) {
-        throw new Error(formatWorktreeRemovalError(error, canonicalWorktreePath, force))
-      }
-
-      let shouldTearDownPtys = true
-      if (repo.symlinkPaths && repo.symlinkPaths.length > 0) {
-        await removeWorktreeLinkedPaths(canonicalWorktreePath, repo.symlinkPaths)
-      }
-      try {
-        await (hasLocalWorktreeGitOptions
-          ? assertWorktreeCleanForRemoval(canonicalWorktreePath, force, localWorktreeGitOptions)
-          : assertWorktreeCleanForRemoval(canonicalWorktreePath, force))
-      } catch (error) {
-        if (!isOrphanCompatiblePreflightError(error)) {
-          throw new Error(formatWorktreeRemovalError(error, canonicalWorktreePath, force))
-        }
-        // Why: orphan cleanup does not need live shells to be killed first,
-        // and preflight did not prove the worktree is cleanly removable.
-        shouldTearDownPtys = false
-      }
-
-      const localProvider = this.getLocalProvider()
-      await closeLocalWatcherForWorktreePath(canonicalWorktreePath).catch((err) => {
-        console.warn(`[filesystem-watcher] failed to close ${canonicalWorktreePath}:`, err)
-      })
-      if (localProvider && shouldTearDownPtys) {
-        // Why: once preflight proves normal deletion is clean, kill PTYs before
-        // git-level removal so Windows handles cannot keep the directory busy. This also
-        // closes the headless-CLI leak for confirmed-removable worktrees.
-        await killAllProcessesForWorktree(removalTarget.id, {
-          runtime: this,
-          localProvider,
-          onPtyStopped: this.onPtyStopped ?? undefined
-        })
-          .then((r) => {
-            const total = r.runtimeStopped + r.providerStopped + r.registryStopped
-            if (total > 0) {
-              // Why (design §4.4 observability): breadcrumb lets ops
-              // distinguish a renderer-state-induced leak (diff-path purge
-              // non-empty) from a backend-induced one (nothing to kill but
-              // memory still pinned). Emit only when the sweep actually did
-              // work so steady-state logs stay quiet.
-              console.info(
-                `[worktree-teardown] ${removalTarget.id} killed runtime=${r.runtimeStopped} provider=${r.providerStopped} registry=${r.registryStopped}`
-              )
-            }
-          })
-          .catch((err) => {
-            console.warn(`[worktree-teardown] failed for ${removalTarget.id}:`, err)
-          })
-      }
-
-      let removalResult: RemoveWorktreeResult | undefined
-      try {
-        const removeOptions = {
-          ...(!deleteBranch ? { deleteBranch } : {}),
-          // Why: removal already validated the Git row under the selected
-          // project runtime; keep branch cleanup on that same canonical row.
-          knownRemovedWorktree: refreshedRegisteredWorktree,
-          ...localWorktreeGitOptions
-        }
-        removalResult = this.preserveBranchHeadFallback(
-          await removeWorktree(repo.path, canonicalWorktreePath, force, removeOptions),
-          refreshedRegisteredWorktree.head
-        )
-      } catch (error) {
-        // Why: Git for Windows can deregister a clean worktree before its
-        // recursive filesystem deletion fails transiently.
-        const recoveredRemovalResult = await recoverLocalWindowsWorktreeRemoval({
-          error,
-          force,
-          canonicalWorktreePath,
-          repoPath: repo.path,
-          localWorktreeGitOptions,
-          registeredWorktree: refreshedRegisteredWorktree,
-          deleteBranch,
-          closeWatcher: (worktreePath) =>
-            closeLocalWatcherForWorktreePath(worktreePath).catch((err) => {
-              console.warn(`[filesystem-watcher] failed to close ${worktreePath}:`, err)
-            })
-        })
-        if (recoveredRemovalResult) {
-          removalResult = recoveredRemovalResult
-        } else if (isOrphanedWorktreeError(error)) {
-          const access = getLocalWorktreePathAccess(localWorktreeGitOptions)
-          if (
-            await canSafelyRemoveOrphanedWorktreeDirectory(
-              toLocalWorktreeRuntimePath(canonicalWorktreePath, localWorktreeGitOptions),
-              toLocalWorktreeRuntimePath(repo.path, localWorktreeGitOptions),
-              access.statPath,
-              access.readPath
-            )
-          ) {
-            await closeLocalWatcherForWorktreePath(canonicalWorktreePath).catch((err) => {
-              console.warn(`[filesystem-watcher] failed to close ${canonicalWorktreePath}:`, err)
-            })
-            await removeLocalWorktreePath(canonicalWorktreePath, localWorktreeGitOptions).catch(
-              () => {}
-            )
-          } else {
-            console.warn(
-              `[worktrees] Refusing recursive cleanup for unproven worktree directory: ${canonicalWorktreePath}`
-            )
-          }
-          // Why: `git worktree remove` failed, so git's internal worktree tracking
-          // (`.git/worktrees/<name>`) is still intact. Without pruning, `git worktree
-          // list` continues to show the stale entry and the branch it had checked out
-          // remains locked — other worktrees cannot check it out.
-          await gitExecFileAsync(['worktree', 'prune'], {
-            cwd: repo.path,
-            ...localWorktreeGitOptions
-          }).catch(() => {})
-          await cleanupUnusedWorktreePushTargetRemote(
-            repo.path,
-            removalTarget.id,
-            removedPushTarget,
-            store,
-            localWorktreeGitOptions
-          )
-          this.clearOptimisticReconcileToken(removalTarget.id)
-          this.removeWorktreeMetadataAndHistory(store, removalTarget.id)
-          this.preservedBranchCleanupByWorktreeId.delete(removalTarget.id)
-          this.invalidateResolvedWorktreeCache()
-          invalidateAuthorizedRootsCache()
-          this.notifyWorktreesChanged(repo.id)
-          return {
-            ...(warning ? { warning } : {})
-          }
-        } else {
-          throw new Error(formatWorktreeRemovalError(error, canonicalWorktreePath, force))
-        }
-      }
-
-      await cleanupUnusedWorktreePushTargetRemote(
-        repo.path,
-        removalTarget.id,
-        removedPushTarget,
-        store,
-        localWorktreeGitOptions
-      )
-      this.rememberPreservedBranchCleanupTarget(
-        removalTarget.id,
-        removalResult,
-        refreshedRegisteredWorktree.head,
-        removedPushTarget
-      )
-      this.clearOptimisticReconcileToken(removalTarget.id)
-      this.removeWorktreeMetadataAndHistory(store, removalTarget.id)
-      this.invalidateResolvedWorktreeCache()
-      invalidateAuthorizedRootsCache()
-      this.notifyWorktreesChanged(repo.id)
-      return {
-        ...removalResult,
-        ...(warning ? { warning } : {})
-      }
-    })()
-    this.removeManagedWorktreeInFlight.set(removalTarget.id, { optionsKey, promise: removal })
+      },
+      removalTarget.hostId
+    )
+    this.removeManagedWorktreeInFlight.set(removalScopeKey, { optionsKey, promise: removal })
     try {
       return await removal
     } finally {
-      if (this.removeManagedWorktreeInFlight.get(removalTarget.id)?.promise === removal) {
-        this.removeManagedWorktreeInFlight.delete(removalTarget.id)
+      if (this.removeManagedWorktreeInFlight.get(removalScopeKey)?.promise === removal) {
+        this.removeManagedWorktreeInFlight.delete(removalScopeKey)
       }
     }
   }
@@ -17373,12 +18154,12 @@ export class OrcaRuntimeService {
   ): Promise<RuntimeTerminalCreate> {
     const presentation = resolveTerminalPresentation(opts)
     const requiresRendererFocus = opts.presentation === 'focused' || opts.focus === true
+    const availableAuthoritativeWindow = this.getAvailableAuthoritativeWindow()
     // Why: pre-diff createTerminal fell back to the renderer's active worktree
     // when no selector was provided. The new background-spawn branch hard-
     // requires a resolvable selector, so route the no-selector case through
     // the renderer IPC path to preserve that behavior.
-    const rendererWindow =
-      opts.rendererBacked === true ? this.getAvailableAuthoritativeWindow() : null
+    const rendererWindow = opts.rendererBacked === true ? availableAuthoritativeWindow : null
     const shouldCreateInBackground =
       worktreeSelector !== undefined &&
       ((!requiresRendererFocus && opts.rendererBacked !== true) ||
@@ -17391,187 +18172,217 @@ export class OrcaRuntimeService {
       if (!this.ptyController?.spawn) {
         throw new Error('runtime_unavailable')
       }
-      const workspace = await this.resolveTerminalWorkspaceLaunchScope(worktreeSelector)
-      const launchOpts = await this.resolveAgentTerminalCreateOptions(workspace, opts)
-      const cwd =
-        this.resolveWorkspaceTerminalStartupCwd(workspace, launchOpts.cwd) ?? workspace.path
-      const preAllocatedHandle = this.createPreAllocatedTerminalHandle()
-      // Why: mint tabId in main before spawn so paneKey is known at PTY env
-      // build time. Hook-based agent status (Claude/Codex/Cursor/Gemini) keys
-      // off `${tabId}:${leafId}` — without these vars set on the PTY, the
-      // hook payload arrives with an empty paneKey and the renderer cannot
-      // attribute the event. Use a stable UUID leaf because hooks reject the
-      // legacy numeric pane keys after the pane-id migration.
-      const hintedTabId = launchOpts.tabId?.trim()
-      const canAdoptPaneIdentity =
-        hintedTabId !== undefined &&
-        isValidHostTerminalTabId(hintedTabId) &&
-        launchOpts.leafId !== undefined &&
-        isTerminalLeafId(launchOpts.leafId)
-      const tabId = canAdoptPaneIdentity ? (hintedTabId as string) : randomUUID()
-      const leafId = canAdoptPaneIdentity ? (launchOpts.leafId as string) : randomUUID()
-      const paneKey = makePaneKey(tabId, leafId)
-      const launchToken = launchOpts.launchConfig
-        ? (launchOpts.launchToken ?? randomUUID())
-        : undefined
-      const baseEnv = {
-        ...launchOpts.env,
-        ...(launchToken ? { ORCA_AGENT_LAUNCH_TOKEN: launchToken } : {})
-      }
-      const claudeAgentTeamsSourceCommand =
-        launchOpts.claudeAgentTeamsSourceCommand?.trim() || launchOpts.command?.trim() || undefined
-      const claudeAgentTeamsMode = this.store?.getSettings?.().claudeAgentTeamsMode
-      const effectiveClaudeAgentTeamsMode = inferCapturedClaudeAgentTeamsMode(
-        launchOpts.launchConfig,
-        claudeAgentTeamsSourceCommand,
-        claudeAgentTeamsMode
-      )
-      const agentTeamsPlan = await buildClaudeAgentTeamsLaunchPlan({
-        command: claudeAgentTeamsSourceCommand,
-        mode: effectiveClaudeAgentTeamsMode,
-        baseEnv: {
-          ...process.env,
-          ...baseEnv
-        },
-        createTeamEnv: (shimDir, shimBin) =>
-          this.claudeAgentTeams.createLaunchEnv({
-            leaderHandle: preAllocatedHandle,
-            baseEnv: {
-              ...process.env,
-              ...baseEnv
-            },
-            shimDir,
-            shimBin
-          }).env
-      })
-      const sequencedStartupCommand =
-        agentTeamsPlan &&
-        claudeAgentTeamsSourceCommand &&
-        launchOpts.command &&
-        claudeAgentTeamsSourceCommand !== launchOpts.command
-          ? agentTeamsPlan.command
+      const { workspace, release: releasePreparationAdmission } =
+        await this.resolveTerminalCreateWorkspaceWithAdmission(worktreeSelector)
+      try {
+        if (
+          this.isAdmissionBlocked(
+            this.terminalAdmissionBlockedWorktreeIds,
+            workspace.id,
+            workspace.hostId
+          )
+        ) {
+          throw new Error('terminal_admission_blocked_for_project_removal')
+        }
+        const launchOpts = await this.resolveAgentTerminalCreateOptions(workspace, opts)
+        const cwd =
+          this.resolveWorkspaceTerminalStartupCwd(workspace, launchOpts.cwd) ?? workspace.path
+        const preAllocatedHandle = this.createPreAllocatedTerminalHandle()
+        // Why: mint tabId in main before spawn so paneKey is known at PTY env
+        // build time. Hook-based agent status (Claude/Codex/Cursor/Gemini) keys
+        // off `${tabId}:${leafId}` — without these vars set on the PTY, the
+        // hook payload arrives with an empty paneKey and the renderer cannot
+        // attribute the event. Use a stable UUID leaf because hooks reject the
+        // legacy numeric pane keys after the pane-id migration.
+        const hintedTabId = launchOpts.tabId?.trim()
+        const canAdoptPaneIdentity =
+          hintedTabId !== undefined &&
+          isValidHostTerminalTabId(hintedTabId) &&
+          launchOpts.leafId !== undefined &&
+          isTerminalLeafId(launchOpts.leafId)
+        const tabId = canAdoptPaneIdentity ? (hintedTabId as string) : randomUUID()
+        const leafId = canAdoptPaneIdentity ? (launchOpts.leafId as string) : randomUUID()
+        const paneKey = makePaneKey(tabId, leafId)
+        const launchToken = launchOpts.launchConfig
+          ? (launchOpts.launchToken ?? randomUUID())
           : undefined
-      const effectiveLaunchConfig =
-        launchOpts.launchConfig && agentTeamsPlan
-          ? {
-              ...launchOpts.launchConfig,
-              agentCommand: launchOpts.launchConfig.agentCommand
-                ? effectiveClaudeAgentTeamsMode === 'in-process' || process.platform === 'win32'
-                  ? addClaudeTeammateModeInProcess(launchOpts.launchConfig.agentCommand)
-                  : addClaudeTeammateModeAuto(launchOpts.launchConfig.agentCommand)
-                : agentTeamsPlan.command,
-              agentEnv: {
-                ...launchOpts.launchConfig.agentEnv,
-                ...agentTeamsPlan.env
-              }
-            }
-          : launchOpts.launchConfig
-      // Why: setup/agent sequencing wraps the PTY launch in a wait shell before
-      // Claude Agent Teams runs. Preserve the direct Claude command separately
-      // so the wrapper can exec the teammate-mode variant after setup completes.
-      const env = this.buildTerminalWorkspaceEnv(
-        workspace,
-        {
-          ...baseEnv,
-          ...(sequencedStartupCommand
-            ? { [SETUP_AGENT_SEQUENCE_STARTUP_COMMAND_ENV]: sequencedStartupCommand }
-            : {})
-        },
-        paneKey,
-        tabId,
-        agentTeamsPlan?.env
-      )
-      const result = await this.ptyController.spawn({
-        cols: 120,
-        rows: 40,
-        cwd,
-        command: sequencedStartupCommand
-          ? launchOpts.command
-          : (agentTeamsPlan?.command ?? launchOpts.command),
-        commandDelivery: 'provider',
-        startupCommandDelivery: launchOpts.startupCommandDelivery,
-        env,
-        envToDelete: agentTeamsPlan?.envToDelete,
-        telemetry: launchOpts.telemetry,
-        connectionId: workspace.connectionId,
-        worktreeId: workspace.id,
-        preAllocatedHandle,
-        tabId,
-        leafId,
-        ...(launchOpts.sessionId ? { sessionId: launchOpts.sessionId } : {}),
-        ...(launchOpts.persistHostSessionBinding ? { persistHostSessionBinding: true } : {})
-      })
-      this.registerPreAllocatedHandleForPty(result.id, preAllocatedHandle)
-      this.registerPty(result.id, workspace.id, workspace.connectionId)
-      const pty = this.getOrCreatePtyWorktreeRecord(result.id)
-      if (pty) {
-        if (launchOpts.title) {
-          const observedAt = this.nextTitleObservationSequence()
-          pty.title = launchOpts.title
-          pty.titleUpdatedAt = observedAt
-          this.setPtyManagementTitleFromObservedTitle(pty, launchOpts.title, observedAt)
-        } else {
-          pty.title = null
-          pty.titleUpdatedAt = null
+        const baseEnv = {
+          ...launchOpts.env,
+          ...(launchToken ? { ORCA_AGENT_LAUNCH_TOKEN: launchToken } : {})
         }
-        pty.tabId = tabId
-        pty.paneKey = paneKey
-        pty.launchConfig = effectiveLaunchConfig
-          ? copySleepingAgentLaunchConfig(effectiveLaunchConfig)
-          : null
-        pty.launchToken = launchToken ?? null
-        pty.launchAgent = launchOpts.launchAgent ?? null
-      }
-      const handle = pty ? this.issuePtyHandle(pty) : preAllocatedHandle
-      if (pty && launchOpts.deferMobileSessionPublish !== true) {
-        this.publishPtyBackedMobileSessionTerminal(workspace.id, pty, {
-          tabId,
-          leafId,
-          title: launchOpts.title ?? null,
-          activate: presentation === 'focused',
-          // Why: explicit background presentation may carry legacy activate
-          // metadata from an already-owned renderer pane; don't select it on mobile.
-          selectIfNoActiveTab: presentation !== 'background',
-          ...(cwd !== workspace.path ? { startupCwd: cwd } : {})
+        const claudeAgentTeamsSourceCommand =
+          launchOpts.claudeAgentTeamsSourceCommand?.trim() ||
+          launchOpts.command?.trim() ||
+          undefined
+        const claudeAgentTeamsMode = this.store?.getSettings?.().claudeAgentTeamsMode
+        const effectiveClaudeAgentTeamsMode = inferCapturedClaudeAgentTeamsMode(
+          launchOpts.launchConfig,
+          claudeAgentTeamsSourceCommand,
+          claudeAgentTeamsMode
+        )
+        const agentTeamsPlan = await buildClaudeAgentTeamsLaunchPlan({
+          command: claudeAgentTeamsSourceCommand,
+          mode: effectiveClaudeAgentTeamsMode,
+          baseEnv: {
+            ...process.env,
+            ...baseEnv
+          },
+          createTeamEnv: (shimDir, shimBin) =>
+            this.claudeAgentTeams.createLaunchEnv({
+              leaderHandle: preAllocatedHandle,
+              baseEnv: {
+                ...process.env,
+                ...baseEnv
+              },
+              shimDir,
+              shimBin
+            }).env
         })
-      }
-      let surface: RuntimeTerminalCreate['surface'] = 'background'
-      let warning: string | undefined
-      if (presentation !== 'background' && this.notifier?.revealTerminalSession) {
-        try {
-          // Why: after the PTY is spawned, renderer tab adoption is best-effort;
-          // failing here must not strand a live process without returning a handle.
-          // Pass the pre-minted tabId so the renderer adopts under the same id
-          // already baked into the PTY env — keeps paneKey hook attribution intact.
-          await this.notifier.revealTerminalSession(workspace.id, {
-            ptyId: result.id,
-            title: launchOpts.title ?? null,
-            ...(cwd !== workspace.path ? { cwd } : {}),
-            ...(effectiveLaunchConfig ? { launchConfig: effectiveLaunchConfig } : {}),
-            ...(launchToken ? { launchToken } : {}),
-            ...(launchOpts.launchAgent ? { launchAgent: launchOpts.launchAgent } : {}),
-            activate: presentation === 'focused',
-            ...(presentation ? { presentation } : {}),
-            tabId,
-            leafId
-          })
-          surface = 'visible'
-        } catch (err) {
-          console.warn(`[terminal-create] failed to create inactive tab for ${result.id}:`, err)
-          warning = createTerminalRevealWarning(handle, err)
+        const sequencedStartupCommand =
+          agentTeamsPlan &&
+          claudeAgentTeamsSourceCommand &&
+          launchOpts.command &&
+          claudeAgentTeamsSourceCommand !== launchOpts.command
+            ? agentTeamsPlan.command
+            : undefined
+        const effectiveLaunchConfig =
+          launchOpts.launchConfig && agentTeamsPlan
+            ? {
+                ...launchOpts.launchConfig,
+                agentCommand: launchOpts.launchConfig.agentCommand
+                  ? effectiveClaudeAgentTeamsMode === 'in-process' || process.platform === 'win32'
+                    ? addClaudeTeammateModeInProcess(launchOpts.launchConfig.agentCommand)
+                    : addClaudeTeammateModeAuto(launchOpts.launchConfig.agentCommand)
+                  : agentTeamsPlan.command,
+                agentEnv: {
+                  ...launchOpts.launchConfig.agentEnv,
+                  ...agentTeamsPlan.env
+                }
+              }
+            : launchOpts.launchConfig
+        // Why: setup/agent sequencing wraps the PTY launch in a wait shell before
+        // Claude Agent Teams runs. Preserve the direct Claude command separately
+        // so the wrapper can exec the teammate-mode variant after setup completes.
+        const env = this.buildTerminalWorkspaceEnv(
+          workspace,
+          {
+            ...baseEnv,
+            ...(sequencedStartupCommand
+              ? { [SETUP_AGENT_SEQUENCE_STARTUP_COMMAND_ENV]: sequencedStartupCommand }
+              : {})
+          },
+          paneKey,
+          tabId,
+          agentTeamsPlan?.env
+        )
+        const result = await this.withTerminalAdmission(
+          workspace.id,
+          async () => {
+            const spawned = await this.ptyController!.spawn!({
+              cols: 120,
+              rows: 40,
+              cwd,
+              command: sequencedStartupCommand
+                ? launchOpts.command
+                : (agentTeamsPlan?.command ?? launchOpts.command),
+              commandDelivery: 'provider',
+              startupCommandDelivery: launchOpts.startupCommandDelivery,
+              env,
+              envToDelete: agentTeamsPlan?.envToDelete,
+              telemetry: launchOpts.telemetry,
+              connectionId: workspace.connectionId,
+              worktreeId: workspace.id,
+              preAllocatedHandle,
+              tabId,
+              leafId,
+              ...(launchOpts.sessionId ? { sessionId: launchOpts.sessionId } : {}),
+              // Why: a headless-created pane has no renderer session writer.
+              // Re-check after preparation in case the window closed meanwhile.
+              ...(launchOpts.persistHostSessionBinding ||
+              this.getAvailableAuthoritativeWindow() === null
+                ? { persistHostSessionBinding: true }
+                : {})
+            })
+            this.registerPreAllocatedHandleForPty(spawned.id, preAllocatedHandle)
+            this.registerPty(spawned.id, workspace.id, workspace.connectionId)
+            return spawned
+          },
+          workspace.hostId
+        )
+        const pty = this.getOrCreatePtyWorktreeRecord(result.id)
+        if (pty) {
+          if (launchOpts.title) {
+            const observedAt = this.nextTitleObservationSequence()
+            pty.title = launchOpts.title
+            pty.titleUpdatedAt = observedAt
+            this.setPtyManagementTitleFromObservedTitle(pty, launchOpts.title, observedAt)
+          } else {
+            pty.title = null
+            pty.titleUpdatedAt = null
+          }
+          pty.tabId = tabId
+          pty.paneKey = paneKey
+          pty.launchConfig = effectiveLaunchConfig
+            ? copySleepingAgentLaunchConfig(effectiveLaunchConfig)
+            : null
+          pty.launchToken = launchToken ?? null
+          pty.launchAgent = launchOpts.launchAgent ?? null
         }
-      } else if (presentation !== 'background') {
-        warning = createTerminalRevealWarning(handle)
-      }
-      return {
-        handle,
-        tabId,
-        paneKey,
-        ptyId: result.id,
-        worktreeId: workspace.id,
-        title: launchOpts.title ?? null,
-        surface,
-        ...(warning ? { warning } : {})
+        const handle = pty ? this.issuePtyHandle(pty) : preAllocatedHandle
+        if (pty && launchOpts.deferMobileSessionPublish !== true) {
+          this.publishPtyBackedMobileSessionTerminal(workspace.id, pty, {
+            tabId,
+            leafId,
+            title: launchOpts.title ?? null,
+            activate: presentation === 'focused',
+            // Why: explicit background presentation may carry legacy activate
+            // metadata from an already-owned renderer pane; don't select it on mobile.
+            selectIfNoActiveTab: presentation !== 'background',
+            ...(launchOpts.viewMode ? { viewMode: launchOpts.viewMode } : {}),
+            ...(cwd !== workspace.path ? { startupCwd: cwd } : {})
+          })
+        }
+        let surface: RuntimeTerminalCreate['surface'] = 'background'
+        let warning: string | undefined
+        if (presentation !== 'background' && this.notifier?.revealTerminalSession) {
+          try {
+            // Why: after the PTY is spawned, renderer tab adoption is best-effort;
+            // failing here must not strand a live process without returning a handle.
+            // Pass the pre-minted tabId so the renderer adopts under the same id
+            // already baked into the PTY env — keeps paneKey hook attribution intact.
+            await this.notifier.revealTerminalSession(workspace.id, {
+              ptyId: result.id,
+              title: launchOpts.title ?? null,
+              ...(cwd !== workspace.path ? { cwd } : {}),
+              ...(effectiveLaunchConfig ? { launchConfig: effectiveLaunchConfig } : {}),
+              ...(launchToken ? { launchToken } : {}),
+              ...(launchOpts.launchAgent ? { launchAgent: launchOpts.launchAgent } : {}),
+              ...(launchOpts.viewMode ? { viewMode: launchOpts.viewMode } : {}),
+              activate: presentation === 'focused',
+              ...(presentation ? { presentation } : {}),
+              tabId,
+              leafId
+            })
+            surface = 'visible'
+          } catch (err) {
+            console.warn(`[terminal-create] failed to create inactive tab for ${result.id}:`, err)
+            warning = createTerminalRevealWarning(handle, err)
+          }
+        } else if (presentation !== 'background') {
+          warning = createTerminalRevealWarning(handle)
+        }
+        return {
+          handle,
+          tabId,
+          paneKey,
+          ptyId: result.id,
+          worktreeId: workspace.id,
+          title: launchOpts.title ?? null,
+          surface,
+          ...(warning ? { warning } : {})
+        }
+      } finally {
+        releasePreparationAdmission()
       }
     }
 
@@ -17579,69 +18390,105 @@ export class OrcaRuntimeService {
     const win = rendererWindow ?? this.getAuthoritativeWindow()
     // Why: mirrors browserTabCreate — when no worktree is specified, pass
     // undefined so the renderer uses its current active worktree.
-    const workspace = worktreeSelector
-      ? await this.resolveTerminalWorkspaceLaunchScope(worktreeSelector)
+    const admittedWorkspace = worktreeSelector
+      ? await this.resolveTerminalCreateWorkspaceWithAdmission(worktreeSelector)
       : null
-    const launchOpts = workspace
-      ? await this.resolveAgentTerminalCreateOptions(workspace, opts)
-      : opts
-    const worktreeId = workspace?.id
-    const cwd = workspace
-      ? this.resolveWorkspaceTerminalStartupCwd(workspace, launchOpts.cwd)
-      : launchOpts.cwd
-    const requestId = randomUUID()
-
-    // Why: terminal creation is a renderer-side Zustand store operation (like
-    // browser tab creation). The main process sends a request, the renderer
-    // creates the tab and replies with the tabId so we can resolve the handle.
-    const reply = await new Promise<{ tabId: string; title: string }>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        ipcMain.removeListener('terminal:tabCreateReply', handler)
-        reject(new Error('Terminal creation timed out'))
-      }, 10_000)
-
-      const handler = (
-        event: Electron.IpcMainEvent,
-        r: { requestId: string; tabId?: string; title?: string; error?: string }
-      ): void => {
-        if (event.sender !== win.webContents || r.requestId !== requestId) {
-          return
-        }
-        clearTimeout(timer)
-        ipcMain.removeListener('terminal:tabCreateReply', handler)
-        if (r.error) {
-          reject(new Error(r.error))
-        } else {
-          resolve({ tabId: r.tabId!, title: r.title ?? launchOpts.title ?? '' })
-        }
+    const workspace = admittedWorkspace?.workspace ?? null
+    // Why: renderer-backed agent preparation can await remote trust before the
+    // tab request; keep project removal fenced across that entire interval.
+    const releasePreparationAdmission = admittedWorkspace?.release ?? null
+    try {
+      if (
+        workspace &&
+        this.isAdmissionBlocked(
+          this.terminalAdmissionBlockedWorktreeIds,
+          workspace.id,
+          workspace.hostId
+        )
+      ) {
+        throw new Error('terminal_admission_blocked_for_project_removal')
       }
-      ipcMain.on('terminal:tabCreateReply', handler)
-      win.webContents.send('terminal:requestTabCreate', {
-        requestId,
-        worktreeId,
-        command: launchOpts.command,
-        cwd,
-        ...(launchOpts.env ? { env: launchOpts.env } : {}),
-        ...(launchOpts.launchConfig ? { launchConfig: launchOpts.launchConfig } : {}),
-        ...(launchOpts.launchToken ? { launchToken: launchOpts.launchToken } : {}),
-        ...(launchOpts.launchAgent ? { launchAgent: launchOpts.launchAgent } : {}),
-        startupCommandDelivery: launchOpts.startupCommandDelivery,
-        title: launchOpts.title,
-        activate: presentation === 'focused',
-        ...(presentation ? { presentation } : {})
-      })
-    })
+      const launchOpts = workspace
+        ? await this.resolveAgentTerminalCreateOptions(workspace, opts)
+        : opts
+      const worktreeId = workspace?.id
+      const cwd = workspace
+        ? this.resolveWorkspaceTerminalStartupCwd(workspace, launchOpts.cwd)
+        : launchOpts.cwd
+      const requestId = randomUUID()
+      if (
+        workspace &&
+        this.isAdmissionBlocked(
+          this.terminalAdmissionBlockedWorktreeIds,
+          workspace.id,
+          workspace.hostId
+        )
+      ) {
+        throw new Error('terminal_admission_blocked_for_project_removal')
+      }
 
-    // Why: the renderer created the tab immediately, but the graph sync that
-    // populates this.leaves may not have arrived yet. Wait for the leaf to
-    // appear so we can return a valid handle the caller can use right away.
-    const handle = await this.waitForTerminalHandle(reply.tabId)
-    return {
-      handle,
-      tabId: reply.tabId,
-      worktreeId: worktreeId ?? '',
-      title: reply.title,
-      surface: 'visible'
+      // Why: terminal creation is a renderer-side Zustand store operation (like
+      // browser tab creation). The main process sends a request, the renderer
+      // creates the tab and replies with the tabId so we can resolve the handle.
+      const createRendererTerminal = async (): Promise<{
+        reply: { tabId: string; title: string }
+        handle: string
+      }> => {
+        const reply = await new Promise<{ tabId: string; title: string }>((resolve, reject) => {
+          const timer = setTimeout(() => {
+            ipcMain.removeListener('terminal:tabCreateReply', handler)
+            reject(new Error('Terminal creation timed out'))
+          }, 10_000)
+
+          const handler = (
+            event: Electron.IpcMainEvent,
+            r: { requestId: string; tabId?: string; title?: string; error?: string }
+          ): void => {
+            if (event.sender !== win.webContents || r.requestId !== requestId) {
+              return
+            }
+            clearTimeout(timer)
+            ipcMain.removeListener('terminal:tabCreateReply', handler)
+            if (r.error) {
+              reject(new Error(r.error))
+            } else {
+              resolve({ tabId: r.tabId!, title: r.title ?? launchOpts.title ?? '' })
+            }
+          }
+          ipcMain.on('terminal:tabCreateReply', handler)
+          win.webContents.send('terminal:requestTabCreate', {
+            requestId,
+            worktreeId,
+            command: launchOpts.command,
+            cwd,
+            ...(launchOpts.env ? { env: launchOpts.env } : {}),
+            ...(launchOpts.launchConfig ? { launchConfig: launchOpts.launchConfig } : {}),
+            ...(launchOpts.launchToken ? { launchToken: launchOpts.launchToken } : {}),
+            ...(launchOpts.launchAgent ? { launchAgent: launchOpts.launchAgent } : {}),
+            ...(launchOpts.viewMode ? { viewMode: launchOpts.viewMode } : {}),
+            startupCommandDelivery: launchOpts.startupCommandDelivery,
+            title: launchOpts.title,
+            activate: presentation === 'focused',
+            ...(presentation ? { presentation } : {})
+          })
+        })
+
+        // Why: keep admission active until graph sync publishes the created PTY;
+        // project removal can then drain this create before its liveness snapshot.
+        return { reply, handle: await this.waitForTerminalHandle(reply.tabId) }
+      }
+      const { reply, handle } = workspace
+        ? await this.withTerminalAdmission(workspace.id, createRendererTerminal, workspace.hostId)
+        : await this.withTerminalAdmission(GLOBAL_TERMINAL_ADMISSION_KEY, createRendererTerminal)
+      return {
+        handle,
+        tabId: reply.tabId,
+        worktreeId: worktreeId ?? '',
+        title: reply.title,
+        surface: 'visible'
+      }
+    } finally {
+      releasePreparationAdmission?.()
     }
   }
 
@@ -17683,6 +18530,7 @@ export class OrcaRuntimeService {
       agent?: TuiAgent
       launchConfig?: SleepingAgentLaunchConfig
       launchAgent?: TuiAgent
+      viewMode?: 'terminal' | 'chat'
       activate?: boolean
       clientMutationId?: string
       signal?: AbortSignal
@@ -17727,183 +18575,205 @@ export class OrcaRuntimeService {
       agent?: TuiAgent
       launchConfig?: SleepingAgentLaunchConfig
       launchAgent?: TuiAgent
+      viewMode?: 'terminal' | 'chat'
       activate?: boolean
       clientMutationId?: string
       signal?: AbortSignal
     } = {}
   ): Promise<RuntimeMobileSessionCreateTerminalResult> {
     this.assertGraphReady()
-    const workspace = await this.resolveTerminalWorkspaceLaunchScope(worktreeSelector)
-    const worktreeId = workspace.id
-    const cwd = this.resolveWorkspaceTerminalStartupCwd(workspace, opts.cwd)
-    this.hydrateHeadlessMobileSessionTabsFromWorkspaceSession(worktreeId)
-    let afterDesktopTabId: string | undefined
-    if (opts.afterTabId) {
-      const snapshot = this.mobileSessionTabsByWorktree.get(worktreeId)
-      const anchor = snapshot?.tabs.find((tab) => tab.id === opts.afterTabId)
-      if (!anchor) {
-        throw new Error('after_tab_not_found')
-      }
-      afterDesktopTabId = anchor.type === 'terminal' ? anchor.parentTabId : anchor.id
-    }
-    const startupCommand = await this.resolveMobileSessionTerminalCommand(workspace, opts)
-
-    const win = this.getAvailableAuthoritativeWindow()
-    if (!win) {
-      return await this.createHeadlessMobileSessionTerminal(
-        worktreeId,
-        opts.activate !== false,
-        opts.afterTabId,
-        {
-          command: startupCommand.command,
-          cwd,
-          env: startupCommand.env,
-          startupCommandDelivery: startupCommand.startupCommandDelivery,
-          launchAgent: startupCommand.launchAgent,
-          targetGroupId: opts.targetGroupId,
-          launchConfig: startupCommand.launchConfig
-        }
-      )
-    }
-    const requestId = randomUUID()
-    const reply = await new Promise<{ tabId: string; title: string }>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        ipcMain.removeListener('terminal:tabCreateReply', handler)
-        opts.signal?.removeEventListener('abort', onAbort)
-        reject(new Error('Terminal creation timed out'))
-      }, 10_000)
-      // Why: a dead client connection cancels the wait; the renderer tab (and
-      // its shell) stays alive for the host and mirrors on reconnect (#7718).
-      const onAbort = (): void => {
-        clearTimeout(timer)
-        ipcMain.removeListener('terminal:tabCreateReply', handler)
-        reject(new Error('client_disconnected'))
-      }
-
-      const handler = (
-        event: Electron.IpcMainEvent,
-        r: { requestId: string; tabId?: string; title?: string; error?: string }
-      ): void => {
-        if (event.sender !== win.webContents || r.requestId !== requestId) {
-          return
-        }
-        clearTimeout(timer)
-        ipcMain.removeListener('terminal:tabCreateReply', handler)
-        opts.signal?.removeEventListener('abort', onAbort)
-        if (r.error) {
-          reject(new Error(r.error))
-        } else {
-          resolve({ tabId: r.tabId!, title: r.title ?? '' })
-        }
-      }
-      opts.signal?.addEventListener('abort', onAbort, { once: true })
-      ipcMain.on('terminal:tabCreateReply', handler)
-      win.webContents.send('terminal:requestTabCreate', {
-        requestId,
-        worktreeId,
-        afterTabId: afterDesktopTabId,
-        targetGroupId: opts.targetGroupId,
-        command: startupCommand.command,
-        cwd,
-        ...(startupCommand.env ? { env: startupCommand.env } : {}),
-        ...(startupCommand.launchConfig ? { launchConfig: startupCommand.launchConfig } : {}),
-        ...(startupCommand.launchAgent ? { launchAgent: startupCommand.launchAgent } : {}),
-        startupCommandDelivery: startupCommand.startupCommandDelivery,
-        source: 'runtime-session',
-        activate: opts.activate
-      })
-    })
-
-    if (opts.activate !== false) {
-      this.notifier?.focusTerminal(reply.tabId, worktreeId, null)
-    }
-    // Why: register the wait before the renderer's PTY spawn arrives so that
-    // spawn (registerPty) can publish the pty-backed surface main-side even if
-    // graph-sync is stalled (#7587). Removed in the finally below.
-    const pendingCreateKey = `${worktreeId}::${reply.tabId}`
-    // Why: a rescue publishes into the active group (opts.targetGroupId is not
-    // threaded); the renderer's reconciling publication then moves the tab to the
-    // requested group, so any wrong-group placement is cosmetic and stall-window-only.
-    this.pendingMobileTerminalCreatesByKey.set(pendingCreateKey, {
-      activate: opts.activate !== false,
-      selectIfNoActiveTab: true
-    })
+    const { workspace, release: releasePreparationAdmission } =
+      await this.resolveTerminalCreateWorkspaceWithAdmission(worktreeSelector)
     try {
-      // Why: the PTY spawn and the tabCreate reply race on independent IPC
-      // channels; if the spawn already registered, publish immediately so the
-      // wait resolves without depending on a graph sync.
-      this.ensurePtyBackedMobileSurfaceForRendererTab(worktreeId, reply.tabId)
-      const surface = await this.waitForMobileTerminalSurface(worktreeId, reply.tabId, {
-        timeoutMs: MOBILE_TERMINAL_SURFACE_TIMEOUT_MS,
-        signal: opts.signal
-      })
-      if (this.isReadyMobileTerminalSurface(surface)) {
-        return surface
+      const worktreeId = workspace.id
+      const cwd = this.resolveWorkspaceTerminalStartupCwd(workspace, opts.cwd)
+      this.hydrateHeadlessMobileSessionTabsFromWorkspaceSession(worktreeId)
+      let afterDesktopTabId: string | undefined
+      if (opts.afterTabId) {
+        const snapshot = this.mobileSessionTabsByWorktree.get(worktreeId)
+        const anchor = snapshot?.tabs.find((tab) => tab.id === opts.afterTabId)
+        if (!anchor) {
+          throw new Error('after_tab_not_found')
+        }
+        afterDesktopTabId = anchor.type === 'terminal' ? anchor.parentTabId : anchor.id
       }
-      const readySurface = await this.waitForMobileTerminalSurface(worktreeId, reply.tabId, {
-        timeoutMs: MOBILE_TERMINAL_READY_FALLBACK_MS,
-        requireReady: true,
-        signal: opts.signal
-      }).catch(() => null)
-      if (readySurface) {
-        return readySurface
+      const startupCommand = await this.resolveMobileSessionTerminalCommand(workspace, opts)
+
+      const win = this.getAvailableAuthoritativeWindow()
+      if (!win) {
+        return await this.createHeadlessMobileSessionTerminal(
+          worktreeId,
+          opts.activate !== false,
+          opts.afterTabId,
+          {
+            command: startupCommand.command,
+            cwd,
+            env: startupCommand.env,
+            startupCommandDelivery: startupCommand.startupCommandDelivery,
+            launchAgent: startupCommand.launchAgent,
+            viewMode: opts.viewMode,
+            targetGroupId: opts.targetGroupId,
+            launchConfig: startupCommand.launchConfig
+          }
+        )
       }
-      if (opts.signal?.aborted) {
-        // Why: nobody is waiting for this create anymore; do not materialize
-        // or roll back — the renderer's own publication settles the tab.
-        throw new Error('client_disconnected')
-      }
-      const pendingSurface = this.findMobileTerminalSurface(worktreeId, reply.tabId)
-      if (!pendingSurface) {
-        throw new Error('Timed out waiting for terminal surface after creation')
-      }
-      // Why: hidden/occluded renderer windows can publish the tab shell before
-      // TerminalPane mounts and spawns the PTY. Materialize into the same
-      // identity so later renderer focus adopts instead of creating another tab.
-      return await this.createHeadlessMobileSessionTerminal(
+      return await this.withTerminalAdmission(
         worktreeId,
-        opts.activate !== false,
-        opts.afterTabId,
-        {
-          command: startupCommand.command,
-          cwd,
-          env: startupCommand.env,
-          startupCommandDelivery: startupCommand.startupCommandDelivery,
-          identity: { tabId: pendingSurface.tab.parentTabId, leafId: pendingSurface.tab.leafId },
-          launchAgent: startupCommand.launchAgent,
-          targetGroupId: opts.targetGroupId,
-          launchConfig: startupCommand.launchConfig
-        }
+        async () => {
+          const requestId = randomUUID()
+          const reply = await new Promise<{ tabId: string; title: string }>((resolve, reject) => {
+            const timer = setTimeout(() => {
+              ipcMain.removeListener('terminal:tabCreateReply', handler)
+              opts.signal?.removeEventListener('abort', onAbort)
+              reject(new Error('Terminal creation timed out'))
+            }, 10_000)
+            // Why: a dead client connection cancels the wait; the renderer tab (and
+            // its shell) stays alive for the host and mirrors on reconnect (#7718).
+            const onAbort = (): void => {
+              clearTimeout(timer)
+              ipcMain.removeListener('terminal:tabCreateReply', handler)
+              reject(new Error('client_disconnected'))
+            }
+
+            const handler = (
+              event: Electron.IpcMainEvent,
+              r: { requestId: string; tabId?: string; title?: string; error?: string }
+            ): void => {
+              if (event.sender !== win.webContents || r.requestId !== requestId) {
+                return
+              }
+              clearTimeout(timer)
+              ipcMain.removeListener('terminal:tabCreateReply', handler)
+              opts.signal?.removeEventListener('abort', onAbort)
+              if (r.error) {
+                reject(new Error(r.error))
+              } else {
+                resolve({ tabId: r.tabId!, title: r.title ?? '' })
+              }
+            }
+            opts.signal?.addEventListener('abort', onAbort, { once: true })
+            ipcMain.on('terminal:tabCreateReply', handler)
+            win.webContents.send('terminal:requestTabCreate', {
+              requestId,
+              worktreeId,
+              afterTabId: afterDesktopTabId,
+              targetGroupId: opts.targetGroupId,
+              command: startupCommand.command,
+              cwd,
+              ...(startupCommand.env ? { env: startupCommand.env } : {}),
+              ...(startupCommand.launchConfig ? { launchConfig: startupCommand.launchConfig } : {}),
+              ...(startupCommand.launchAgent ? { launchAgent: startupCommand.launchAgent } : {}),
+              ...(opts.viewMode ? { viewMode: opts.viewMode } : {}),
+              startupCommandDelivery: startupCommand.startupCommandDelivery,
+              source: 'runtime-session',
+              activate: opts.activate
+            })
+          })
+
+          if (opts.activate !== false) {
+            this.notifier?.focusTerminal(reply.tabId, worktreeId, null)
+          }
+          // Why: register the wait before the renderer's PTY spawn arrives so that
+          // spawn (registerPty) can publish the pty-backed surface main-side even if
+          // graph-sync is stalled (#7587). Removed in the finally below.
+          const pendingCreateKey = `${worktreeId}::${reply.tabId}`
+          // Why: a rescue publishes into the active group (opts.targetGroupId is not
+          // threaded); the renderer's reconciling publication then moves the tab to the
+          // requested group, so any wrong-group placement is cosmetic and stall-window-only.
+          this.pendingMobileTerminalCreatesByKey.set(pendingCreateKey, {
+            activate: opts.activate !== false,
+            selectIfNoActiveTab: true,
+            ...(opts.viewMode ? { viewMode: opts.viewMode } : {})
+          })
+          try {
+            // Why: the PTY spawn and the tabCreate reply race on independent IPC
+            // channels; if the spawn already registered, publish immediately so the
+            // wait resolves without depending on a graph sync.
+            this.ensurePtyBackedMobileSurfaceForRendererTab(worktreeId, reply.tabId)
+            const surface = await this.waitForMobileTerminalSurface(worktreeId, reply.tabId, {
+              timeoutMs: MOBILE_TERMINAL_SURFACE_TIMEOUT_MS,
+              signal: opts.signal
+            })
+            if (this.isReadyMobileTerminalSurface(surface)) {
+              return surface
+            }
+            const readySurface = await this.waitForMobileTerminalSurface(worktreeId, reply.tabId, {
+              timeoutMs: MOBILE_TERMINAL_READY_FALLBACK_MS,
+              requireReady: true,
+              signal: opts.signal
+            }).catch(() => null)
+            if (readySurface) {
+              return readySurface
+            }
+            if (opts.signal?.aborted) {
+              // Why: nobody is waiting for this create anymore; do not materialize
+              // or roll back — the renderer's own publication settles the tab.
+              throw new Error('client_disconnected')
+            }
+            const pendingSurface = this.findMobileTerminalSurface(worktreeId, reply.tabId)
+            if (!pendingSurface) {
+              throw new Error('Timed out waiting for terminal surface after creation')
+            }
+            // Why: hidden/occluded renderer windows can publish the tab shell before
+            // TerminalPane mounts and spawns the PTY. Materialize into the same
+            // identity so later renderer focus adopts instead of creating another tab.
+            return await this.createHeadlessMobileSessionTerminal(
+              worktreeId,
+              opts.activate !== false,
+              opts.afterTabId,
+              {
+                command: startupCommand.command,
+                cwd,
+                env: startupCommand.env,
+                startupCommandDelivery: startupCommand.startupCommandDelivery,
+                identity: {
+                  tabId: pendingSurface.tab.parentTabId,
+                  leafId: pendingSurface.tab.leafId
+                },
+                launchAgent: startupCommand.launchAgent,
+                viewMode: opts.viewMode,
+                targetGroupId: opts.targetGroupId,
+                launchConfig: startupCommand.launchConfig
+              }
+            )
+          } catch (error) {
+            // Why: publication latency (throttled/hidden renderer), not spawn failure,
+            // can trip the surface timeout. Rescue only when a live PTY actually backs
+            // the tab — gating on a surface would let a handle-less shell (or a failed
+            // materialize) resolve as success and skip the ghost-tab rollback (#7587).
+            if (this.findLiveRegisteredPtyForRendererTab(worktreeId, reply.tabId)) {
+              const rescued = this.ensurePtyBackedMobileSurfaceForRendererTab(
+                worktreeId,
+                reply.tabId
+              )
+              if (rescued) {
+                return rescued
+              }
+            }
+            // Why: don't roll back when (a) the client connection died — the wait
+            // was cancelled, not the spawn — or (b) a live shell already backs the
+            // tab (its pane key may simply not be registered yet). Killing a real
+            // terminal the host user can see is the "tab dies after ~10s" bug (#7718).
+            if (
+              isClientDisconnectedError(error) ||
+              this.hasLiveShellForRendererTab(worktreeId, reply.tabId)
+            ) {
+              throw error
+            }
+            // Why: the renderer created the tab but no live PTY backs it (true PTY
+            // spawn/handle failure). Roll the half-created tab back via the renderer
+            // close path so it can't linger as a ghost in mobile snapshots, then
+            // surface the failure to the caller.
+            this.notifier?.closeTerminal(reply.tabId)
+            throw error
+          } finally {
+            this.pendingMobileTerminalCreatesByKey.delete(pendingCreateKey)
+          }
+        },
+        workspace.hostId
       )
-    } catch (error) {
-      // Why: publication latency (throttled/hidden renderer), not spawn failure,
-      // can trip the surface timeout. Rescue only when a live PTY actually backs
-      // the tab — gating on a surface would let a handle-less shell (or a failed
-      // materialize) resolve as success and skip the ghost-tab rollback (#7587).
-      if (this.findLiveRegisteredPtyForRendererTab(worktreeId, reply.tabId)) {
-        const rescued = this.ensurePtyBackedMobileSurfaceForRendererTab(worktreeId, reply.tabId)
-        if (rescued) {
-          return rescued
-        }
-      }
-      // Why: don't roll back when (a) the client connection died — the wait
-      // was cancelled, not the spawn — or (b) a live shell already backs the
-      // tab (its pane key may simply not be registered yet). Killing a real
-      // terminal the host user can see is the "tab dies after ~10s" bug (#7718).
-      if (
-        isClientDisconnectedError(error) ||
-        this.hasLiveShellForRendererTab(worktreeId, reply.tabId)
-      ) {
-        throw error
-      }
-      // Why: the renderer created the tab but no live PTY backs it (true PTY
-      // spawn/handle failure). Roll the half-created tab back via the renderer
-      // close path so it can't linger as a ghost in mobile snapshots, then
-      // surface the failure to the caller.
-      this.notifier?.closeTerminal(reply.tabId)
-      throw error
     } finally {
-      this.pendingMobileTerminalCreatesByKey.delete(pendingCreateKey)
+      releasePreparationAdmission()
     }
   }
 
@@ -17994,6 +18864,7 @@ export class OrcaRuntimeService {
       startupCommandDelivery?: WorktreeStartupLaunch['startupCommandDelivery']
       identity?: { tabId: string; leafId: string; sessionId?: string }
       launchAgent?: TuiAgent
+      viewMode?: 'terminal' | 'chat'
       targetGroupId?: string
       launchConfig?: SleepingAgentLaunchConfig
     } = {}
@@ -18011,6 +18882,7 @@ export class OrcaRuntimeService {
       env: opts.env,
       ...(opts.launchConfig ? { launchConfig: opts.launchConfig } : {}),
       ...(opts.launchAgent ? { launchAgent: opts.launchAgent } : {}),
+      ...(opts.viewMode ? { viewMode: opts.viewMode } : {}),
       startupCommandDelivery: opts.startupCommandDelivery,
       ...(opts.identity
         ? {
@@ -18032,6 +18904,11 @@ export class OrcaRuntimeService {
     }
     const parentTabId = livePty.pty.tabId ?? `pty:${livePty.pty.ptyId}`
     const leafId = parsePaneKey(livePty.pty.paneKey ?? '')?.leafId ?? randomUUID()
+    if (opts.viewMode) {
+      // Why: the runtime-owned binding must survive a serve restart with the
+      // same initial mode, not fall back to a later client's local default.
+      this.persistHeadlessSessionTabProps(worktreeId, parentTabId, { viewMode: opts.viewMode })
+    }
     const existing = this.mobileSessionTabsByWorktree.get(worktreeId)
     const existingSurface =
       existing?.tabs.find(
@@ -18054,6 +18931,7 @@ export class OrcaRuntimeService {
       title: terminal.title ?? livePty.pty.title ?? 'Terminal',
       ...(cwd ? { startupCwd: cwd } : {}),
       ...(opts.launchAgent ? { launchAgent: opts.launchAgent } : {}),
+      ...(opts.viewMode ? { viewMode: opts.viewMode } : {}),
       parentLayout,
       isActive: activate
     }
@@ -18200,21 +19078,27 @@ export class OrcaRuntimeService {
       return null
     }
     const existing = this.findMobileTerminalSurface(worktreeId, tabId)
-    if (existing) {
-      // Why: the renderer's own publication already landed; stay idempotent.
+    if (
+      existing &&
+      this.isReadyMobileTerminalSurface(existing) &&
+      (pending.viewMode === undefined || existing.tab.viewMode === pending.viewMode)
+    ) {
+      // Why: the renderer's ready publication already landed with the intended
+      // mode; only a pending shell still needs the main-side PTY rescue.
       return existing
     }
     const pty = this.findLiveRegisteredPtyForRendererTab(worktreeId, tabId)
     const leafId = pty ? parsePaneKey(pty.paneKey ?? '')?.leafId : undefined
     if (!pty || !leafId) {
-      return null
+      return existing
     }
     this.publishPtyBackedMobileSessionTerminal(worktreeId, pty, {
       tabId,
       leafId,
       title: null,
       activate: pending.activate,
-      selectIfNoActiveTab: pending.selectIfNoActiveTab
+      selectIfNoActiveTab: pending.selectIfNoActiveTab,
+      ...(pending.viewMode ? { viewMode: pending.viewMode } : {})
     })
     // Why: waitForMobileTerminalSurface's check closures are drained only inside
     // syncWindowGraph; a main-side publish must drain them too or the pending
@@ -18420,17 +19304,29 @@ export class OrcaRuntimeService {
 
   async closeTerminal(handle: string): Promise<RuntimeTerminalClose> {
     const pty = this.getLivePtyForHandle(handle)
-    this.claudeAgentTeams.removeTeamForLeaderHandle(handle)
     if (pty) {
-      const ptyKilled = this.ptyController?.kill(pty.pty.ptyId) ?? false
-      return { handle, tabId: pty.pty.tabId ?? pty.record.tabId, ptyKilled }
+      if (!this.ptyController?.stopAndWait) {
+        throw new Error('terminal_verified_stop_unavailable')
+      }
+      if (!(await this.ptyController.stopAndWait(pty.pty.ptyId))) {
+        throw new Error('terminal_verified_stop_failed')
+      }
+      this.claudeAgentTeams.removeTeamForLeaderHandle(handle)
+      return { handle, tabId: pty.pty.tabId ?? pty.record.tabId, ptyKilled: true }
     }
     this.assertGraphReady()
     const { leaf } = this.getLiveLeafForHandle(handle)
     let ptyKilled = false
     if (leaf.ptyId) {
-      ptyKilled = this.ptyController?.kill(leaf.ptyId) ?? false
+      if (!this.ptyController?.stopAndWait) {
+        throw new Error('terminal_verified_stop_unavailable')
+      }
+      ptyKilled = await this.ptyController.stopAndWait(leaf.ptyId)
+      if (!ptyKilled) {
+        throw new Error('terminal_verified_stop_failed')
+      }
     }
+    this.claudeAgentTeams.removeTeamForLeaderHandle(handle)
     // Why: killing the PTY in a multi-pane tab is sufficient — the renderer's
     // PTY exit handler already calls PaneManager.closePane() for split layouts.
     // Sending an additional IPC close would race with the exit handler and
@@ -18473,14 +19369,24 @@ export class OrcaRuntimeService {
       }
     }
 
-    this.notifier?.splitTerminal(leaf.tabId, leaf.paneRuntimeId, {
-      direction,
-      command: opts.command,
-      telemetrySource: opts.telemetrySource
-    })
+    const leafPty = leaf.ptyId ? this.ptysById.get(leaf.ptyId) : undefined
+    const leafHostId = leafPty?.connectionId
+      ? toSshExecutionHostId(leafPty.connectionId)
+      : LOCAL_EXECUTION_HOST_ID
+    return await this.withTerminalAdmission(
+      leaf.worktreeId,
+      async () => {
+        this.notifier?.splitTerminal(leaf.tabId, leaf.paneRuntimeId, {
+          direction,
+          command: opts.command,
+          telemetrySource: opts.telemetrySource
+        })
 
-    const newHandle = await this.waitForNewLeafInTab(leaf.tabId, leafKeysBefore)
-    return { handle: newHandle, tabId: leaf.tabId, paneRuntimeId: leaf.paneRuntimeId }
+        const newHandle = await this.waitForNewLeafInTab(leaf.tabId, leafKeysBefore)
+        return { handle: newHandle, tabId: leaf.tabId, paneRuntimeId: leaf.paneRuntimeId }
+      },
+      leafHostId
+    )
   }
 
   private async splitPtyBackedTerminal(
@@ -18506,65 +19412,93 @@ export class OrcaRuntimeService {
       throw new Error('terminal_handle_stale')
     }
     const direction = opts.direction ?? 'horizontal'
-    const workspace = await this.resolveTerminalWorkspaceLaunchScope(`id:${pty.worktreeId}`)
-    const leafId = randomUUID()
-    const preAllocatedHandle = this.createPreAllocatedTerminalHandle()
-    const paneKey = makePaneKey(parentTabId, leafId)
-    const result = await this.ptyController.spawn({
-      cols: 120,
-      rows: 40,
-      cwd: workspace.path,
-      command: opts.command,
-      commandDelivery: 'provider',
-      env: this.buildTerminalWorkspaceEnv(workspace, opts.env ?? {}, paneKey, parentTabId),
-      envToDelete: opts.envToDelete,
-      connectionId: workspace.connectionId,
-      worktreeId: workspace.id,
-      preAllocatedHandle
-    })
-    this.registerPreAllocatedHandleForPty(result.id, preAllocatedHandle)
-    this.registerPty(result.id, workspace.id, workspace.connectionId)
-    const createdPty = this.getOrCreatePtyWorktreeRecord(result.id)
-    if (createdPty) {
-      createdPty.tabId = parentTabId
-      createdPty.paneKey = paneKey
-    }
-
+    const ptyHostId = pty.connectionId
+      ? toSshExecutionHostId(pty.connectionId)
+      : LOCAL_EXECUTION_HOST_ID
+    const { workspace, release: releasePreparationAdmission } =
+      await this.resolveTerminalCreateWorkspaceWithAdmission(`id:${pty.worktreeId}`, ptyHostId)
     try {
-      await this.notifier?.revealTerminalSession?.(workspace.id, {
-        ptyId: result.id,
-        title: null,
-        activate: opts.activate !== false,
-        tabId: parentTabId,
-        leafId,
-        splitFromLeafId: parsedPaneKey.leafId,
-        splitDirection: direction,
-        splitTelemetrySource: opts.telemetrySource
-      })
-    } catch (error) {
-      this.ptyController.kill?.(result.id)
-      throw error
-    }
-    if (createdPty) {
-      this.publishPtyBackedMobileSessionTerminal(workspace.id, createdPty, {
-        tabId: parentTabId,
-        leafId,
-        title: null,
-        activate: opts.activate !== false,
-        split: { splitFromLeafId: parsedPaneKey.leafId, direction }
-      })
-      // Why: persist the split into the workspace session so a later snapshot
-      // rebuild keeps it instead of collapsing back to a single pane.
-      this.persistHeadlessTerminalSplit({
-        tabId: parentTabId,
-        leafId,
-        ptyId: createdPty.ptyId,
-        splitFromLeafId: parsedPaneKey.leafId,
-        direction
-      })
-    }
+      if (
+        this.isAdmissionBlocked(
+          this.terminalAdmissionBlockedWorktreeIds,
+          workspace.id,
+          workspace.hostId
+        )
+      ) {
+        throw new Error('terminal_admission_blocked_for_project_removal')
+      }
+      const leafId = randomUUID()
+      const preAllocatedHandle = this.createPreAllocatedTerminalHandle()
+      const paneKey = makePaneKey(parentTabId, leafId)
+      const result = await this.withTerminalAdmission(
+        workspace.id,
+        async () => {
+          const spawned = await this.ptyController!.spawn!({
+            cols: 120,
+            rows: 40,
+            cwd: workspace.path,
+            command: opts.command,
+            commandDelivery: 'provider',
+            env: this.buildTerminalWorkspaceEnv(workspace, opts.env ?? {}, paneKey, parentTabId),
+            envToDelete: opts.envToDelete,
+            connectionId: workspace.connectionId,
+            worktreeId: workspace.id,
+            preAllocatedHandle
+          })
+          this.registerPreAllocatedHandleForPty(spawned.id, preAllocatedHandle)
+          this.registerPty(spawned.id, workspace.id, workspace.connectionId)
+          return spawned
+        },
+        workspace.hostId
+      )
+      const createdPty = this.getOrCreatePtyWorktreeRecord(result.id)
+      if (createdPty) {
+        createdPty.tabId = parentTabId
+        createdPty.paneKey = paneKey
+      }
 
-    return { handle: this.issuePtyHandle(createdPty ?? pty), tabId: parentTabId, paneRuntimeId: -1 }
+      try {
+        await this.notifier?.revealTerminalSession?.(workspace.id, {
+          ptyId: result.id,
+          title: null,
+          activate: opts.activate !== false,
+          tabId: parentTabId,
+          leafId,
+          splitFromLeafId: parsedPaneKey.leafId,
+          splitDirection: direction,
+          splitTelemetrySource: opts.telemetrySource
+        })
+      } catch (error) {
+        this.ptyController.kill?.(result.id)
+        throw error
+      }
+      if (createdPty) {
+        this.publishPtyBackedMobileSessionTerminal(workspace.id, createdPty, {
+          tabId: parentTabId,
+          leafId,
+          title: null,
+          activate: opts.activate !== false,
+          split: { splitFromLeafId: parsedPaneKey.leafId, direction }
+        })
+        // Why: persist the split into the workspace session so a later snapshot
+        // rebuild keeps it instead of collapsing back to a single pane.
+        this.persistHeadlessTerminalSplit({
+          tabId: parentTabId,
+          leafId,
+          ptyId: createdPty.ptyId,
+          splitFromLeafId: parsedPaneKey.leafId,
+          direction
+        })
+      }
+
+      return {
+        handle: this.issuePtyHandle(createdPty ?? pty),
+        tabId: parentTabId,
+        paneRuntimeId: -1
+      }
+    } finally {
+      releasePreparationAdmission()
+    }
   }
 
   async handleAgentTeamsTmuxCompat(
@@ -18656,31 +19590,72 @@ export class OrcaRuntimeService {
     })
   }
 
-  async stopTerminalsForWorktree(worktreeSelector: string): Promise<{ stopped: number }> {
-    // Why: this mutates live PTYs, so the runtime must reject it while the
-    // renderer graph is reloading instead of acting on cached leaf ownership.
-    const graphEpoch = this.captureReadyGraphEpoch()
-    const worktree = await this.resolveWorktreeSelector(worktreeSelector)
-    this.assertStableReadyGraph(graphEpoch)
-    const ptyIds = new Set<string>()
-    for (const leaf of this.leaves.values()) {
-      if (leaf.worktreeId === worktree.id && leaf.ptyId) {
-        ptyIds.add(leaf.ptyId)
-      }
+  async stopTerminalsForWorktree(
+    worktreeSelector: string,
+    options: { allowUnavailableGraph?: boolean; hostId?: ExecutionHostId | null } = {}
+  ): Promise<{ stopped: number }> {
+    // Why: fresh provider liveness, not a cached renderer graph, is shutdown
+    // authority. When a graph is ready, still reject epoch changes mid-proof;
+    // headless/boot removal can proceed from the same fresh provider snapshot.
+    const graphEpoch = options.allowUnavailableGraph
+      ? this.graphStatus === 'ready'
+        ? this.captureReadyGraphEpoch()
+        : null
+      : this.captureReadyGraphEpoch()
+    const worktree = await this.resolveWorktreeSelectorForExecutionHost(
+      worktreeSelector,
+      options.hostId
+    )
+    const connectionId = this.connectionIdForExecutionHost(options.hostId)
+    if (graphEpoch !== null) {
+      this.assertStableReadyGraph(graphEpoch)
     }
-    for (const pty of this.ptysById.values()) {
-      if (pty.worktreeId === worktree.id && pty.connected) {
-        ptyIds.add(pty.ptyId)
-      }
+    const resolvedWorktrees = [...(await this.getResolvedWorktreeMap()).values()]
+    if (graphEpoch !== null) {
+      this.assertStableReadyGraph(graphEpoch)
+    }
+    const refreshedPtyLiveness = await this.refreshPtyWorktreeRecordsFromController(
+      resolvedWorktrees,
+      worktree.id,
+      connectionId
+    )
+    if (!refreshedPtyLiveness) {
+      throw new Error('terminal_liveness_unavailable')
+    }
+    const ptyIds = this.getLivePtyIdsForWorktree(worktree.id, refreshedPtyLiveness, connectionId)
+    if (ptyIds.size === 0) {
+      return { stopped: 0 }
+    }
+    if (!this.ptyController?.stopAndWait) {
+      throw new Error('terminal_verified_stop_unavailable')
     }
 
-    let stopped = 0
-    for (const ptyId of ptyIds) {
-      if (this.ptyController?.kill(ptyId)) {
-        stopped += 1
+    const stoppedPtyIds: string[] = []
+    for (const ptyId of [...ptyIds].sort()) {
+      if (!(await this.ptyController.stopAndWait(ptyId))) {
+        throw Object.assign(new Error('terminal_verified_stop_failed'), { ptyId })
       }
+      stoppedPtyIds.push(ptyId)
     }
-    return { stopped }
+    const postStopLiveness = await this.refreshPtyWorktreeRecordsFromController(
+      resolvedWorktrees,
+      worktree.id,
+      connectionId
+    )
+    if (!postStopLiveness) {
+      throw new Error('terminal_stop_postcheck_unavailable')
+    }
+    const remainingLivePtyIds = this.getLivePtyIdsForWorktree(
+      worktree.id,
+      postStopLiveness,
+      connectionId
+    )
+    if (remainingLivePtyIds.size > 0) {
+      throw Object.assign(new Error('terminal_stop_still_live'), {
+        remainingLivePtyIds: [...remainingLivePtyIds].sort()
+      })
+    }
+    return { stopped: stoppedPtyIds.length }
   }
 
   async stopExactTerminalsForWorktree(
@@ -18767,14 +19742,17 @@ export class OrcaRuntimeService {
 
   private getLivePtyIdsForWorktree(
     worktreeId: string,
-    freshPtyIds?: ReadonlySet<string>
+    freshPtyIds?: ReadonlySet<string>,
+    connectionId?: string | null
   ): Set<string> {
     const ptyIds = new Set<string>()
     for (const leaf of this.leaves.values()) {
+      const pty = leaf.ptyId ? this.ptysById.get(leaf.ptyId) : undefined
       if (
         leaf.worktreeId === worktreeId &&
         leaf.connected &&
         leaf.ptyId &&
+        (connectionId === undefined || pty?.connectionId === connectionId) &&
         (!freshPtyIds || freshPtyIds.has(leaf.ptyId))
       ) {
         ptyIds.add(leaf.ptyId)
@@ -18784,6 +19762,7 @@ export class OrcaRuntimeService {
       if (
         pty.worktreeId === worktreeId &&
         pty.connected &&
+        (connectionId === undefined || pty.connectionId === connectionId) &&
         (!freshPtyIds || freshPtyIds.has(pty.ptyId))
       ) {
         ptyIds.add(pty.ptyId)
@@ -18821,6 +19800,7 @@ export class OrcaRuntimeService {
     // against whatever the renderer rebuilds next.
     this.rendererGraphEpoch += 1
     this.graphStatus = 'reloading'
+    this.setTerminalSideEffectConsumerAvailable(false)
     this.rememberDetachedPreAllocatedLeaves()
     this.handles.clear()
     this.handleByLeafKey.clear()
@@ -18837,6 +19817,7 @@ export class OrcaRuntimeService {
       return
     }
     this.graphStatus = 'ready'
+    this.setTerminalSideEffectConsumerAvailable(windowId !== HEADLESS_RUNTIME_WINDOW_ID)
     this.refreshWritableFlags()
   }
 
@@ -18850,6 +19831,7 @@ export class OrcaRuntimeService {
       this.rendererGraphEpoch += 1
     }
     this.graphStatus = 'unavailable'
+    this.setTerminalSideEffectConsumerAvailable(false)
     this.authoritativeWindowId = null
     this.rememberDetachedPreAllocatedLeaves()
     this.tabs.clear()
@@ -18920,10 +19902,12 @@ export class OrcaRuntimeService {
       { getSshFilesystemProvider }
     )
     assertFolderWorkspacePathUsable(status)
+    const connectionId = this.resolveFolderWorkspaceConnectionId(workspace)
     return {
       id: folderWorkspaceKey(workspace.id),
       path: workspace.folderPath,
-      connectionId: this.resolveFolderWorkspaceConnectionId(workspace),
+      hostId: connectionId ? toSshExecutionHostId(connectionId) : LOCAL_EXECUTION_HOST_ID,
+      connectionId,
       repo: null,
       folderWorkspace: workspace
     }
@@ -18954,7 +19938,8 @@ export class OrcaRuntimeService {
   }
 
   private async resolveTerminalWorkspaceLaunchScope(
-    selector: string
+    selector: string,
+    hostId?: ExecutionHostId | null
   ): Promise<TerminalWorkspaceLaunchScope> {
     const floatingTerminalSelector =
       selector === FLOATING_TERMINAL_WORKTREE_ID ||
@@ -18965,6 +19950,7 @@ export class OrcaRuntimeService {
       return {
         id: FLOATING_TERMINAL_WORKTREE_ID,
         path: homedir(),
+        hostId: LOCAL_EXECUTION_HOST_ID,
         connectionId: null,
         repo: null,
         folderWorkspace: null
@@ -18979,11 +19965,23 @@ export class OrcaRuntimeService {
     const workspaceSelector = selector.startsWith('id:') ? selector.slice(3) : selector
     const parsed = parseWorkspaceKey(workspaceSelector)
     const worktreeSelector = parsed?.type === 'worktree' ? `id:${parsed.worktreeId}` : selector
-    const worktree = await this.resolveWorktreeSelector(worktreeSelector)
-    const repo = this.store?.getRepo(worktree.repoId) ?? null
+    const worktree = await this.resolveWorktreeSelectorForExecutionHost(worktreeSelector, hostId)
+    const resolvedHostId = this.executionHostForWorktree(worktree)
+    const repo =
+      this.store
+        ?.getRepos()
+        .find(
+          (candidate) =>
+            candidate.id === worktree.repoId && getRepoExecutionHostId(candidate) === resolvedHostId
+        ) ??
+      (this.store?.getRepo(worktree.repoId) &&
+      getRepoExecutionHostId(this.store.getRepo(worktree.repoId)!) === resolvedHostId
+        ? this.store.getRepo(worktree.repoId)!
+        : null)
     return {
       id: worktree.id,
       path: worktree.path,
+      hostId: resolvedHostId,
       connectionId: repo?.connectionId ?? null,
       repo,
       folderWorkspace: null
@@ -19020,7 +20018,48 @@ export class OrcaRuntimeService {
     }
   }
 
+  private getValidatedExplicitWorktreeIdSelector(selector: string | undefined): string | null {
+    const worktreeId = getExplicitWorktreeIdSelector(selector)
+    if (
+      worktreeId &&
+      !worktreeId.includes(WORKTREE_ID_SEPARATOR) &&
+      this.store?.getRepo(worktreeId)
+    ) {
+      // Why: registered repo ids are known-invalid worktree ids, so reject them
+      // before exact-id fast paths or Git/SSH worktree scans can hide the mistake.
+      throw new WorktreeIdRequiresFullPathError()
+    }
+    return worktreeId
+  }
+
+  private async resolveWorktreeSelectorForExecutionHost(
+    selector: string,
+    hostId?: ExecutionHostId | null
+  ): Promise<ResolvedWorktree> {
+    const normalizedHostId = normalizeExecutionHostId(hostId)
+    if (!normalizedHostId) {
+      return await this.resolveWorktreeSelector(selector)
+    }
+    const explicitWorktreeId = this.getValidatedExplicitWorktreeIdSelector(selector)
+    const worktreeId = explicitWorktreeId ?? (selector.startsWith('id:') ? selector.slice(3) : null)
+    if (!worktreeId) {
+      throw new Error('selector_not_found')
+    }
+    const candidates = (await this.listResolvedWorktrees()).filter(
+      (worktree) =>
+        worktree.id === worktreeId && this.executionHostForWorktree(worktree) === normalizedHostId
+    )
+    if (candidates.length === 1) {
+      return candidates[0]
+    }
+    if (candidates.length > 1) {
+      throw new Error('selector_ambiguous')
+    }
+    throw new Error('selector_not_found')
+  }
+
   private async resolveWorktreeSelector(selector: string): Promise<ResolvedWorktree> {
+    const explicitWorktreeId = this.getValidatedExplicitWorktreeIdSelector(selector)
     const worktrees = await this.listResolvedWorktrees()
     let candidates: ResolvedWorktree[]
 
@@ -19029,7 +20068,7 @@ export class OrcaRuntimeService {
     }
 
     if (selector.startsWith('id:')) {
-      const worktreeId = selector.slice(3)
+      const worktreeId = explicitWorktreeId ?? selector.slice(3)
       candidates = worktrees.filter((worktree) => worktree.id === worktreeId)
       if (candidates.length === 0) {
         const parsed = splitWorktreeIdForFilesystem(worktreeId)
@@ -19156,6 +20195,15 @@ export class OrcaRuntimeService {
   private async resolveLineageForWorktreeCreate(
     input?: WorktreeLineageInput
   ): Promise<WorktreeLineageResolution> {
+    const parentSelectorNextSteps = [
+      'Pass a valid --parent-worktree selector such as folder:<id>, worktree:<worktreeId>, id:<repo-id>::<path>, branch:<branch>, issue:<number>, path:<absolute-path>, or active/current.',
+      'Retry with --no-parent to create without lineage.'
+    ]
+    const parentSelectorNotFoundMessage = (err: unknown): string =>
+      err instanceof WorktreeIdRequiresFullPathError
+        ? err.message
+        : 'Parent selector was not found.'
+
     if (!input) {
       return { kind: 'none', warnings: [] }
     }
@@ -19185,15 +20233,12 @@ export class OrcaRuntimeService {
           origin: 'cli',
           capture: { source: 'explicit-cli-flag', confidence: 'explicit' }
         }
-      } catch {
+      } catch (err) {
         throw new RuntimeLineageError(
           'LINEAGE_PARENT_NOT_FOUND',
-          'Parent selector was not found.',
+          parentSelectorNotFoundMessage(err),
           {
-            nextSteps: [
-              'Pass a valid --parent-worktree selector such as folder:<id>, worktree:<id>, id:<worktreeId>, branch:<branch>, issue:<number>, path:<absolute-path>, or active/current.',
-              'Retry with --no-parent to create without lineage.'
-            ]
+            nextSteps: parentSelectorNextSteps
           }
         )
       }
@@ -19213,15 +20258,12 @@ export class OrcaRuntimeService {
           origin: 'cli',
           capture: { source: 'explicit-cli-flag', confidence: 'explicit' }
         }
-      } catch {
+      } catch (err) {
         throw new RuntimeLineageError(
           'LINEAGE_PARENT_NOT_FOUND',
-          'Parent selector was not found.',
+          parentSelectorNotFoundMessage(err),
           {
-            nextSteps: [
-              'Pass a valid --parent-worktree selector such as folder:<id>, worktree:<id>, id:<worktreeId>, branch:<branch>, issue:<number>, path:<absolute-path>, or active/current.',
-              'Retry with --no-parent to create without lineage.'
-            ]
+            nextSteps: parentSelectorNextSteps
           }
         )
       }
@@ -19591,12 +20633,16 @@ export class OrcaRuntimeService {
   }
 
   private async listResolvedWorktrees(): Promise<ResolvedWorktree[]> {
+    return (await this.listResolvedWorktreeSnapshot()).worktrees
+  }
+
+  private async listResolvedWorktreeSnapshot(): Promise<ResolvedWorktreeSnapshot> {
     if (!this.store) {
-      return []
+      return { worktrees: [], platformByRepoId: new Map() }
     }
     const now = Date.now()
     if (this.resolvedWorktreeCache && this.resolvedWorktreeCache.expiresAt > now) {
-      return this.resolvedWorktreeCache.worktrees
+      return this.resolvedWorktreeCache
     }
     const generation = this.resolvedWorktreeGeneration
     if (this.resolvedWorktreeInFlight?.generation === generation) {
@@ -19614,14 +20660,22 @@ export class OrcaRuntimeService {
     }
   }
 
-  private async computeResolvedWorktrees(generation: number): Promise<ResolvedWorktree[]> {
+  private async computeResolvedWorktrees(generation: number): Promise<ResolvedWorktreeSnapshot> {
     if (!this.store) {
-      return []
+      return { worktrees: [], platformByRepoId: new Map() }
     }
     const now = Date.now()
     const metaById = this.store.getAllWorktreeMeta() ?? {}
+    const repos = this.store.getRepos()
+    const projectRuntimeByRepoId = resolveLocalProjectRuntimesForRepos(this.requireStore(), repos)
+    const platformByRepoId = new Map(
+      repos.map((repo) => [
+        repo.id,
+        getAgentLaunchPlatformForRepo(repo, projectRuntimeByRepoId.get(repo.id))
+      ])
+    )
     const perRepoWorktrees = await Promise.all(
-      this.store.getRepos().map(async (repo) => {
+      repos.map(async (repo) => {
         if (isFolderRepo(repo)) {
           return listRuntimeFolderWorkspaces(this.requireStore(), repo).map((worktree) => ({
             ...worktree,
@@ -19642,7 +20696,7 @@ export class OrcaRuntimeService {
         // Why: mobile startup RPCs share this path. A slow repo scan should
         // degrade one repo's metadata, not block all terminal/session loading.
         const scan = await withTimeout(
-          this.listRepoWorktreesForResolution(repo),
+          this.listRepoWorktreesForResolution(repo, projectRuntimeByRepoId),
           RESOLVED_WORKTREE_REPO_TIMEOUT_MS,
           { ok: false, worktrees: [] }
         )
@@ -19685,10 +20739,11 @@ export class OrcaRuntimeService {
     if (generation === this.resolvedWorktreeGeneration) {
       this.resolvedWorktreeCache = {
         worktrees,
+        platformByRepoId,
         expiresAt: now + RESOLVED_WORKTREE_CACHE_TTL_MS
       }
     }
-    return worktrees
+    return { worktrees, platformByRepoId }
   }
 
   private attachLineageToResolvedWorktrees(worktrees: ResolvedWorktree[]): ResolvedWorktree[] {
@@ -19773,13 +20828,19 @@ export class OrcaRuntimeService {
     }
   }
 
-  private async listRepoWorktreesForResolution(repo: Repo): Promise<RuntimeWorktreeScanResult> {
+  private async listRepoWorktreesForResolution(
+    repo: Repo,
+    projectRuntimeByRepoId?: ReadonlyMap<string, ProjectExecutionRuntimeResolution>
+  ): Promise<RuntimeWorktreeScanResult> {
     if (!repo.connectionId) {
+      const projectRuntime = projectRuntimeByRepoId
+        ? projectRuntimeByRepoId.get(repo.id)
+        : resolveLocalProjectRuntimeForRepo(this.requireStore(), repo)
       return {
         ok: true,
         worktrees: await listRepoWorktrees(
           repo,
-          getLocalProjectWorktreeGitOptions(this.requireStore(), repo)
+          getLocalProjectWorktreeGitOptionsForRuntime(repo, projectRuntime)
         )
       }
     }
@@ -19862,7 +20923,14 @@ export class OrcaRuntimeService {
     state: Partial<
       Pick<
         RuntimePtyWorktreeRecord,
-        'connected' | 'lastOutputAt' | 'preview' | 'tabId' | 'paneKey' | 'title' | 'connectionId'
+        | 'connected'
+        | 'lastOutputAt'
+        | 'preview'
+        | 'tabId'
+        | 'paneKey'
+        | 'title'
+        | 'connectionId'
+        | 'isWsl'
       >
     > = {}
   ): RuntimePtyWorktreeRecord {
@@ -19873,6 +20941,7 @@ export class OrcaRuntimeService {
         ptyId,
         worktreeId,
         connectionId: state.connectionId ?? parseAppSshPtyId(ptyId)?.connectionId ?? null,
+        isWsl: state.isWsl ?? null,
         tabId: state.tabId ?? null,
         paneKey: state.paneKey ?? null,
         launchConfig: null,
@@ -19913,6 +20982,9 @@ export class OrcaRuntimeService {
     pty.worktreeId = worktreeId
     if (state.connectionId !== undefined) {
       pty.connectionId = state.connectionId
+    }
+    if (state.isWsl !== undefined) {
+      pty.isWsl = state.isWsl
     }
     if (state.tabId !== undefined) {
       pty.tabId = state.tabId
@@ -19971,13 +21043,14 @@ export class OrcaRuntimeService {
    */
   private async refreshPtyWorktreeRecordsFromController(
     resolvedWorktrees: ResolvedWorktree[],
-    targetWorktreeId: string | null = null
+    targetWorktreeId: string | null = null,
+    connectionId?: string | null
   ): Promise<Set<string> | null> {
     if (!this.ptyController?.listProcesses) {
       return null
     }
     const sessionsResult = await withTimeoutResult(
-      this.ptyController.listProcesses(),
+      this.ptyController.listProcesses(connectionId),
       PTY_CONTROLLER_LIST_TIMEOUT_MS
     )
     if (!sessionsResult.ok) {
@@ -20005,6 +21078,9 @@ export class OrcaRuntimeService {
       this.refreshPtyForegroundAgent(session.id)
     }
     for (const pty of this.ptysById.values()) {
+      if (connectionId !== undefined && pty.connectionId !== connectionId) {
+        continue
+      }
       if (!livePtyIds.has(pty.ptyId) && !this.leafExistsForPty(pty.ptyId)) {
         pty.connected = false
         pty.disconnectedAt ??= Date.now()
@@ -20100,23 +21176,34 @@ export class OrcaRuntimeService {
 
   private getSummaryForRuntimeWorktreeId(
     summaries: Map<string, RuntimeWorktreePsSummary>,
-    resolvedWorktrees: ResolvedWorktree[],
+    runtimeWorktreeSummaryPathIndex: RuntimeWorktreeSummaryPathIndex,
+    missingRuntimeWorktreeIds: Set<string>,
     runtimeWorktreeId: string
   ): RuntimeWorktreePsSummary | null {
     const exact = summaries.get(runtimeWorktreeId)
     if (exact) {
       return exact
     }
+    if (missingRuntimeWorktreeIds.has(runtimeWorktreeId)) {
+      return null
+    }
     const parsed = parseRuntimeWorktreeId(runtimeWorktreeId)
     if (!parsed) {
       return null
     }
-    const resolved = resolvedWorktrees.find(
-      (worktree) =>
-        worktree.repoId === parsed.repoId &&
-        areWorktreePathsEqual(worktree.path, parsed.worktreePath)
+    const comparisonPlatform =
+      runtimeWorktreeSummaryPathIndex.platformByRepoId.get(parsed.repoId) ?? process.platform
+    const indexed = findRuntimeWorktreeSummaryByPath(
+      runtimeWorktreeSummaryPathIndex,
+      parsed.repoId,
+      parsed.worktreePath,
+      comparisonPlatform
     )
-    return resolved ? (summaries.get(resolved.id) ?? null) : null
+    if (indexed) {
+      return indexed
+    }
+    missingRuntimeWorktreeIds.add(runtimeWorktreeId)
+    return null
   }
 
   private buildTerminalSummary(
@@ -20406,7 +21493,7 @@ export class OrcaRuntimeService {
     tabId: string
   ): Promise<string> {
     const worktreeId =
-      getExplicitWorktreeIdSelector(worktreeSelector) ??
+      this.getValidatedExplicitWorktreeIdSelector(worktreeSelector) ??
       (await this.resolveWorktreeSelector(worktreeSelector)).id
     const snapshot = this.mobileSessionTabsByWorktree.get(worktreeId)
     const tab = snapshot?.tabs.find(
@@ -20881,7 +21968,8 @@ export class OrcaRuntimeService {
   // status without throwing on stale handles, so this returns null on any error.
   getAgentStatusForHandle(handle: string): string | null {
     try {
-      return this.getTerminalAgentStatusSnapshot(handle).titleStatus
+      const ptyId = this.getTerminalAgentStatusPtyId(handle)
+      return this.getTerminalAgentStatusSnapshot(handle, ptyId).titleStatus
     } catch {
       return null
     }
@@ -26297,6 +27385,118 @@ function parseRuntimeWorktreeId(
   return parsed
 }
 
+type RuntimeWorktreeSummaryPathCandidate = {
+  summary: RuntimeWorktreePsSummary
+  order: number
+}
+
+type RuntimeWorktreeSummaryPathIndex = {
+  platformByRepoId: ReadonlyMap<string, NodeJS.Platform>
+  posixAbsolute: Map<string, RuntimeWorktreeSummaryPathCandidate>
+  posixRelative: Map<string, RuntimeWorktreeSummaryPathCandidate>
+  windows: Map<string, RuntimeWorktreeSummaryPathCandidate>
+  windowsAbsolute: Map<string, RuntimeWorktreeSummaryPathCandidate>
+}
+
+function buildRuntimeWorktreeSummaryPathIndex(
+  summaries: ReadonlyMap<string, RuntimeWorktreePsSummary>,
+  resolvedWorktrees: readonly ResolvedWorktree[],
+  platformByRepoId: ReadonlyMap<string, NodeJS.Platform>
+): RuntimeWorktreeSummaryPathIndex {
+  const index: RuntimeWorktreeSummaryPathIndex = {
+    platformByRepoId,
+    posixAbsolute: new Map(),
+    posixRelative: new Map(),
+    windows: new Map(),
+    windowsAbsolute: new Map()
+  }
+  for (const [order, worktree] of resolvedWorktrees.entries()) {
+    const summary = summaries.get(worktree.id)
+    if (!summary) {
+      continue
+    }
+    const platform = platformByRepoId.get(worktree.repoId) ?? process.platform
+    const candidate = { summary, order }
+    if (isPosixAbsoluteRuntimeWorktreePath(worktree.path)) {
+      setFirstRuntimeWorktreePathCandidate(
+        index.posixAbsolute,
+        runtimeWorktreeSummaryPathKey(worktree.repoId, worktree.path, platform),
+        candidate
+      )
+      continue
+    }
+
+    const windowsKey = runtimeWorktreeSummaryPathKey(worktree.repoId, worktree.path, 'win32')
+    setFirstRuntimeWorktreePathCandidate(index.windows, windowsKey, candidate)
+    if (isWindowsAbsolutePathLike(worktree.path)) {
+      setFirstRuntimeWorktreePathCandidate(index.windowsAbsolute, windowsKey, candidate)
+    } else if (platform !== 'win32') {
+      setFirstRuntimeWorktreePathCandidate(
+        index.posixRelative,
+        runtimeWorktreeSummaryPathKey(worktree.repoId, worktree.path, platform),
+        candidate
+      )
+    }
+  }
+  return index
+}
+
+function findRuntimeWorktreeSummaryByPath(
+  index: RuntimeWorktreeSummaryPathIndex,
+  repoId: string,
+  worktreePath: string,
+  platform: NodeJS.Platform
+): RuntimeWorktreePsSummary | null {
+  if (isPosixAbsoluteRuntimeWorktreePath(worktreePath)) {
+    return (
+      index.posixAbsolute.get(runtimeWorktreeSummaryPathKey(repoId, worktreePath, platform))
+        ?.summary ?? null
+    )
+  }
+
+  const windowsKey = runtimeWorktreeSummaryPathKey(repoId, worktreePath, 'win32')
+  if (platform === 'win32' || isWindowsAbsolutePathLike(worktreePath)) {
+    return index.windows.get(windowsKey)?.summary ?? null
+  }
+
+  const posixCandidate = index.posixRelative.get(
+    runtimeWorktreeSummaryPathKey(repoId, worktreePath, platform)
+  )
+  const windowsCandidate = index.windowsAbsolute.get(windowsKey)
+  // Why: a malformed relative path can compare as POSIX against another
+  // relative path or as Windows against an absolute Windows path. Preserve the
+  // old pairwise scan's first-match result without rescanning every worktree.
+  if (!posixCandidate) {
+    return windowsCandidate?.summary ?? null
+  }
+  if (!windowsCandidate || posixCandidate.order < windowsCandidate.order) {
+    return posixCandidate.summary
+  }
+  return windowsCandidate.summary
+}
+
+function setFirstRuntimeWorktreePathCandidate(
+  candidates: Map<string, RuntimeWorktreeSummaryPathCandidate>,
+  key: string,
+  candidate: RuntimeWorktreeSummaryPathCandidate
+): void {
+  if (!candidates.has(key)) {
+    candidates.set(key, candidate)
+  }
+}
+
+function isPosixAbsoluteRuntimeWorktreePath(worktreePath: string): boolean {
+  return worktreePath.startsWith('/') && !worktreePath.startsWith('//')
+}
+
+function runtimeWorktreeSummaryPathKey(
+  repoId: string,
+  worktreePath: string,
+  platform: NodeJS.Platform
+): string {
+  return `${repoId}\0${worktreePathComparisonKey(worktreePath, platform)}`
+}
+
 function includeTargetResolvedWorktree(
   resolvedWorktrees: ResolvedWorktree[],
   targetWorktree: ResolvedWorktree | null
@@ -26576,6 +27776,11 @@ function compareWorktreePs(
   }
   if (left.unread !== right.unread) {
     return left.unread ? -1 : 1
+  }
+  // Why: worktree.ps is truncated for mobile, so host-visible activity must
+  // survive ahead of ordinary inactive rows without displacing pinned/unread.
+  if (left.hasHostSidebarActivity !== right.hasHostSidebarActivity) {
+    return left.hasHostSidebarActivity ? -1 : 1
   }
   const leftLast = left.lastOutputAt ?? -1
   const rightLast = right.lastOutputAt ?? -1

@@ -29,15 +29,24 @@ function killPtyForShutdown(managed: ManagedPty, signal: 'SIGTERM' | 'SIGKILL'):
   // Why: node-pty's Windows backend rejects signal arguments; its no-arg kill
   // is the equivalent shutdown operation for ConPTY.
   if (process.platform === 'win32') {
-    if (!managed.windowsShutdownKillIssued) {
+    // Why: the native ConPTY close is one-shot and survives client reconnects.
+    // A successful prior call must be polled, never issued against the handle again.
+    if (managed.windowsShutdownKillIssued) {
+      return
+    }
+    managed.windowsShutdownKillIssued = true
+    try {
       managed.pty.kill()
-      // Why: a native kill throw can leave the process alive. Mark success only
-      // after return so provider ownership remains retryable on failure.
-      managed.windowsShutdownKillIssued = true
+    } catch (error) {
+      // Why: a native throw is not acceptance; allow the retained owner to
+      // retry, while the pre-call mark prevents synchronous onExit double-kill.
+      managed.windowsShutdownKillIssued = false
+      throw error
     }
   } else {
     managed.pty.kill(signal)
   }
+  managed.shutdownKillAccepted = true
 }
 
 // Why: node-pty is a native addon that may not be installed on the remote.
@@ -45,16 +54,25 @@ function killPtyForShutdown(managed: ManagedPty, signal: 'SIGTERM' | 'SIGKILL'):
 // when the native module is unavailable. The static type import lets vitest
 // intercept it in tests.
 let ptyModule: typeof NodePty | null = null
+let ptyModuleLoad: Promise<typeof NodePty | null> | null = null
 async function loadPty(): Promise<typeof NodePty | null> {
   if (ptyModule) {
     return ptyModule
   }
-  try {
-    ptyModule = await import('node-pty')
-    return ptyModule
-  } catch {
-    return null
+  if (!ptyModuleLoad) {
+    // Why: 51 cold concurrent spawns must share one native-addon load; some
+    // loaders reject overlapping evaluation even though the module is valid.
+    ptyModuleLoad = import('node-pty')
+      .then((loaded) => {
+        ptyModule = loaded
+        return loaded
+      })
+      .catch(() => null)
+      .finally(() => {
+        ptyModuleLoad = null
+      })
   }
+  return ptyModuleLoad
 }
 
 type ManagedPty = {
@@ -65,6 +83,7 @@ type ManagedPty = {
   /** Timer for SIGKILL fallback after a graceful SIGTERM shutdown. */
   killTimer?: ReturnType<typeof setTimeout>
   windowsShutdownKillIssued?: boolean
+  shutdownKillAccepted?: boolean
   /** True once disposeManagedPty has run. Prevents double-dispose (onExit + an
    *  explicit shutdown can both fire for the same PTY) and converts post-dispose
    *  entry-point calls into a clean "not found" error instead of a silent no-op
@@ -144,6 +163,8 @@ const INTERACTIVE_REDRAW_MAX_CHARS = PTY_OUTPUT_FLUSH_CHUNK_CHARS
 const INTERACTIVE_OUTPUT_BUDGET_CHARS = 32 * 1024
 const STARTUP_COMMAND_WRITE_DELAY_MS = 50
 const STARTUP_COMMAND_SHELL_READY_FALLBACK_MS = 1500
+const STALE_SPAWN_KILL_RETRY_MS = 5000
+const RETAINED_KILL_LOG_MILESTONE = 8
 const ALLOWED_SIGNALS = new Set([
   'SIGINT',
   'SIGTERM',
@@ -255,6 +276,7 @@ export class PtyHandler {
   private pendingOutputByPty = new Map<string, PendingPtyOutput>()
   private lastInputAtByPty = new Map<string, number>()
   private interactiveOutputCharsByPty = new Map<string, number>()
+  private emptyWaiters = new Set<() => void>()
   // Why: external observers need to drop per-pane state when a PTY exits.
   // Today the relay composes multiple consumers (hook-server cache eviction
   // and plugin-overlay dir cleanup) into a single callback at the call site
@@ -456,6 +478,7 @@ export class PtyHandler {
       this.dispatcher.notify('pty.exit', { id: managed.id, code: exitCode })
       this.notifyExitListener(managed)
       this.ptys.delete(managed.id)
+      this.notifyIfEmpty()
       this.clearPtyFlowState(managed.id)
       // Why: release the ptmx fd on the natural-exit path. Without this the
       // node-pty wrapper's _socket stays alive until GC and the master fd
@@ -482,6 +505,72 @@ export class PtyHandler {
         )
       }
     }
+  }
+
+  private reapManagedPtyIfProvablyExited(managed: ManagedPty, code = -1): boolean {
+    if (managed.disposed || this.ptys.get(managed.id) !== managed) {
+      return true
+    }
+    const pid = managed.pty.pid
+    if (!pid || isProcessAlive(pid)) {
+      return false
+    }
+    // Why: node-pty can omit onExit after accepting a native kill. ESRCH is
+    // independent OS proof, so synthesize the same one-shot cleanup here.
+    this.flushPtyOutput(managed.id)
+    this.dispatcher.notify('pty.exit', { id: managed.id, code })
+    this.notifyExitListener(managed)
+    this.ptys.delete(managed.id)
+    this.notifyIfEmpty()
+    this.clearPtyFlowState(managed.id)
+    disposeManagedPty(managed)
+    return true
+  }
+
+  private scheduleManagedPtyForceShutdown(
+    managed: ManagedPty,
+    state: {
+      forceKillAccepted: boolean
+      failedAttempts: number
+      label: string
+      retryDelayMs?: number
+    }
+  ): void {
+    if (managed.disposed || managed.killTimer || this.ptys.get(managed.id) !== managed) {
+      return
+    }
+    managed.killTimer = setTimeout(() => {
+      const still = this.ptys.get(managed.id)
+      if (!still || still.disposed) {
+        return
+      }
+      still.killTimer = undefined
+      if (!state.forceKillAccepted) {
+        try {
+          killPtyForShutdown(still, 'SIGKILL')
+          state.forceKillAccepted = true
+        } catch (error) {
+          // Why: native close can throw after the OS has already reaped the
+          // child. Accept that independent proof before retaining a retry.
+          if (this.reapManagedPtyIfProvablyExited(still)) {
+            return
+          }
+          state.failedAttempts += 1
+          if (state.failedAttempts <= 2 || state.failedAttempts === RETAINED_KILL_LOG_MILESTONE) {
+            process.stderr.write(
+              `[pty-handler] ${state.label} force kill failed: ${error instanceof Error ? error.message : String(error)}\n`
+            )
+          }
+          this.scheduleManagedPtyForceShutdown(still, state)
+          return
+        }
+      }
+      if (!this.reapManagedPtyIfProvablyExited(still)) {
+        // Why: a stale spawn has no caller left to retry, and a graceful timer
+        // must never throw into relay-global uncaughtException. Keep one owner.
+        this.scheduleManagedPtyForceShutdown(still, state)
+      }
+    }, state.retryDelayMs ?? STALE_SPAWN_KILL_RETRY_MS)
   }
 
   private registerHandlers(): void {
@@ -615,6 +704,11 @@ export class PtyHandler {
     if (!pty) {
       throw new Error('node-pty is not available on this remote host')
     }
+    // Why: concurrent requests can all cross the pre-await size check while
+    // node-pty loads. Spawn/store below is synchronous, so recheck atomically.
+    if (this.ptys.size >= 50) {
+      throw new Error('Maximum number of PTY sessions reached (50)')
+    }
 
     const cols = (params.cols as number) || 80
     const rows = (params.rows as number) || 24
@@ -728,20 +822,19 @@ export class PtyHandler {
       // response is discarded and no renderer can own this PTY. Shut it down
       // immediately so it does not linger as an unreachable remote shell.
       this.releaseStartupCommand(managed)
+      const shutdownState = {
+        forceKillAccepted: false,
+        failedAttempts: 0,
+        label: 'stale-spawn'
+      }
+      this.scheduleManagedPtyForceShutdown(managed, shutdownState)
+      // Why: arm fallback ownership before native shutdown. node-pty can throw
+      // synchronously, especially during ConPTY startup, and the orphan still
+      // needs a later force-close owner even when this request rejects.
       killPtyForShutdown(managed, 'SIGTERM')
-      managed.killTimer = setTimeout(() => {
-        const still = this.ptys.get(id)
-        if (still && !still.disposed) {
-          killPtyForShutdown(still, 'SIGKILL')
-          // Why: stale-spawn cleanup has no client who will ever attach. If
-          // SIGKILL's onExit is missed (kernel edge case, uninterruptible
-          // sleep), the managed entry + ptmx fd would leak forever. Dispose
-          // synchronously so the entry is gone regardless of onExit timing.
-          this.notifyExitListener(still)
-          disposeManagedPty(still)
-          this.ptys.delete(id)
-        }
-      }, 5000)
+      if (process.platform === 'win32') {
+        shutdownState.forceKillAccepted = true
+      }
     } else if (managed.startupCommand) {
       this.scheduleStartupCommandDelivery(
         managed,
@@ -776,6 +869,7 @@ export class PtyHandler {
       this.notifyExitListener(managed)
       disposeManagedPty(managed)
       this.ptys.delete(id)
+      this.notifyIfEmpty()
       this.clearPtyFlowState(id)
       throw new Error(`PTY "${id}" not found`)
     }
@@ -853,30 +947,41 @@ export class PtyHandler {
     if (!managed) {
       return
     }
+    const mismatch = attachIdentityMismatches(
+      {
+        paneKey: typeof params.expectedPaneKey === 'string' ? params.expectedPaneKey : undefined,
+        tabId: typeof params.expectedTabId === 'string' ? params.expectedTabId : undefined
+      },
+      managed.attachIdentity ?? { paneKey: managed.paneKey, tabId: managed.tabId }
+    )
+    if (mismatch) {
+      throw new Error(`PTY "${id}" not found (identity mismatch)`)
+    }
 
     if (immediate) {
       this.releaseStartupCommand(managed)
       this.flushPtyOutput(id)
-      killPtyForShutdown(managed, 'SIGKILL')
-      // Why: SIGKILL has already reaped the child; release the ptmx fd on the
-      // same tick. Deferring to onExit leaves a window where the fd is live
-      // with a dead child. Idempotent via the disposed guard — if onExit fires
-      // later and also calls disposeManagedPty, the second call is a no-op.
-      disposeManagedPty(managed)
-      // Why: mirror the graceful-shutdown killTimer cleanup. If SIGKILL's
-      // onExit never fires (kernel edge case: uninterruptible sleep,
-      // D-state child on a bad NFS mount), the disposed managed entry would
-      // linger in this.ptys forever. Each stranded entry consumes a slot in
-      // the 50-PTY cap and is returned by listProcesses/serialize. Deleting
-      // here makes the map hygiene a hard guarantee, not "hopefully onExit
-      // runs". If onExit DOES fire later, its own `this.ptys.delete(id)` is
-      // a no-op.
-      this.notifyExitListener(managed)
-      this.ptys.delete(id)
-      this.clearPtyFlowState(id)
+      try {
+        killPtyForShutdown(managed, 'SIGKILL')
+      } catch (error) {
+        if (this.reapManagedPtyIfProvablyExited(managed)) {
+          return
+        }
+        throw error
+      }
+      // Why: kill returning is only acceptance. Preserve the PTY and listeners
+      // unless synchronous onExit or an ESRCH readback proves physical exit.
+      this.reapManagedPtyIfProvablyExited(managed)
     } else {
       this.releaseStartupCommand(managed)
-      killPtyForShutdown(managed, 'SIGTERM')
+      try {
+        killPtyForShutdown(managed, 'SIGTERM')
+      } catch (error) {
+        if (this.reapManagedPtyIfProvablyExited(managed)) {
+          return
+        }
+        throw error
+      }
 
       // Why: Some processes ignore SIGTERM (e.g. a hung child, a custom signal
       // handler). Without a SIGKILL fallback the PTY process would leak and the
@@ -887,28 +992,13 @@ export class PtyHandler {
       // collapses the graceful-shutdown window and risks interrupting shell
       // EXIT traps. Fd release happens via onExit (natural exit) or via the
       // killTimer → SIGKILL → disposeManagedPty chain below.
-      managed.killTimer = setTimeout(() => {
-        const still = this.ptys.get(id)
-        if (still && !still.disposed) {
-          killPtyForShutdown(still, 'SIGKILL')
-          this.flushPtyOutput(id)
-          // Why: emit pty.exit BEFORE disposeManagedPty sets disposed=true.
-          // The natural onExit short-circuits on `managed.disposed`, so
-          // without this notify the renderer never learns the pane is dead
-          // when the SIGKILL fallback fires for a SIGTERM-ignoring child.
-          this.dispatcher.notify('pty.exit', { id, code: -1 })
-          // Why: if SIGKILL's onExit never fires (kernel edge case,
-          // uninterruptible sleep, child wedged on a bad NFS mount), the
-          // fd and map entry would leak forever. Dispose synchronously so
-          // graceful-shutdown's SIGKILL fallback is a hard guarantee, not
-          // "hopefully onExit will run". The disposed guard inside
-          // disposeManagedPty makes a later onExit's dispose a no-op.
-          this.notifyExitListener(still)
-          disposeManagedPty(still)
-          this.ptys.delete(id)
-          this.clearPtyFlowState(id)
-        }
-      }, 5000)
+      this.scheduleManagedPtyForceShutdown(managed, {
+        // Why: Windows maps graceful and force shutdown to the same one-shot
+        // native close. POSIX still needs its distinct SIGKILL escalation.
+        forceKillAccepted: process.platform === 'win32',
+        failedAttempts: 0,
+        label: 'graceful-shutdown'
+      })
     }
   }
 
@@ -975,6 +1065,9 @@ export class PtyHandler {
   private async listProcesses(): Promise<PtyProcessSummary[]> {
     const results: PtyProcessSummary[] = []
     for (const [id, managed] of this.ptys) {
+      if (managed.shutdownKillAccepted && this.reapManagedPtyIfProvablyExited(managed)) {
+        continue
+      }
       const title =
         (await getForegroundProcessName(managed.pty.pid, managed.pty.process || null)) || 'shell'
       results.push({
@@ -1166,6 +1259,74 @@ export class PtyHandler {
       disposeManagedPty(managed)
     }
     this.ptys.clear()
+    this.notifyIfEmpty()
+  }
+
+  async shutdownAndWait(timeoutMs: number): Promise<void> {
+    this.cancelGraceTimer()
+    for (const [, managed] of this.ptys) {
+      if (managed.killTimer) {
+        clearTimeout(managed.killTimer)
+        managed.killTimer = undefined
+      }
+      this.clearStartupCommandTimer(managed)
+      const state = {
+        forceKillAccepted: false,
+        failedAttempts: 0,
+        label: 'relay-shutdown',
+        retryDelayMs: 100
+      }
+      try {
+        killPtyForShutdown(managed, 'SIGKILL')
+        state.forceKillAccepted = true
+      } catch (error) {
+        state.failedAttempts = 1
+        process.stderr.write(
+          `[pty-handler] relay-shutdown force kill failed: ${error instanceof Error ? error.message : String(error)}\n`
+        )
+      }
+      if (!this.reapManagedPtyIfProvablyExited(managed)) {
+        this.scheduleManagedPtyForceShutdown(managed, state)
+      }
+    }
+    this.notifyIfEmpty()
+    if (!(await this.waitForEmpty(timeoutMs))) {
+      throw new Error(`Timed out waiting for ${this.ptys.size} relay PTY session(s) to exit`)
+    }
+    if (this.outputFlushTimer !== null) {
+      clearTimeout(this.outputFlushTimer)
+      this.outputFlushTimer = null
+    }
+    this.pendingOutputByPty.clear()
+    this.lastInputAtByPty.clear()
+    this.interactiveOutputCharsByPty.clear()
+  }
+
+  private waitForEmpty(timeoutMs: number): Promise<boolean> {
+    if (this.ptys.size === 0) {
+      return Promise.resolve(true)
+    }
+    return new Promise((resolve) => {
+      const waiter = (): void => {
+        clearTimeout(timer)
+        this.emptyWaiters.delete(waiter)
+        resolve(true)
+      }
+      const timer = setTimeout(() => {
+        this.emptyWaiters.delete(waiter)
+        resolve(false)
+      }, timeoutMs)
+      this.emptyWaiters.add(waiter)
+    })
+  }
+
+  private notifyIfEmpty(): void {
+    if (this.ptys.size !== 0) {
+      return
+    }
+    for (const waiter of this.emptyWaiters) {
+      waiter()
+    }
   }
 
   get activePtyCount(): number {

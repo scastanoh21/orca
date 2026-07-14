@@ -45,6 +45,17 @@ function provider(overrides: Partial<ProviderRateLimits> = {}): ProviderRateLimi
   }
 }
 
+const PROVIDER_IDS: ProviderRateLimits['provider'][] = [
+  'claude',
+  'codex',
+  'gemini',
+  'antigravity',
+  'opencode-go',
+  'kimi',
+  'minimax',
+  'grok'
+]
+
 afterEach(() => {
   vi.useRealTimers()
 })
@@ -121,6 +132,21 @@ describe('provider usage error copy', () => {
     )
     expect(getProviderUsageErrorMessage(opencodeGo)).toBe(
       'OpenCode Go usage could not be refreshed. Agent sessions may still be signed in.'
+    )
+  })
+
+  it('keeps the reworded Grok expired-token error classified as an auth failure (#8497)', () => {
+    // Why: the fix (grok-fetcher.ts) dropped the "run grok login" wording that
+    // used to trigger auth classification; this pins that the new copy still
+    // resolves to the softer refresh message instead of leaking the raw string.
+    const grok = provider({
+      provider: 'grok',
+      error: 'Grok access token expired — Grok CLI will refresh it on next use'
+    })
+
+    expect(getProviderUsageStatusLabel(grok)).toBe('Refresh failed')
+    expect(getProviderUsageErrorMessage(grok)).toBe(
+      'Grok usage could not be refreshed. Agent sessions may still be signed in.'
     )
   })
 
@@ -473,6 +499,27 @@ describe('ProviderPanel reset rendering', () => {
     expect(markup).toContain('width:100%')
     expect(markup).not.toContain('140%')
   })
+
+  it.each(PROVIDER_IDS)(
+    'applies remaining copy to %s while retaining consumption bar direction',
+    (providerId) => {
+      const p = provider({
+        provider: providerId,
+        status: 'ok',
+        session: {
+          usedPercent: 25,
+          windowMinutes: 300,
+          resetsAt: null,
+          resetDescription: null
+        }
+      })
+
+      const markup = renderToStaticMarkup(ProviderPanel({ p, usagePercentageDisplay: 'remaining' }))
+
+      expect(markup).toContain('75% left')
+      expect(markup).toContain('width:25%')
+    }
+  )
 })
 
 describe('clampUsedPercent', () => {

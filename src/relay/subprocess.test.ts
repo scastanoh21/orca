@@ -10,6 +10,7 @@ import { getEndpointFileName } from '../shared/agent-hook-listener'
 import { relayTestSocketPath } from './relay-test-socket-path'
 
 const RELAY_TS_ENTRY = path.resolve(__dirname, 'relay.ts')
+const WATCHER_TS_ENTRY = path.resolve(__dirname, '../main/ipc/parcel-watcher-process-entry.ts')
 let bundleDir: string
 let relayEntry: string
 const spawnedSocketDirs: string[] = []
@@ -24,7 +25,17 @@ beforeAll(async () => {
     target: 'node18',
     format: 'cjs',
     outfile: relayEntry,
-    external: ['node-pty', '@parcel/watcher'],
+    external: ['node-pty', '@parcel/watcher', 'electron'],
+    sourcemap: false
+  })
+  await build({
+    entryPoints: [WATCHER_TS_ENTRY],
+    bundle: true,
+    platform: 'node',
+    target: 'node18',
+    format: 'cjs',
+    outfile: path.join(bundleDir, 'relay-watcher.js'),
+    external: ['@parcel/watcher'],
     sourcemap: false
   })
 }, 30_000)
@@ -421,14 +432,18 @@ describe('Subprocess: Relay entry point', () => {
     expect(resp.error).toBeUndefined()
     const status = resp.result as {
       pid: number
+      instanceId: string
       memory: { rss: number }
       ptys: { active: number }
       socket: { owned: boolean; listening: boolean; clients: number }
     }
     expect(status.pid).toBeGreaterThan(0)
+    expect(status.instanceId).toMatch(/^[0-9a-f-]{36}$/)
     expect(status.memory.rss).toBeGreaterThan(0)
     expect(status.ptys.active).toBe(0)
     expect(status.socket).toMatchObject({ owned: true, listening: true, clients: 0 })
+    const next = await relay.waitForResponse(relay.send('relay.status'))
+    expect((next.result as { instanceId: string }).instanceId).toBe(status.instanceId)
   }, 10_000)
 
   it('session.registerRoot request returns ok acknowledgment', async () => {

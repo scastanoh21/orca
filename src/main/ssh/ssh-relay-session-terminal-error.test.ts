@@ -58,6 +58,8 @@ vi.mock('../ipc/pty', () => ({
   clearPtyOwnershipForConnection: vi.fn(),
   clearProviderPtyState: vi.fn(),
   deletePtyOwnership: vi.fn(),
+  hasPendingSshShutdown: vi.fn().mockReturnValue(false),
+  releasePendingSshShutdown: vi.fn(),
   setPtyOwnership: vi.fn(),
   answerStartupTerminalColorQueriesForPty: vi.fn((_id: string, data: string) => data)
 }))
@@ -80,6 +82,7 @@ function createMockDeps(): {
   mockStore: Store
   mockPortForward: SshPortForwardManager
   getMainWindow: () => BrowserWindow | null
+  mockWindow: BrowserWindow
 } {
   const mockConn = {} as SshConnection
   const mockStore = {
@@ -96,7 +99,7 @@ function createMockDeps(): {
     webContents: { send: vi.fn() }
   } as unknown as BrowserWindow
   const getMainWindow = vi.fn().mockReturnValue(mockWindow) as unknown as () => BrowserWindow | null
-  return { mockConn, mockStore, mockPortForward, getMainWindow }
+  return { mockConn, mockStore, mockPortForward, getMainWindow, mockWindow }
 }
 
 function mockDeploySuccess(): void {
@@ -168,5 +171,56 @@ describe('SshRelaySession terminal relay error (RelayVersionMismatchError)', () 
     expect(onTerminal).toHaveBeenCalledTimes(1)
     expect(onTerminal).toHaveBeenCalledWith('target-1', mismatchErr)
     expect(session.getState()).toBe('idle')
+  })
+
+  it('delivers PTY exit when durable lease persistence throws', async () => {
+    const { mockConn, mockStore, mockPortForward, getMainWindow, mockWindow } = createMockDeps()
+    const runtime = { onPtyExit: vi.fn() }
+    vi.mocked(mockStore.markSshRemotePtyLease).mockImplementation(() => {
+      throw new Error('lease disk full')
+    })
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const session = new SshRelaySession(
+      'target-1',
+      getMainWindow,
+      mockStore,
+      mockPortForward,
+      runtime as never
+    )
+    await session.establish(mockConn)
+    const { registerSshPtyProvider } = await import('../ipc/pty')
+    const ptyProvider = vi.mocked(registerSshPtyProvider).mock.calls[0]?.[1] as unknown as {
+      onExit: ReturnType<typeof vi.fn>
+    }
+    const onExit = ptyProvider.onExit.mock.calls[0]?.[0] as (payload: {
+      id: string
+      code: number
+    }) => void
+
+    expect(() => onExit({ id: 'ssh-pty-1', code: 0 })).not.toThrow()
+    expect(runtime.onPtyExit).toHaveBeenCalledWith('ssh-pty-1', 0)
+    expect(mockWindow.webContents.send).toHaveBeenCalledWith('pty:exit', {
+      id: 'ssh-pty-1',
+      code: 0
+    })
+  })
+
+  it('leaves SSH exit persistence to an existing retry owner', async () => {
+    const { mockConn, mockStore, mockPortForward, getMainWindow } = createMockDeps()
+    const { hasPendingSshShutdown, registerSshPtyProvider } = await import('../ipc/pty')
+    vi.mocked(hasPendingSshShutdown).mockReturnValue(true)
+    const session = new SshRelaySession('target-1', getMainWindow, mockStore, mockPortForward)
+    await session.establish(mockConn)
+    const ptyProvider = vi.mocked(registerSshPtyProvider).mock.calls[0]?.[1] as unknown as {
+      onExit: ReturnType<typeof vi.fn>
+    }
+    const onExit = ptyProvider.onExit.mock.calls[0]?.[0] as (payload: {
+      id: string
+      code: number
+    }) => void
+
+    onExit({ id: 'ssh-pty-1', code: 0 })
+
+    expect(mockStore.markSshRemotePtyLease).not.toHaveBeenCalled()
   })
 })

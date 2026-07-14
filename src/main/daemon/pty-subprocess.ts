@@ -14,6 +14,7 @@ import { isValidPtySize, normalizePtySize } from './daemon-pty-size'
 import {
   ensureNodePtySpawnHelperExecutable,
   getNodePtySpawnHelperCandidates,
+  resolveUnixShellPath,
   validateWorkingDirectory
 } from '../providers/local-pty-utils'
 import { wrapShellSpawnForMacosTccAttribution } from '../providers/macos-tcc-login-shell'
@@ -742,6 +743,17 @@ export function createPtySubprocess(opts: PtySubprocessOptions): SubprocessHandl
     if (opts.env?.TERM) {
       env.TERM = opts.env.TERM
     }
+    // Why after the scrub: SHELL must reflect the shell that actually spawns,
+    // matching LocalPtyProvider; and before the launch-config derivation below
+    // so shell-ready wrappers target the resolved shell, not a missing one.
+    const preferredShellPath = shellPath
+    shellPath = resolveUnixShellPath(shellPath)
+    if (shellPath !== preferredShellPath) {
+      env.SHELL = shellPath
+      console.warn(
+        `[daemon/pty] Preferred shell "${preferredShellPath}" is unavailable, fell back to "${shellPath}"`
+      )
+    }
     // Why: OpenCode/Codex path restoration and OMP's typed-command status
     // wrapper need shell-ready code after user startup files run.
     let shellLaunch: ReturnType<typeof getShellReadyLaunchConfig> | null = null
@@ -879,6 +891,21 @@ export function createPtySubprocess(opts: PtySubprocessOptions): SubprocessHandl
   // exiting and the JS onExit callback firing. An uncaught Napi::Error
   // propagates to std::terminate, killing the entire daemon process.
   let dead = false
+  const hasExited = (): boolean => {
+    if (dead) {
+      return true
+    }
+    try {
+      process.kill(proc.pid, 0)
+      return false
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ESRCH') {
+        return false
+      }
+      dead = true
+      return true
+    }
+  }
   let disposed = false
   let nodePtyKillIssued = false
   let cachedAgentForeground: { processName: string; refreshedAt: number } | null = null
@@ -1007,6 +1034,7 @@ export function createPtySubprocess(opts: PtySubprocessOptions): SubprocessHandl
 
   return {
     pid: proc.pid,
+    shellPath,
     ...(startupCommandDeliveredInShellArgs ? { startupCommandDeliveredInShellArgs: true } : {}),
     getForegroundProcess: () => {
       // Why: node-pty's `.process` getter reports the PTY's live foreground
@@ -1166,8 +1194,11 @@ export function createPtySubprocess(opts: PtySubprocessOptions): SubprocessHandl
       try {
         nodePtyKillIssued = true
         proc.kill()
-      } catch {
-        dead = true
+      } catch (error) {
+        if (!hasExited()) {
+          nodePtyKillIssued = false
+          throw error
+        }
       }
     },
     forceKill: () => {
@@ -1175,22 +1206,45 @@ export function createPtySubprocess(opts: PtySubprocessOptions): SubprocessHandl
       // has run, proc.pid refers to a recycled pid. Sending SIGKILL would
       // terminate an unrelated process. The fd release is handled by
       // dispose()/destroy(); forceKill is strictly for signalling a live child.
-      // Why: Windows node-pty kill already closes ConPTY; retrying it through
-      // forceKill can double-close the native handle during workspace teardown.
-      if (dead || (process.platform === 'win32' && nodePtyKillIssued)) {
+      if (dead) {
+        return
+      }
+      if (process.platform === 'win32') {
+        // Why: graceful and force shutdown share one native ConPTY close.
+        // Once accepted, wait for exit proof instead of closing twice.
+        if (nodePtyKillIssued) {
+          return
+        }
+        try {
+          nodePtyKillIssued = true
+          proc.kill()
+        } catch (error) {
+          if (!hasExited()) {
+            nodePtyKillIssued = false
+            throw error
+          }
+        }
         return
       }
       try {
         process.kill(proc.pid, 'SIGKILL')
-      } catch {
+      } catch (signalError) {
+        if ((signalError as NodeJS.ErrnoException).code === 'ESRCH') {
+          dead = true
+          return
+        }
         try {
           nodePtyKillIssued = true
           proc.kill()
-        } catch {
-          // Process may already be dead
+        } catch (fallbackError) {
+          if (!hasExited()) {
+            nodePtyKillIssued = false
+            throw fallbackError
+          }
         }
       }
     },
+    hasExited,
     signal: (sig) => {
       // Why: same recycled-pid hazard as forceKill. Once dead, silently drop
       // the signal rather than risk sending it to an unrelated process.

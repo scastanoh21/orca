@@ -19,7 +19,7 @@ import {
   isSshPtyIdentityMismatchError,
   isSshPtyNotFoundError
 } from '../providers/ssh-pty-provider'
-import { toAppSshPtyId, toRelaySshPtyId } from '../providers/ssh-pty-id'
+import { parseAppSshPtyId, toAppSshPtyId, toRelaySshPtyId } from '../providers/ssh-pty-id'
 import { SshFilesystemProvider } from '../providers/ssh-filesystem-provider'
 import { SshGitProvider } from '../providers/ssh-git-provider'
 import { agentHookServer } from '../agent-hooks/server'
@@ -41,6 +41,8 @@ import {
   clearPtyOwnershipForConnection,
   clearProviderPtyState,
   deletePtyOwnership,
+  hasPendingSshShutdown,
+  releasePendingSshShutdown,
   setPtyOwnership,
   answerStartupTerminalColorQueriesForPty
 } from '../ipc/pty'
@@ -61,7 +63,8 @@ import { isMainWindowVisible, onMainWindowBecameVisible } from '../window/main-w
 import type { SshPortForwardManager } from './ssh-port-forward'
 import type { SshConnection } from './ssh-connection'
 import { joinRemotePath, isWindowsRemoteHost, type RemoteHostPlatform } from './ssh-remote-platform'
-import { makeRemoteDirectoryCommand, makeRemoteExecutableCommand } from './ssh-remote-commands'
+import { makeRemoteDirectoryCommand } from './ssh-remote-commands'
+import { createRemoteCliInstallPlan } from './ssh-remote-cli-launcher'
 import {
   DEFAULT_SSH_RELAY_GRACE_PERIOD_SECONDS,
   type DetectedPort,
@@ -653,14 +656,14 @@ export class SshRelaySession {
     }
 
     try {
-      await this.installRemoteOrcaCliShim()
+      await this.installRemoteOrcaCliLauncher()
     } catch (error) {
-      // Why: the remote `orca` CLI shim is a convenience bridge. On session-
+      // Why: the remote `orca` CLI launcher is a convenience bridge. On session-
       // limited remotes (MaxSessions=1) the relay bridge holds the only slot,
       // so this raw-connection install can fail — that must not fail the
       // whole connection, matching the managed-hook install above.
       console.warn(
-        `[ssh-relay-session] remote orca CLI shim install failed for ${this.targetId}: ${
+        `[ssh-relay-session] remote orca CLI launcher install failed for ${this.targetId}: ${
           error instanceof Error ? error.message : String(error)
         }`
       )
@@ -671,11 +674,45 @@ export class SshRelaySession {
 
     this.wireUpRemoteOrcaCli(mux)
 
-    const ptyProvider = new SshPtyProvider(this.targetId, mux, this.remoteCliBridgeEnv ?? undefined)
+    let relayInstanceId: string | undefined
+    try {
+      const status = (await mux.request('relay.status', {})) as { instanceId?: unknown }
+      relayInstanceId =
+        typeof status.instanceId === 'string' && status.instanceId.length > 0
+          ? status.instanceId
+          : undefined
+    } catch {
+      // Why: older relays lack boot identity. Attach/shutdown identity checks
+      // remain the compatibility guard until the versioned deploy upgrades it.
+    }
+    const ptyProvider = new SshPtyProvider(
+      this.targetId,
+      mux,
+      this.remoteCliBridgeEnv ?? undefined,
+      relayInstanceId
+    )
     registerSshPtyProvider(this.targetId, ptyProvider)
 
-    const fsProvider = new SshFilesystemProvider(this.targetId, mux, () =>
-      this.requireReadyConnection().sftp()
+    const fsProvider = new SshFilesystemProvider(
+      this.targetId,
+      mux,
+      () => this.requireReadyConnection().sftp(),
+      {
+        downloadFile: (sourcePath, destinationPath) =>
+          this.requireReadyConnection().downloadFile(sourcePath, destinationPath, {
+            hostPlatform: this.remoteCliBridgeEnv?.hostPlatform
+          }),
+        openFileUploadSession: () =>
+          this.requireReadyConnection().openFileUploadSession({
+            hostPlatform: this.remoteCliBridgeEnv?.hostPlatform
+          }),
+        writeBuffer: (remotePath, contents, options) =>
+          this.requireReadyConnection().writeBuffer(remotePath, contents, {
+            hostPlatform: this.remoteCliBridgeEnv?.hostPlatform,
+            append: options.append,
+            exclusive: options.exclusive
+          })
+      }
     )
     registerSshFilesystemProvider(this.targetId, fsProvider)
 
@@ -757,34 +794,38 @@ export class SshRelaySession {
     }
   }
 
-  private async installRemoteOrcaCliShim(): Promise<void> {
+  private async installRemoteOrcaCliLauncher(): Promise<void> {
     if (!this.remoteCliBridgeEnv) {
       return
     }
     const { binDir, hostPlatform } = this.remoteCliBridgeEnv
-    const shim = buildRemoteCliShim(this.remoteCliBridgeEnv)
+    const plan = createRemoteCliInstallPlan(this.remoteCliBridgeEnv)
     const conn = this.requireReadyConnection()
     await execCommand(conn, makeRemoteDirectoryCommand(hostPlatform, binDir), {
       wrapCommand: !isWindowsRemoteHost(hostPlatform)
     })
     if (typeof conn.writeFile === 'function') {
-      await conn.writeFile(shim.path, shim.contents, { hostPlatform })
+      for (const file of plan.files) {
+        await conn.writeFile(file.path, file.contents, { hostPlatform })
+      }
     } else {
       const sftp = await conn.sftp()
       try {
-        await new Promise<void>((resolve, reject) => {
-          const ws = sftp.createWriteStream(shim.path)
-          sftp.once('error', reject)
-          ws.once('close', resolve)
-          ws.once('error', reject)
-          ws.end(shim.contents)
-        })
+        for (const file of plan.files) {
+          await new Promise<void>((resolve, reject) => {
+            const ws = sftp.createWriteStream(file.path)
+            sftp.once('error', reject)
+            ws.once('close', resolve)
+            ws.once('error', reject)
+            ws.end(file.contents)
+          })
+        }
       } finally {
         sftp.end()
       }
     }
-    if (!isWindowsRemoteHost(hostPlatform)) {
-      await execCommand(conn, makeRemoteExecutableCommand(hostPlatform, shim.path))
+    for (const command of plan.postWriteCommands) {
+      await execCommand(conn, command, { wrapCommand: !isWindowsRemoteHost(hostPlatform) })
     }
   }
 
@@ -1125,11 +1166,18 @@ export class SshRelaySession {
       }
     })
     ptyProvider.onExit((payload) => {
-      const relayPtyId = toRelaySshPtyId(this.targetId, payload.id)
       clearProviderPtyState(payload.id)
       deletePtyOwnership(payload.id)
       this.forwardedReattachReplayByPty.delete(payload.id)
-      this.store.markSshRemotePtyLease(this.targetId, relayPtyId, 'terminated')
+      if (!hasPendingSshShutdown(payload.id)) {
+        try {
+          this.store.markSshRemotePtyLease(this.targetId, payload.id, 'terminated')
+        } catch (error) {
+          // Why: disk failure must not abort PTY exit delivery; a retained kill
+          // owner, when present, retries the durable lease transition separately.
+          console.warn('[ssh-relay-session] Failed to persist PTY exit:', error)
+        }
+      }
       this.runtime?.onPtyExit(payload.id, payload.code)
       const win = this.getMainWindow()
       if (win && !win.isDestroyed()) {
@@ -1166,36 +1214,69 @@ export class SshRelaySession {
     }
   }
 
+  private expireReattachPty(_relayPtyId: string, appPtyId: string): void {
+    releasePendingSshShutdown(appPtyId)
+    clearProviderPtyState(appPtyId)
+    deletePtyOwnership(appPtyId)
+    this.forwardedReattachReplayByPty.delete(appPtyId)
+    this.store.markSshRemotePtyLease(this.targetId, appPtyId, 'expired')
+    const win = this.getMainWindow()
+    if (win && !win.isDestroyed()) {
+      win.webContents.send('pty:exit', { id: appPtyId, code: -1 })
+    }
+  }
+
   private async reattachKnownPtys(shouldContinue: () => boolean): Promise<void> {
+    const ptyProvider = getSshPtyProvider(this.targetId) as SshPtyProvider | undefined
+    if (!ptyProvider) {
+      return
+    }
+    const relayInstanceId = ptyProvider.getRelayInstanceId?.()
     const activeLeases = this.store
       .getSshRemotePtyLeases(this.targetId)
       .filter((lease) => lease.state !== 'terminated' && lease.state !== 'expired')
-    const leasedPtyIds = activeLeases.map((lease) => lease.ptyId)
+    const attachableLeases = activeLeases.filter((lease) => {
+      if (!lease.relayInstanceId || !relayInstanceId || lease.relayInstanceId === relayInstanceId) {
+        return true
+      }
+      const staleAppPtyId = toAppSshPtyId(this.targetId, lease.ptyId, lease.relayInstanceId)
+      console.warn(
+        `[ssh-relay-session] Expiring stale PTY ${lease.ptyId} for ${this.targetId} after relay generation changed`
+      )
+      this.expireReattachPty(lease.ptyId, staleAppPtyId)
+      return false
+    })
+    const leasedPtyIds = attachableLeases.map((lease) => lease.ptyId)
     // Why: carry each lease's pane identity into the attach so the relay can
     // reject cross-generation id collisions even between split panes in one tab.
     // Older leases may lack leafId, so tabId remains the compatibility fallback.
     const expectedIdentityByPtyId = new Map(
-      activeLeases
+      attachableLeases
         .map((lease): [string, ExpectedPtyIdentity] | null => {
           const expected = expectedIdentityForLease(lease)
           return expected ? [lease.ptyId, expected] : null
         })
         .filter((entry): entry is [string, ExpectedPtyIdentity] => entry !== null)
     )
+    const leaseByPtyId = new Map(attachableLeases.map((lease) => [lease.ptyId, lease]))
     // Why: after app restart, ptyOwnership is empty but durable SSH leases
     // still describe remote PTYs that survived in the relay grace window.
-    const ptyIds = Array.from(
-      new Set([
-        ...getPtyIdsForConnection(this.targetId).map((ptyId) =>
-          toRelaySshPtyId(this.targetId, ptyId)
-        ),
-        ...leasedPtyIds
-      ])
-    )
-    const ptyProvider = getSshPtyProvider(this.targetId) as SshPtyProvider | undefined
-    if (!ptyProvider) {
-      return
-    }
+    const ownedPtyIds = getPtyIdsForConnection(this.targetId).flatMap((appPtyId) => {
+      const parsed = parseAppSshPtyId(appPtyId)
+      if (
+        parsed?.relayInstanceId &&
+        relayInstanceId &&
+        parsed.relayInstanceId !== relayInstanceId
+      ) {
+        console.warn(
+          `[ssh-relay-session] Expiring stale PTY ${parsed.relayPtyId} for ${this.targetId} after relay generation changed`
+        )
+        this.expireReattachPty(parsed.relayPtyId, appPtyId)
+        return []
+      }
+      return [toRelaySshPtyId(this.targetId, appPtyId)]
+    })
+    const ptyIds = Array.from(new Set([...ownedPtyIds, ...leasedPtyIds]))
     for (const ptyId of ptyIds) {
       if (!shouldContinue()) {
         return
@@ -1209,16 +1290,36 @@ export class SshRelaySession {
         if (!shouldContinue()) {
           return
         }
-        const appPtyId = toAppSshPtyId(this.targetId, ptyId)
+        const appPtyId = toAppSshPtyId(this.targetId, ptyId, relayInstanceId)
+        const lease = leaseByPtyId.get(ptyId)
+        if (lease && !lease.relayInstanceId && relayInstanceId) {
+          // Why: only a proven attach can bind a pre-generation lease to the
+          // relay boot that actually owns it; strict normal writes stay fenced.
+          const migrated = this.store.migrateLegacySshRemotePtyLeaseGeneration(
+            this.targetId,
+            ptyId,
+            relayInstanceId
+          )
+          if (!migrated) {
+            continue
+          }
+        } else {
+          this.store.markSshRemotePtyLease(this.targetId, appPtyId, 'attached')
+        }
         setPtyOwnership(appPtyId, this.targetId)
-        this.store.markSshRemotePtyLease(this.targetId, ptyId, 'attached')
         this.forwardReattachReplay(appPtyId, attachResult.replay ?? '')
       } catch (err) {
         if (!isSshPtyNotFoundError(err)) {
           throw err
         }
-        const appPtyId = toAppSshPtyId(this.targetId, ptyId)
-        if (isSshPtyIdentityMismatchError(err)) {
+        const lease = leaseByPtyId.get(ptyId)
+        const isLegacyLease = Boolean(lease && !lease.relayInstanceId && relayInstanceId)
+        const appPtyId = toAppSshPtyId(
+          this.targetId,
+          ptyId,
+          isLegacyLease ? undefined : relayInstanceId
+        )
+        if (isSshPtyIdentityMismatchError(err) && !isLegacyLease) {
           console.warn(
             `[ssh-relay-session] Ignoring stale PTY ${ptyId} for ${this.targetId} after relay identity mismatch: ${
               err instanceof Error ? err.message : String(err)
@@ -1231,62 +1332,10 @@ export class SshRelaySession {
             err instanceof Error ? err.message : String(err)
           }`
         )
-        clearProviderPtyState(appPtyId)
-        deletePtyOwnership(appPtyId)
-        this.forwardedReattachReplayByPty.delete(appPtyId)
-        this.store.markSshRemotePtyLease(this.targetId, ptyId, 'expired')
-        // Why: if the new relay cannot reattach this id, the remote backing
-        // process is gone. Tell the renderer so it clears stale pane bindings
-        // instead of keeping a cursor-only terminal.
-        const win = this.getMainWindow()
-        if (win && !win.isDestroyed()) {
-          win.webContents.send('pty:exit', { id: appPtyId, code: -1 })
-        }
+        // Why: a failed legacy attach has not earned the new generation. Retire
+        // and notify its original id so a recycled current relay id stays intact.
+        this.expireReattachPty(ptyId, appPtyId)
       }
     }
-  }
-}
-
-function quoteSh(value: string): string {
-  return `'${value.replaceAll("'", `'\\''`)}'`
-}
-
-function buildRemoteCliShim(env: RemoteCliBridgeEnv): {
-  path: string
-  contents: string
-} {
-  if (isWindowsRemoteHost(env.hostPlatform)) {
-    const shimPath = joinRemotePath(env.hostPlatform, env.binDir, 'orca.cmd')
-    return {
-      path: shimPath,
-      contents: [
-        '@echo off',
-        'setlocal',
-        `if not defined ORCA_RELAY_NODE_PATH set "ORCA_RELAY_NODE_PATH=${env.nodePath}"`,
-        `if not defined ORCA_RELAY_DIR set "ORCA_RELAY_DIR=${env.relayDir}"`,
-        `if not defined ORCA_RELAY_SOCKET_PATH set "ORCA_RELAY_SOCKET_PATH=${env.sockPath}"`,
-        '"%ORCA_RELAY_NODE_PATH%" "%ORCA_RELAY_DIR%/relay.js" --sock-path "%ORCA_RELAY_SOCKET_PATH%" --orca-cli %*',
-        'exit /b %ERRORLEVEL%',
-        ''
-      ].join('\r\n')
-    }
-  }
-
-  const shimPath = joinRemotePath(env.hostPlatform, env.binDir, 'orca')
-  return {
-    path: shimPath,
-    contents: [
-      '#!/usr/bin/env sh',
-      'set -eu',
-      `ORCA_RELAY_NODE_PATH=\${ORCA_RELAY_NODE_PATH:-${quoteSh(env.nodePath)}}`,
-      `ORCA_RELAY_DIR=\${ORCA_RELAY_DIR:-${quoteSh(env.relayDir)}}`,
-      `ORCA_RELAY_SOCKET_PATH=\${ORCA_RELAY_SOCKET_PATH:-${quoteSh(env.sockPath)}}`,
-      'if [ ! -S "$ORCA_RELAY_SOCKET_PATH" ]; then',
-      '  echo "Orca SSH CLI bridge cannot find the relay socket: $ORCA_RELAY_SOCKET_PATH" >&2',
-      '  exit 1',
-      'fi',
-      'exec "$ORCA_RELAY_NODE_PATH" "$ORCA_RELAY_DIR/relay.js" --sock-path "$ORCA_RELAY_SOCKET_PATH" --orca-cli "$@"',
-      ''
-    ].join('\n')
   }
 }

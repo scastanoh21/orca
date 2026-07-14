@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 /**
- * Bundle the relay daemon into a single relay.js file per platform.
+ * Bundle the relay daemon and its crash-isolated watcher child per platform.
  *
- * The relay runs on remote hosts via `node relay.js`, so it must be a
- * self-contained CommonJS bundle with no external dependencies beyond
+ * The relay runs on remote hosts via `node relay.js`, so both outputs use
+ * self-contained CommonJS bundles with no external dependencies beyond
  * Node.js built-ins. Native addons (node-pty, @parcel/watcher) are
  * marked external and expected to be installed on the remote or
  * gracefully degraded.
@@ -17,6 +17,7 @@ const __dirname = import.meta.dirname
 // Why: the script lives under config/scripts, so go two levels up to reach the repo root.
 const ROOT = join(__dirname, '..', '..')
 const RELAY_ENTRY = join(ROOT, 'src', 'relay', 'relay.ts')
+const WATCHER_ENTRY = join(ROOT, 'src', 'main', 'ipc', 'parcel-watcher-process-entry.ts')
 const WINDOWS_NODE_PTY_PATCH_SOURCE = join(
   ROOT,
   'config',
@@ -49,7 +50,22 @@ for (const platform of PLATFORMS) {
     outfile: join(outDir, 'relay.js'),
     // Native addons cannot be bundled — they must exist on the remote host.
     // The relay gracefully degrades when they are absent.
-    external: ['node-pty', '@parcel/watcher'],
+    external: ['node-pty', '@parcel/watcher', 'electron'],
+    sourcemap: false,
+    minify: true,
+    define: {
+      'process.env.NODE_ENV': '"production"'
+    }
+  })
+
+  await build({
+    entryPoints: [WATCHER_ENTRY],
+    bundle: true,
+    platform: 'node',
+    target: 'node18',
+    format: 'cjs',
+    outfile: join(outDir, 'relay-watcher.js'),
+    external: ['@parcel/watcher'],
     sourcemap: false,
     minify: true,
     define: {
@@ -58,9 +74,11 @@ for (const platform of PLATFORMS) {
   })
 
   // Why: include a content hash so the deploy check detects code changes
-  // even when RELAY_VERSION hasn't been bumped (common during development).
+  // even when RELAY_VERSION hasn't been bumped. Hash both process artifacts
+  // and the Windows-only patch so every runtime dependency deploys together.
   const relayContent = readFileSync(join(outDir, 'relay.js'))
-  const artifactHash = createHash('sha256').update(relayContent)
+  const watcherContent = readFileSync(join(outDir, 'relay-watcher.js'))
+  const artifactHash = createHash('sha256').update(relayContent).update(watcherContent)
   if (platform.startsWith('win32-')) {
     // Why: SSH relays install node-pty with npm on the remote, outside pnpm's
     // patchedDependencies. Hashing the patch forces safe upgrade redeployment.

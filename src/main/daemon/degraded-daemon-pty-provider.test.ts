@@ -109,6 +109,119 @@ function createDaemonAdapter(
 }
 
 describe('DegradedDaemonPtyProvider', () => {
+  it('retains the exact child route until exit proof', async () => {
+    const daemonSessions = ['shared-session']
+    const current = createDaemonAdapter('daemon', daemonSessions)
+    const fallback = createProvider('fallback')
+    vi.mocked(current.shutdown).mockResolvedValueOnce(undefined)
+    const provider = new DegradedDaemonPtyProvider({ current, legacy: [], fallback })
+    await provider.discoverDaemonSessions()
+
+    expect(provider.requiresShutdownExitProof).toBe(true)
+    await provider.shutdown('shared-session', { immediate: true })
+    provider.write('shared-session', 'before-exit')
+
+    expect(current.write).toHaveBeenCalledWith('shared-session', 'before-exit')
+    daemonSessions.length = 0
+    current.emitExit('shared-session', 0)
+    provider.write('shared-session', 'after-exit')
+    expect(fallback.write).toHaveBeenCalledWith('shared-session', 'after-exit')
+  })
+
+  it('retains a same-provider replacement across an older process listing', async () => {
+    const current = createDaemonAdapter('daemon', ['shared-session'])
+    const fallback = createProvider('fallback')
+    const provider = new DegradedDaemonPtyProvider({ current, legacy: [], fallback })
+    await provider.discoverDaemonSessions()
+    let finishDaemonListing!: (sessions: []) => void
+    vi.mocked(current.listProcesses).mockImplementationOnce(
+      () => new Promise((resolve) => (finishDaemonListing = resolve))
+    )
+
+    const staleListing = provider.listProcesses()
+    await provider.spawn({ sessionId: 'shared-session', cols: 80, rows: 24 })
+    finishDaemonListing([])
+    await staleListing
+    provider.write('shared-session', 'replacement')
+
+    expect(provider.getCurrentDaemonSessionIds()).toEqual(['shared-session'])
+    expect(current.write).toHaveBeenCalledWith('shared-session', 'replacement')
+    expect(fallback.write).not.toHaveBeenCalledWith('shared-session', 'replacement')
+  })
+
+  it('defers a fallback old exit until replacement spawn proves the id live', async () => {
+    const fallbackSessions: string[] = []
+    const current = createDaemonAdapter('daemon')
+    const fallback = createProvider('fallback', fallbackSessions)
+    const provider = new DegradedDaemonPtyProvider({ current, legacy: [], fallback })
+    const exit = vi.fn()
+    provider.onExit(exit)
+    await provider.spawn({ sessionId: 'same-id', cols: 80, rows: 24 })
+    await provider.shutdown('same-id', { immediate: true })
+    await provider.listProcesses()
+
+    let resolveSpawn!: (result: PtySpawnResult) => void
+    vi.mocked(fallback.spawn).mockImplementationOnce(
+      () => new Promise((resolve) => (resolveSpawn = resolve))
+    )
+    const replacement = provider.spawn({ sessionId: 'same-id', cols: 80, rows: 24 })
+    await vi.waitFor(() => expect(fallback.spawn).toHaveBeenCalledTimes(2))
+    fallback.emitExit('same-id', 7)
+    expect(exit).not.toHaveBeenCalled()
+
+    fallbackSessions.push('same-id')
+    resolveSpawn({ id: 'same-id' })
+    await replacement
+    provider.write('same-id', 'replacement')
+
+    expect(exit).not.toHaveBeenCalled()
+    expect(fallback.write).toHaveBeenCalledWith('same-id', 'replacement')
+  })
+
+  it('delivers a deferred fallback exit when replacement spawn fails with no live id', async () => {
+    const current = createDaemonAdapter('daemon')
+    const fallback = createProvider('fallback')
+    const provider = new DegradedDaemonPtyProvider({ current, legacy: [], fallback })
+    const exit = vi.fn()
+    provider.onExit(exit)
+    let rejectSpawn!: (error: Error) => void
+    vi.mocked(fallback.spawn).mockImplementationOnce(
+      () => new Promise((_resolve, reject) => (rejectSpawn = reject))
+    )
+
+    const replacement = provider.spawn({ sessionId: 'same-id', cols: 80, rows: 24 })
+    await vi.waitFor(() => expect(fallback.spawn).toHaveBeenCalledOnce())
+    fallback.emitExit('same-id', 7)
+    rejectSpawn(new Error('spawn failed'))
+
+    await expect(replacement).rejects.toThrow('spawn failed')
+    expect(exit).toHaveBeenCalledWith({ id: 'same-id', code: 7 })
+  })
+
+  it('rejects overlapping fallback spawn before it can overwrite deferred exit proof', async () => {
+    const current = createDaemonAdapter('daemon')
+    const fallback = createProvider('fallback')
+    const provider = new DegradedDaemonPtyProvider({ current, legacy: [], fallback })
+    const exit = vi.fn()
+    provider.onExit(exit)
+    let rejectSpawn!: (error: Error) => void
+    vi.mocked(fallback.spawn).mockImplementationOnce(
+      () => new Promise((_resolve, reject) => (rejectSpawn = reject))
+    )
+
+    const first = provider.spawn({ sessionId: 'same-id', cols: 80, rows: 24 })
+    await vi.waitFor(() => expect(fallback.spawn).toHaveBeenCalledOnce())
+    await expect(provider.spawn({ sessionId: 'same-id', cols: 80, rows: 24 })).rejects.toThrow(
+      'PTY spawn already in progress'
+    )
+    fallback.emitExit('same-id', 7)
+    rejectSpawn(new Error('first spawn failed'))
+
+    await expect(first).rejects.toThrow('first spawn failed')
+    expect(fallback.spawn).toHaveBeenCalledOnce()
+    expect(exit).toHaveBeenCalledOnce()
+  })
+
   it('routes fresh foreground confirmation to the session owner', async () => {
     const current = createDaemonAdapter('daemon', ['daemon-session'])
     const fallback = createProvider('fallback')
@@ -262,7 +375,7 @@ describe('DegradedDaemonPtyProvider', () => {
     expect(provider.hasPty(fresh.id)).toBe(false)
   })
 
-  it('is best-effort: counts only successful shutdowns and never throws (keeps restart alive)', async () => {
+  it('blocks provider replacement when a fallback shutdown rejects', async () => {
     const current = createDaemonAdapter('daemon')
     const fallback = createProvider('fallback')
     const provider = new DegradedDaemonPtyProvider({ current, legacy: [], fallback })
@@ -275,16 +388,57 @@ describe('DegradedDaemonPtyProvider', () => {
       }
     })
 
-    // Why: a single un-killable local PTY must not abort the daemon restart.
-    const killedCount = await provider.shutdownFallbackSessions()
+    await expect(provider.shutdownFallbackSessions()).rejects.toThrow(
+      'Cannot restart daemon while local fallback PTY exit remains unconfirmed'
+    )
 
-    // Best-effort: the one that shut down is counted, the stuck one is not, and
-    // crucially it does not throw — so the daemon restart sequence proceeds.
-    expect(killedCount).toBe(1)
     expect(warn).toHaveBeenCalled()
     expect(fallback.shutdown).toHaveBeenCalledWith('stuck', { immediate: true })
     expect(fallback.shutdown).toHaveBeenCalledWith('ok', { immediate: true })
+    expect(provider.hasPty('stuck')).toBe(true)
     warn.mockRestore()
+  })
+
+  it('blocks provider replacement after accepted fallback shutdown without exit proof', async () => {
+    const fallbackSessions: string[] = []
+    const current = createDaemonAdapter('daemon')
+    const fallback = createProvider('fallback', fallbackSessions)
+    Object.defineProperty(fallback, 'requiresShutdownExitProof', { value: true })
+    vi.mocked(fallback.shutdown).mockResolvedValue(undefined)
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const provider = new DegradedDaemonPtyProvider({ current, legacy: [], fallback })
+    await provider.spawn({ sessionId: 'still-live-a', cols: 80, rows: 24 })
+    await provider.spawn({ sessionId: 'still-live-b', cols: 80, rows: 24 })
+
+    await expect(provider.shutdownFallbackSessions()).rejects.toThrow(
+      'Cannot restart daemon while local fallback PTY exit remains unconfirmed'
+    )
+
+    expect(fallback.shutdown).toHaveBeenCalledTimes(2)
+    expect(fallback.listProcesses).toHaveBeenCalledOnce()
+    expect(provider.hasPty('still-live-a')).toBe(true)
+    expect(provider.hasPty('still-live-b')).toBe(true)
+    provider.write('still-live-a', 'route-retained')
+    expect(fallback.write).toHaveBeenCalledWith('still-live-a', 'route-retained')
+    warn.mockRestore()
+  })
+
+  it('allows replacement when inventory proves death after fallback shutdown throws', async () => {
+    const fallbackSessions: string[] = []
+    const current = createDaemonAdapter('daemon')
+    const fallback = createProvider('fallback', fallbackSessions)
+    Object.defineProperty(fallback, 'requiresShutdownExitProof', { value: true })
+    vi.mocked(fallback.shutdown).mockImplementation(async (id: string) => {
+      fallbackSessions.splice(fallbackSessions.indexOf(id), 1)
+      throw new Error('native close threw after process exit')
+    })
+    const provider = new DegradedDaemonPtyProvider({ current, legacy: [], fallback })
+    await provider.spawn({ sessionId: 'proved-dead', cols: 80, rows: 24 })
+
+    await expect(provider.shutdownFallbackSessions()).resolves.toBe(1)
+
+    expect(fallback.listProcesses).toHaveBeenCalledOnce()
+    expect(provider.hasPty('proved-dead')).toBe(false)
   })
 
   it('fans synthetic exits for discovered current-daemon sessions only', async () => {

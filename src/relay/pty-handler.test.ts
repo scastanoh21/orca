@@ -174,6 +174,19 @@ describe('PtyHandler', () => {
     expect(handler.activePtyCount).toBe(1)
   })
 
+  it('keeps the 50-session cap atomic across concurrent module loads', async () => {
+    mockPtySpawn.mockImplementation(() => ({ ...mockPtyInstance }))
+
+    const results = await Promise.allSettled(
+      Array.from({ length: 51 }, () => dispatcher.callRequest('pty.spawn', {}))
+    )
+
+    expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(50)
+    expect(results.filter((result) => result.status === 'rejected')).toHaveLength(1)
+    expect(mockPtySpawn).toHaveBeenCalledTimes(50)
+    expect(handler.activePtyCount).toBe(50)
+  })
+
   it('uses an explicit shell override and falls back to the default shell otherwise', async () => {
     const originalPlatform = process.platform
     Object.defineProperty(process, 'platform', {
@@ -694,6 +707,135 @@ describe('PtyHandler', () => {
     expect(killSpy).toHaveBeenCalledWith('SIGKILL')
   })
 
+  it('keeps stale-spawn fallback ownership when the first native kill throws', async () => {
+    const firstError = new Error('native ConPTY kill failed')
+    let onExitCb: ((event: { exitCode: number }) => void) | null = null
+    const killSpy = vi
+      .fn()
+      .mockImplementationOnce(() => {
+        throw firstError
+      })
+      .mockImplementationOnce(() => onExitCb?.({ exitCode: 137 }))
+    const term = {
+      ...mockPtyInstance,
+      kill: killSpy,
+      onData: vi.fn(),
+      onExit: vi.fn((cb: (event: { exitCode: number }) => void) => {
+        onExitCb = cb
+      })
+    }
+    mockPtySpawn.mockReturnValue(term)
+
+    await expect(dispatcher.callRequest('pty.spawn', {}, { isStale: () => true })).rejects.toThrow(
+      firstError
+    )
+
+    expect(handler.activePtyCount).toBe(1)
+    vi.advanceTimersByTime(5000)
+    expect(killSpy).toHaveBeenNthCalledWith(2, 'SIGKILL')
+    expect(handler.activePtyCount).toBe(0)
+  })
+
+  it('contains repeated stale-spawn throws and retains ownership until a proven retry', async () => {
+    let onExitCb: ((event: { exitCode: number }) => void) | null = null
+    const killSpy = vi
+      .fn()
+      .mockImplementationOnce(() => {
+        throw new Error('native ConPTY kill failed')
+      })
+      .mockImplementationOnce(() => {
+        throw new Error('native ConPTY kill failed')
+      })
+      .mockImplementationOnce(() => onExitCb?.({ exitCode: 137 }))
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    const term = {
+      ...mockPtyInstance,
+      kill: killSpy,
+      onData: vi.fn(),
+      onExit: vi.fn((cb: (event: { exitCode: number }) => void) => {
+        onExitCb = cb
+      })
+    }
+    mockPtySpawn.mockReturnValue(term)
+
+    try {
+      await expect(
+        dispatcher.callRequest('pty.spawn', {}, { isStale: () => true })
+      ).rejects.toThrow('native ConPTY kill failed')
+      expect(() => vi.advanceTimersByTime(5000)).not.toThrow()
+      expect(killSpy).toHaveBeenCalledTimes(2)
+      expect(handler.activePtyCount).toBe(1)
+      expect(stderr).toHaveBeenCalledWith(expect.stringContaining('stale-spawn force kill failed'))
+      expect(() => vi.advanceTimersByTime(5000)).not.toThrow()
+      expect(killSpy).toHaveBeenNthCalledWith(3, 'SIGKILL')
+      expect(handler.activePtyCount).toBe(0)
+    } finally {
+      stderr.mockRestore()
+    }
+  })
+
+  it('reaps a stale spawn when fallback kill throws after OS exit proof', async () => {
+    const killSpy = vi
+      .fn()
+      .mockImplementationOnce(() => {})
+      .mockImplementationOnce(() => {
+        throw new Error('native handle already closed')
+      })
+    mockPtySpawn.mockReturnValue({
+      ...mockPtyInstance,
+      kill: killSpy,
+      onData: vi.fn(),
+      onExit: vi.fn()
+    })
+    const aliveSpy = vi.spyOn(ptyShellUtils, 'isProcessAlive').mockReturnValue(false)
+    try {
+      await dispatcher.callRequest('pty.spawn', {}, { isStale: () => true })
+      vi.advanceTimersByTime(5000)
+    } finally {
+      aliveSpy.mockRestore()
+    }
+
+    expect(killSpy).toHaveBeenCalledTimes(2)
+    expect(handler.activePtyCount).toBe(0)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('retains stale-spawn ownership beyond the eighth native failure', async () => {
+    let onExitCb: ((event: { exitCode: number }) => void) | null = null
+    const killSpy = vi.fn()
+    for (let attempt = 0; attempt < 9; attempt += 1) {
+      killSpy.mockImplementationOnce(() => {
+        throw new Error('native ConPTY kill failed')
+      })
+    }
+    killSpy.mockImplementationOnce(() => onExitCb?.({ exitCode: 137 }))
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    mockPtySpawn.mockReturnValue({
+      ...mockPtyInstance,
+      kill: killSpy,
+      onData: vi.fn(),
+      onExit: vi.fn((cb: (event: { exitCode: number }) => void) => {
+        onExitCb = cb
+      })
+    })
+
+    try {
+      await expect(
+        dispatcher.callRequest('pty.spawn', {}, { isStale: () => true })
+      ).rejects.toThrow('native ConPTY kill failed')
+      vi.advanceTimersByTime(40_000)
+      expect(handler.activePtyCount).toBe(1)
+      expect(killSpy).toHaveBeenCalledTimes(9)
+
+      vi.advanceTimersByTime(5_000)
+      expect(killSpy).toHaveBeenCalledTimes(10)
+      expect(handler.activePtyCount).toBe(0)
+      expect(stderr).toHaveBeenCalledTimes(3)
+    } finally {
+      stderr.mockRestore()
+    }
+  })
+
   it('does not submit provider-delivered commands for stale spawn responses', async () => {
     const killSpy = vi.fn()
     const term = { ...mockPtyInstance, kill: killSpy, onData: vi.fn(), onExit: vi.fn() }
@@ -1018,6 +1160,90 @@ describe('PtyHandler', () => {
     expect(mockKill).toHaveBeenCalledWith('SIGTERM')
   })
 
+  // Why: node-pty's Windows agent throws "Signals not supported on windows."
+  // for any signal argument. killPtyForShutdown drops the signal on win32 and
+  // keeps one-shot ownership — cover every call site so neither can regress.
+  describe('kills PTY without a signal on Windows', () => {
+    async function withWindowsPlatform(fn: () => Promise<void>): Promise<void> {
+      const originalPlatform = process.platform
+      Object.defineProperty(process, 'platform', { configurable: true, value: 'win32' })
+      try {
+        await fn()
+      } finally {
+        Object.defineProperty(process, 'platform', {
+          configurable: true,
+          value: originalPlatform
+        })
+      }
+    }
+
+    function mockKillablePty(): ReturnType<typeof vi.fn> {
+      const mockKill = vi.fn()
+      mockPtySpawn.mockReturnValue({
+        ...mockPtyInstance,
+        kill: mockKill,
+        onData: vi.fn(),
+        onExit: vi.fn()
+      })
+      return mockKill
+    }
+
+    function expectBareKills(mockKill: ReturnType<typeof vi.fn>, times: number): void {
+      expect(mockKill).toHaveBeenCalledTimes(times)
+      expect(mockKill.mock.calls.every((args) => args.length === 0)).toBe(true)
+    }
+
+    it('on graceful shutdown', async () => {
+      await withWindowsPlatform(async () => {
+        const mockKill = mockKillablePty()
+        await dispatcher.callRequest('pty.spawn', {})
+        await dispatcher.callRequest('pty.shutdown', { id: 'pty-1', immediate: false })
+        expectBareKills(mockKill, 1)
+      })
+    })
+
+    it('on immediate shutdown', async () => {
+      await withWindowsPlatform(async () => {
+        const mockKill = mockKillablePty()
+        await dispatcher.callRequest('pty.spawn', {})
+        await dispatcher.callRequest('pty.shutdown', { id: 'pty-1', immediate: true })
+        expectBareKills(mockKill, 1)
+      })
+    })
+
+    it('on stale-spawn cleanup without reissuing an accepted close', async () => {
+      await withWindowsPlatform(async () => {
+        const mockKill = mockKillablePty()
+        await dispatcher.callRequest('pty.spawn', {}, { isStale: () => true })
+        expectBareKills(mockKill, 1)
+        vi.advanceTimersByTime(5000)
+        expectBareKills(mockKill, 1)
+        expect(handler.activePtyCount).toBe(1)
+      })
+    })
+
+    it('on graceful shutdown without reissuing an accepted close', async () => {
+      await withWindowsPlatform(async () => {
+        const mockKill = mockKillablePty()
+        await dispatcher.callRequest('pty.spawn', {})
+        await dispatcher.callRequest('pty.shutdown', { id: 'pty-1', immediate: false })
+        expectBareKills(mockKill, 1)
+        vi.advanceTimersByTime(5000)
+        expectBareKills(mockKill, 1)
+        expect(handler.activePtyCount).toBe(1)
+      })
+    })
+
+    it('on dispose', async () => {
+      await withWindowsPlatform(async () => {
+        const mockKill = mockKillablePty()
+        await dispatcher.callRequest('pty.spawn', {})
+        handler.dispose()
+        expectBareKills(mockKill, 1)
+      })
+    })
+  })
+
   it('flushes pending PTY output before immediate shutdown cleanup', async () => {
     let dataCallback: ((data: string) => void) | undefined
     const mockKill = vi.fn()
@@ -1062,7 +1288,7 @@ describe('PtyHandler', () => {
 
     expect(mockKill).toHaveBeenCalledWith('SIGTERM')
     expect(mockKill).toHaveBeenCalledWith('SIGKILL')
-    expect(dispatcher.notify).toHaveBeenCalledWith('pty.exit', { id: 'pty-1', code: -1 })
+    expect(dispatcher.notify).toHaveBeenCalledWith('pty.exit', { id: 'pty-1', code: 137 })
     expect(exits).toEqual([{ id: 'pty-1', paneKey: 'tab-fallback:0' }])
     expect(handler.activePtyCount).toBe(0)
   })
@@ -1108,8 +1334,72 @@ describe('PtyHandler', () => {
     }
   })
 
-  it('keeps Windows graceful shutdown and its fallback signal-free', async () => {
+  it('does not reissue an accepted Windows close from a later shutdown request', async () => {
     const platformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform')
+    let onExitCb!: (event: { exitCode: number }) => void
+    const mockKill = vi.fn()
+    mockPtySpawn.mockReturnValue({
+      ...mockPtyInstance,
+      kill: mockKill,
+      onData: vi.fn(),
+      onExit: vi.fn((cb: (event: { exitCode: number }) => void) => {
+        onExitCb = cb
+      })
+    })
+
+    Object.defineProperty(process, 'platform', { configurable: true, value: 'win32' })
+    try {
+      await dispatcher.callRequest('pty.spawn', {})
+      await dispatcher.callRequest('pty.shutdown', { id: 'pty-1', immediate: true })
+      await dispatcher.callRequest('pty.shutdown', { id: 'pty-1', immediate: true })
+
+      expect(mockKill.mock.calls).toEqual([[]])
+      expect(handler.activePtyCount).toBe(1)
+      onExitCb({ exitCode: 137 })
+      expect(handler.activePtyCount).toBe(0)
+    } finally {
+      if (platformDescriptor) {
+        Object.defineProperty(process, 'platform', platformDescriptor)
+      }
+    }
+  })
+
+  it('reaps delayed OS death from inventory without reissuing an accepted Windows close', async () => {
+    const platformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform')
+    const mockKill = vi.fn()
+    const destroy = vi.fn(() => mockKill())
+    const proc = {
+      ...mockPtyInstance,
+      pid: process.pid,
+      kill: mockKill,
+      destroy,
+      onData: vi.fn(),
+      onExit: vi.fn()
+    }
+    mockPtySpawn.mockReturnValue(proc)
+
+    Object.defineProperty(process, 'platform', { configurable: true, value: 'win32' })
+    try {
+      await dispatcher.callRequest('pty.spawn', {})
+      await dispatcher.callRequest('pty.shutdown', { id: 'pty-1', immediate: true })
+      expect(handler.activePtyCount).toBe(1)
+
+      proc.pid = 2_147_483_647
+      await expect(dispatcher.callRequest('pty.listProcesses')).resolves.toEqual([])
+
+      expect(handler.activePtyCount).toBe(0)
+      expect(mockKill).toHaveBeenCalledOnce()
+      expect(destroy).not.toHaveBeenCalled()
+    } finally {
+      if (platformDescriptor) {
+        Object.defineProperty(process, 'platform', platformDescriptor)
+      }
+    }
+  })
+
+  it('does not reissue an accepted Windows graceful shutdown', async () => {
+    const platformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform')
+    let onExitCb: ((event: { exitCode: number }) => void) | null = null
     const mockKill = vi.fn()
     const destroy = vi.fn(() => mockKill())
     mockPtySpawn.mockReturnValue({
@@ -1117,7 +1407,9 @@ describe('PtyHandler', () => {
       kill: mockKill,
       destroy,
       onData: vi.fn(),
-      onExit: vi.fn()
+      onExit: vi.fn((cb: (event: { exitCode: number }) => void) => {
+        onExitCb = cb
+      })
     })
 
     Object.defineProperty(process, 'platform', { configurable: true, value: 'win32' })
@@ -1128,6 +1420,8 @@ describe('PtyHandler', () => {
 
       expect(mockKill.mock.calls).toEqual([[]])
       expect(destroy).not.toHaveBeenCalled()
+      expect(handler.activePtyCount).toBe(1)
+      onExitCb!({ exitCode: 137 })
       expect(handler.activePtyCount).toBe(0)
     } finally {
       if (platformDescriptor) {
@@ -1138,19 +1432,22 @@ describe('PtyHandler', () => {
 
   it('keeps a Windows PTY retryable when immediate native shutdown throws', async () => {
     const platformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform')
+    let onExitCb: ((event: { exitCode: number }) => void) | null = null
     const mockKill = vi
       .fn()
       .mockImplementationOnce(() => {
         throw new Error('invalid ConPTY handle')
       })
-      .mockImplementationOnce(() => {})
+      .mockImplementationOnce(() => onExitCb?.({ exitCode: 137 }))
     const destroy = vi.fn(() => mockKill())
     mockPtySpawn.mockReturnValue({
       ...mockPtyInstance,
       kill: mockKill,
       destroy,
       onData: vi.fn(),
-      onExit: vi.fn()
+      onExit: vi.fn((cb: (event: { exitCode: number }) => void) => {
+        onExitCb = cb
+      })
     })
 
     Object.defineProperty(process, 'platform', { configurable: true, value: 'win32' })
@@ -1172,8 +1469,34 @@ describe('PtyHandler', () => {
     }
   })
 
-  it('does not arm Windows graceful fallback until native shutdown succeeds', async () => {
+  it('accepts OS exit proof when immediate native shutdown throws after process death', async () => {
+    const killSpy = vi.fn(() => {
+      throw new Error('native handle already closed')
+    })
+    mockPtySpawn.mockReturnValue({
+      ...mockPtyInstance,
+      kill: killSpy,
+      onData: vi.fn(),
+      onExit: vi.fn()
+    })
+    const aliveSpy = vi.spyOn(ptyShellUtils, 'isProcessAlive').mockReturnValue(false)
+    try {
+      await dispatcher.callRequest('pty.spawn', {})
+      await expect(
+        dispatcher.callRequest('pty.shutdown', { id: 'pty-1', immediate: true })
+      ).resolves.toBeUndefined()
+    } finally {
+      aliveSpy.mockRestore()
+    }
+
+    expect(killSpy).toHaveBeenCalledTimes(1)
+    expect(handler.activePtyCount).toBe(0)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('retries a thrown Windows graceful shutdown but not an accepted retry', async () => {
     const platformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform')
+    let onExitCb: ((event: { exitCode: number }) => void) | null = null
     const mockKill = vi
       .fn()
       .mockImplementationOnce(() => {
@@ -1186,7 +1509,9 @@ describe('PtyHandler', () => {
       kill: mockKill,
       destroy,
       onData: vi.fn(),
-      onExit: vi.fn()
+      onExit: vi.fn((cb: (event: { exitCode: number }) => void) => {
+        onExitCb = cb
+      })
     })
 
     Object.defineProperty(process, 'platform', { configurable: true, value: 'win32' })
@@ -1201,12 +1526,96 @@ describe('PtyHandler', () => {
       await dispatcher.callRequest('pty.shutdown', { id: 'pty-1', immediate: false })
       vi.advanceTimersByTime(5000)
       expect(mockKill.mock.calls).toEqual([[], []])
+      expect(handler.activePtyCount).toBe(1)
+      onExitCb!({ exitCode: 137 })
       expect(handler.activePtyCount).toBe(0)
     } finally {
       if (platformDescriptor) {
         Object.defineProperty(process, 'platform', platformDescriptor)
       }
     }
+  })
+
+  it('polls after accepted Windows graceful shutdown without a fallback close', async () => {
+    const platformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform')
+    let onExitCb: ((event: { exitCode: number }) => void) | null = null
+    const mockKill = vi.fn()
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    mockPtySpawn.mockReturnValue({
+      ...mockPtyInstance,
+      kill: mockKill,
+      onData: vi.fn(),
+      onExit: vi.fn((cb: (event: { exitCode: number }) => void) => {
+        onExitCb = cb
+      })
+    })
+
+    Object.defineProperty(process, 'platform', { configurable: true, value: 'win32' })
+    try {
+      await dispatcher.callRequest('pty.spawn', {})
+      await dispatcher.callRequest('pty.shutdown', { id: 'pty-1', immediate: false })
+
+      expect(() => vi.advanceTimersByTime(5000)).not.toThrow()
+      expect(handler.activePtyCount).toBe(1)
+      expect(() => vi.advanceTimersByTime(5000)).not.toThrow()
+      expect(mockKill.mock.calls).toEqual([[]])
+      onExitCb!({ exitCode: 137 })
+      expect(handler.activePtyCount).toBe(0)
+    } finally {
+      stderr.mockRestore()
+      if (platformDescriptor) {
+        Object.defineProperty(process, 'platform', platformDescriptor)
+      }
+    }
+  })
+
+  it('reaps graceful fallback when native throw is followed by OS exit proof', async () => {
+    const killSpy = vi
+      .fn()
+      .mockImplementationOnce(() => {})
+      .mockImplementationOnce(() => {
+        throw new Error('native handle already closed')
+      })
+    mockPtySpawn.mockReturnValue({
+      ...mockPtyInstance,
+      kill: killSpy,
+      onData: vi.fn(),
+      onExit: vi.fn()
+    })
+    const aliveSpy = vi.spyOn(ptyShellUtils, 'isProcessAlive').mockReturnValue(false)
+    try {
+      await dispatcher.callRequest('pty.spawn', {})
+      await dispatcher.callRequest('pty.shutdown', { id: 'pty-1', immediate: false })
+      vi.advanceTimersByTime(5000)
+    } finally {
+      aliveSpy.mockRestore()
+    }
+
+    expect(handler.activePtyCount).toBe(0)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('completes whole-relay shutdown when native throw follows OS exit proof', async () => {
+    mockPtySpawn.mockReturnValue({
+      ...mockPtyInstance,
+      kill: vi.fn(() => {
+        throw new Error('native handle already closed')
+      }),
+      onData: vi.fn(),
+      onExit: vi.fn()
+    })
+    const aliveSpy = vi.spyOn(ptyShellUtils, 'isProcessAlive').mockReturnValue(false)
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    try {
+      await dispatcher.callRequest('pty.spawn', {})
+      await expect(handler.shutdownAndWait(1000)).resolves.toBeUndefined()
+    } finally {
+      aliveSpy.mockRestore()
+      stderr.mockRestore()
+    }
+
+    expect(handler.activePtyCount).toBe(0)
+    expect(vi.getTimerCount()).toBe(0)
   })
 
   it('throws for attach on nonexistent PTY', async () => {
@@ -1562,6 +1971,37 @@ describe('PtyHandler', () => {
     }
   )
 
+  it('whole-relay shutdown retries native failure and waits for exit proof', async () => {
+    let onExitCb: ((event: { exitCode: number }) => void) | null = null
+    const kill = vi
+      .fn()
+      .mockImplementationOnce(() => {
+        throw new Error('native force kill failed')
+      })
+      .mockImplementationOnce(() => onExitCb?.({ exitCode: 137 }))
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    mockPtySpawn.mockReturnValue({
+      ...mockPtyInstance,
+      kill,
+      onExit: vi.fn((cb: (event: { exitCode: number }) => void) => {
+        onExitCb = cb
+      })
+    })
+    try {
+      await dispatcher.callRequest('pty.spawn', {})
+
+      const shutdown = handler.shutdownAndWait(1_000)
+      expect(handler.activePtyCount).toBe(1)
+      await vi.advanceTimersByTimeAsync(100)
+
+      await expect(shutdown).resolves.toBeUndefined()
+      expect(kill).toHaveBeenCalledTimes(2)
+      expect(handler.activePtyCount).toBe(0)
+    } finally {
+      stderr.mockRestore()
+    }
+  })
+
   it('revive restores pane identity env alongside hook-server coordinates', async () => {
     await dispatcher.callRequest('pty.spawn', {
       cols: 90,
@@ -1869,10 +2309,48 @@ describe('PtyHandler', () => {
       env: { ORCA_PANE_KEY: 'tab-shutdown:0' }
     })
     await dispatcher.callRequest('pty.shutdown', { id: 'pty-1', immediate: true })
+    expect(exits).toEqual([])
+    expect(handler.activePtyCount).toBe(1)
     onExitCb!({ exitCode: 0 })
 
     expect(mockKill).toHaveBeenCalledWith('SIGKILL')
     expect(exits).toEqual([{ id: 'pty-1', paneKey: 'tab-shutdown:0' }])
+    expect(handler.activePtyCount).toBe(0)
+  })
+
+  it('rejects shutdown when a recycled id belongs to another pane generation', async () => {
+    let onExitCb: ((event: { exitCode: number }) => void) | null = null
+    const mockKill = vi.fn(() => onExitCb?.({ exitCode: 137 }))
+    mockPtySpawn.mockReturnValue({
+      ...mockPtyInstance,
+      kill: mockKill,
+      onData: vi.fn(),
+      onExit: vi.fn((cb: (event: { exitCode: number }) => void) => {
+        onExitCb = cb
+      })
+    })
+    await dispatcher.callRequest('pty.spawn', {
+      paneKey: 'tab-new:leaf-new',
+      tabId: 'tab-new'
+    })
+
+    await expect(
+      dispatcher.callRequest('pty.shutdown', {
+        id: 'pty-1',
+        immediate: true,
+        expectedPaneKey: 'tab-old:leaf-old',
+        expectedTabId: 'tab-old'
+      })
+    ).rejects.toThrow('identity mismatch')
+    expect(mockKill).not.toHaveBeenCalled()
+    expect(handler.activePtyCount).toBe(1)
+
+    await dispatcher.callRequest('pty.shutdown', {
+      id: 'pty-1',
+      immediate: true,
+      expectedPaneKey: 'tab-new:leaf-new',
+      expectedTabId: 'tab-new'
+    })
     expect(handler.activePtyCount).toBe(0)
   })
 

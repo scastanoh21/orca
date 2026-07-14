@@ -18,6 +18,8 @@ export async function cleanupEphemeralVmRuntimesForDeleted(args: {
   // Raw runtime-owned SSH target ids (e.g. a removed repo's connectionId) whose
   // backing runtime should also be torn down, even if no workspace id matched.
   runtimeOwnedSshTargetIds?: readonly string[]
+  /** Project removal must retain UI ownership when VM teardown fails. */
+  throwOnError?: boolean
 }): Promise<string[]> {
   const destroyedSshTargetIds: string[] = []
   try {
@@ -33,13 +35,16 @@ export async function cleanupEphemeralVmRuntimesForDeleted(args: {
           (runtime.sshTargetId !== undefined && sshTargetIdSet.has(runtime.sshTargetId)))
     )
     for (const runtime of matchingRuntimes) {
+      await window.api.ephemeralVm.cleanup({ runtimeId: runtime.id })
       if (runtime.sshTargetId) {
         destroyedSshTargetIds.push(runtime.sshTargetId)
       }
-      await window.api.ephemeralVm.cleanup({ runtimeId: runtime.id })
     }
   } catch (error) {
     console.error('Failed to clean up ephemeral VM runtime for deleted workspace:', error)
+    if (args.throwOnError) {
+      throw error
+    }
   }
   return destroyedSshTargetIds
 }

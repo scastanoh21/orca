@@ -9,7 +9,8 @@ const {
   mkdirSyncMock,
   writeFileSyncMock,
   spawnMock,
-  resolveAgentForegroundProcessMock
+  resolveAgentForegroundProcessMock,
+  isLocalPtyProcessProvablyExitedMock
 } = vi.hoisted(() => ({
   existsSyncMock: vi.fn(),
   statSyncMock: vi.fn(),
@@ -17,7 +18,8 @@ const {
   mkdirSyncMock: vi.fn(),
   writeFileSyncMock: vi.fn(),
   spawnMock: vi.fn(),
-  resolveAgentForegroundProcessMock: vi.fn()
+  resolveAgentForegroundProcessMock: vi.fn(),
+  isLocalPtyProcessProvablyExitedMock: vi.fn(() => false)
 }))
 
 vi.mock('fs', () => ({
@@ -38,6 +40,10 @@ vi.mock('electron', () => ({
 
 vi.mock('node-pty', () => ({
   spawn: spawnMock
+}))
+
+vi.mock('./local-pty-process-exit-proof', () => ({
+  isLocalPtyProcessProvablyExited: isLocalPtyProcessProvablyExitedMock
 }))
 
 // Resolve PowerShell family names to deterministic absolute paths (the fs mock
@@ -124,6 +130,8 @@ describe('LocalPtyProvider', () => {
     mkdirSyncMock.mockReset()
     writeFileSyncMock.mockReset()
     resolveAgentForegroundProcessMock.mockReset()
+    isLocalPtyProcessProvablyExitedMock.mockReset()
+    isLocalPtyProcessProvablyExitedMock.mockReturnValue(false)
     resolveAgentForegroundProcessMock.mockImplementation(
       async (_pid: number, fallbackProcess: string | null) => fallbackProcess
     )
@@ -942,7 +950,32 @@ describe('LocalPtyProvider', () => {
   })
 
   describe('shutdown', () => {
-    it('kills the PTY process', async () => {
+    it('rejects a stale pane identity before killing the local PTY', async () => {
+      const killSpy = mockProc.kill
+      const { id } = await provider.spawn({
+        cols: 80,
+        rows: 24,
+        env: { ORCA_PANE_KEY: 'tab-b:leaf-b', ORCA_TAB_ID: 'tab-b' }
+      })
+
+      await expect(
+        provider.shutdown(id, {
+          immediate: true,
+          expectedPaneKey: 'tab-a:leaf-a',
+          expectedTabId: 'tab-a'
+        })
+      ).rejects.toThrow('PTY identity mismatch')
+      expect(killSpy).not.toHaveBeenCalled()
+      expect(provider.hasPty(id)).toBe(true)
+
+      await provider.shutdown(id, {
+        immediate: true,
+        expectedPaneKey: 'tab-b:leaf-b',
+        expectedTabId: 'tab-b'
+      })
+    })
+
+    it('uses SIGKILL for immediate POSIX shutdown', async () => {
       // Why: capture the spy reference before shutdown triggers onExit →
       // POSIX kill neutralization. After neutralization, mockProc.kill is
       // replaced with a non-spy no-op to close the UnixTerminal.destroy() →
@@ -950,7 +983,52 @@ describe('LocalPtyProvider', () => {
       const killSpy = mockProc.kill
       const { id } = await provider.spawn({ cols: 80, rows: 24 })
       await provider.shutdown(id, { immediate: true })
-      expect(killSpy).toHaveBeenCalled()
+      expect(killSpy).toHaveBeenCalledWith('SIGKILL')
+    })
+
+    it('retains the native PTY until an accepted kill produces exit proof', async () => {
+      mockProc.kill.mockImplementation(() => {})
+      const { id } = await provider.spawn({ cols: 80, rows: 24 })
+
+      await provider.shutdown(id, { immediate: true })
+
+      expect(provider.hasPty(id)).toBe(true)
+      expect(await provider.listProcesses()).toEqual(
+        expect.arrayContaining([expect.objectContaining({ id })])
+      )
+      exitCb?.({ exitCode: 137 })
+      expect(provider.hasPty(id)).toBe(false)
+    })
+
+    it('does not let a queued old exit delete a same-id replacement', async () => {
+      let staleExit: ((event: { exitCode: number }) => void) | undefined
+      const oldProc = {
+        ...mockProc,
+        pid: 101,
+        kill: vi.fn(() => staleExit?.({ exitCode: 0 })),
+        onExit: vi.fn((callback) => {
+          staleExit = callback
+          return { dispose: vi.fn() }
+        })
+      }
+      const replacementProc = { ...mockProc, pid: 202, kill: vi.fn() }
+      spawnMock.mockReturnValueOnce(oldProc).mockReturnValueOnce(replacementProc)
+      const exits = vi.fn()
+      provider.onExit(exits)
+
+      await provider.spawn({ sessionId: 'same-id', cols: 80, rows: 24 })
+      expect(provider.listOrphanedPtys(provider.advanceGeneration())).toContainEqual({
+        id: 'same-id'
+      })
+      await provider.shutdown('same-id', { immediate: true })
+      await provider.spawn({ sessionId: 'same-id', cols: 80, rows: 24 })
+      staleExit?.({ exitCode: 0 })
+
+      expect(provider.getPtyProcess('same-id')).toBe(replacementProc)
+      expect(provider.hasPty('same-id')).toBe(true)
+      expect(exits).toHaveBeenCalledOnce()
+      expect(exits).toHaveBeenCalledWith({ id: 'same-id', code: 0 })
+      provider.killAll()
     })
 
     it('invokes onExit callback via the node-pty exit handler', async () => {
@@ -963,7 +1041,7 @@ describe('LocalPtyProvider', () => {
 
     it('does not destroy after an intentional Windows shutdown kill', async () => {
       Object.defineProperty(process, 'platform', { configurable: true, value: 'win32' })
-      const killSpy = vi.fn()
+      const killSpy = vi.fn(() => exitCb?.({ exitCode: -1 }))
       const destroySpy = vi.fn(() => {
         killSpy()
       })
@@ -978,6 +1056,62 @@ describe('LocalPtyProvider', () => {
 
       expect(killSpy).toHaveBeenCalledTimes(1)
       expect(destroySpy).not.toHaveBeenCalled()
+    })
+
+    it('retains Windows ownership when native shutdown throws so retry can succeed', async () => {
+      Object.defineProperty(process, 'platform', { configurable: true, value: 'win32' })
+      const kill = vi
+        .fn()
+        .mockImplementationOnce(() => {
+          throw new Error('native close failed')
+        })
+        .mockImplementationOnce(() => exitCb?.({ exitCode: -1 }))
+      spawnMock.mockReturnValue({ ...mockProc, kill })
+      const { id } = await provider.spawn({ cols: 80, rows: 24 })
+
+      await expect(provider.shutdown(id, { immediate: true })).rejects.toThrow(
+        'native close failed'
+      )
+      expect(provider.hasPty(id)).toBe(true)
+      expect(await provider.listProcesses()).toEqual(
+        expect.arrayContaining([expect.objectContaining({ id })])
+      )
+
+      await expect(provider.shutdown(id, { immediate: true })).resolves.toBeUndefined()
+      expect(kill).toHaveBeenCalledTimes(2)
+      expect(provider.hasPty(id)).toBe(false)
+    })
+
+    it('reaps an exact native owner when kill throws after OS exit proof', async () => {
+      Object.defineProperty(process, 'platform', { configurable: true, value: 'win32' })
+      const exits = vi.fn()
+      const destroy = vi.fn()
+      provider.onExit(exits)
+      mockProc.kill.mockImplementation(() => {
+        throw new Error('native handle already closed')
+      })
+      spawnMock.mockReturnValue({ ...mockProc, destroy })
+      isLocalPtyProcessProvablyExitedMock.mockReturnValue(true)
+      const { id } = await provider.spawn({ cols: 80, rows: 24 })
+
+      await expect(provider.shutdown(id, { immediate: true })).resolves.toBeUndefined()
+
+      expect(provider.hasPty(id)).toBe(false)
+      expect(exits).toHaveBeenCalledWith({ id, code: -1 })
+      expect(destroy).toHaveBeenCalledOnce()
+    })
+
+    it('reaps an accepted kill when OS exit proof replaces a missing onExit', async () => {
+      mockProc.kill.mockImplementation(() => {})
+      isLocalPtyProcessProvablyExitedMock.mockReturnValue(true)
+      const { id } = await provider.spawn({ cols: 80, rows: 24 })
+
+      await provider.shutdown(id, { immediate: true })
+
+      expect(provider.hasPty(id)).toBe(false)
+      expect(await provider.listProcesses()).not.toEqual(
+        expect.arrayContaining([expect.objectContaining({ id })])
+      )
     })
 
     it('cancels pending shell-ready startup delivery on forced shutdown', async () => {
@@ -1112,6 +1246,28 @@ describe('LocalPtyProvider', () => {
       const newEntries = after.slice(before.length)
       expect(newEntries[0]).toHaveProperty('id')
       expect(newEntries[0]).toHaveProperty('title', 'zsh')
+    })
+
+    it('reaps delayed OS death without reissuing an accepted Windows close', async () => {
+      Object.defineProperty(process, 'platform', { configurable: true, value: 'win32' })
+      const kill = vi.fn()
+      const destroy = vi.fn(() => kill())
+      const exits = vi.fn()
+      spawnMock.mockReturnValue({ ...mockProc, kill, destroy })
+      isLocalPtyProcessProvablyExitedMock.mockReturnValueOnce(false).mockReturnValueOnce(true)
+      provider.onExit(exits)
+      const { id } = await provider.spawn({ cols: 80, rows: 24 })
+
+      await provider.shutdown(id, { immediate: true })
+      expect(provider.hasPty(id)).toBe(true)
+      await expect(provider.listProcesses()).resolves.not.toEqual(
+        expect.arrayContaining([expect.objectContaining({ id })])
+      )
+
+      expect(provider.hasPty(id)).toBe(false)
+      expect(kill).toHaveBeenCalledOnce()
+      expect(destroy).not.toHaveBeenCalled()
+      expect(exits).toHaveBeenCalledWith({ id, code: -1 })
     })
   })
 

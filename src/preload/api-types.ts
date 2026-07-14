@@ -202,6 +202,7 @@ import type {
   UpdateStatus,
   Worktree,
   WorktreeBaseStatusEvent,
+  WorktreeHeadIdentity,
   WorktreeLineage,
   WorkspaceLineage,
   WorktreeMeta,
@@ -666,7 +667,11 @@ export type PtyManagementApi = {
   // `degraded` is true when the daemon is alive but cannot spawn fresh PTYs, so
   // new terminals run on the local provider without daemon persistence.
   listSessions: () => Promise<{ sessions: PtyManagementSession[]; degraded: boolean }>
-  killAll: () => Promise<{ killedCount: number; remainingCount: number }>
+  killAll: () => Promise<{
+    killedCount: number
+    remainingCount: number
+    killedSessionIds?: string[]
+  }>
   killOne: (args: { sessionId: string }) => Promise<{ success: boolean }>
   restart: () => Promise<{ success: boolean }>
 }
@@ -812,7 +817,11 @@ export type AiVaultApi = {
   onWindowFocused: (callback: () => void) => () => void
 }
 
-export type NativeChatReadSessionResult = { messages: NativeChatMessage[] } | { error: string }
+// notFound marks a miss caused by the transcript not existing on disk yet
+// (retry-worthy), as opposed to a real read/parse error (#8401).
+export type NativeChatReadSessionResult =
+  | { messages: NativeChatMessage[] }
+  | { error: string; notFound?: true }
 
 /** Messages appended to a live-tailed transcript since the previous emit. */
 export type NativeChatAppendedMessages = NativeChatMessage[]
@@ -1175,7 +1184,14 @@ export type PreloadApi = {
       noParent?: boolean
     }) => Promise<WorktreeLineage | null>
     persistSortOrder: (args: { orderedIds: string[] }) => Promise<void>
+    /** Full CLI output of the last branch auto-rename generation failure, held
+     *  in main memory only — null after a restart or once the failure clears. */
+    getBranchRenameFailureOutput: (args: { worktreeId: string }) => Promise<string | null>
     onChanged: (callback: (data: { repoId: string }) => void) => () => void
+    onGitStatusMetadataChanged: (callback: (data: { repoId: string }) => void) => () => void
+    onHeadIdentitiesChanged: (
+      callback: (data: { repoId: string; identities: WorktreeHeadIdentity[] }) => void
+    ) => () => void
     onBaseStatus: (callback: (data: WorktreeBaseStatusEvent) => void) => () => void
     onRemoteBranchConflict: (
       callback: (data: WorktreeRemoteBranchConflictEvent) => void
@@ -1260,7 +1276,14 @@ export type PreloadApi = {
     reportGeometry: (id: string, cols: number, rows: number) => void
     signal: (id: string, signal: string) => void
     clearBuffer: (id: string) => void
-    kill: (id: string, opts?: { keepHistory?: boolean }) => Promise<void>
+    kill: (
+      id: string,
+      opts?: {
+        keepHistory?: boolean
+        expectedPaneKey?: string
+        expectedTabId?: string
+      }
+    ) => Promise<void>
     ackColdRestore: (id: string) => void
     ackData: (id: string, charCount: number, processedChars?: number) => void
     onDeliveryResyncRequest: (callback: (payload: { requestId: number }) => void) => () => void
@@ -2070,6 +2093,7 @@ export type PreloadApi = {
      *  IPC — call sparingly. */
     getSync: () => GlobalSettings | null
     set: (args: Partial<GlobalSettings>) => Promise<GlobalSettings>
+    updatePRBotAuthorOverride: (args: { author: string; isBot: boolean }) => Promise<GlobalSettings>
     listFonts: () => Promise<string[]>
     previewGhosttyImport: () => Promise<GhosttyImportPreview>
     previewWarpThemeImport: (source: WarpThemeImportSource) => Promise<WarpThemeImportPreview>
@@ -2787,6 +2811,7 @@ export type PreloadApi = {
         launchConfig?: SleepingAgentLaunchConfig
         launchToken?: string
         launchAgent?: TuiAgent
+        viewMode?: 'terminal' | 'chat'
         title?: string
         ptyId?: string
         activate?: boolean
@@ -3111,6 +3136,14 @@ export type PreloadApi = {
     /** Drop every cached hook status under one terminal tab prefix.
      *  Fire-and-forget. */
     dropByTabPrefix: (tabId: string) => void
+    /** Permanently retire one pane's hook authority while siblings stay live. */
+    retirePaneAuthority: (paneKey: string) => void
+    /** Move hook authority when a live pane is detached into another tab. */
+    transferPaneAuthority: (args: {
+      fromPaneKey: string
+      toPaneKey: string
+      ptyId?: string
+    }) => void
   }
   mobile: {
     listNetworkInterfaces: () => Promise<{
@@ -3126,6 +3159,21 @@ export type PreloadApi = {
           deviceId: string
         }
     >
+    getWindowsFirewallStatus: (args?: { address?: string }) => Promise<
+      | { supported: false }
+      | {
+          supported: true
+          port: number
+          ruleAllowed: boolean
+          privateFirewallEnabled: boolean
+          networkCategory: 'private' | 'public' | 'domain' | 'unknown'
+          inspectionAvailable: boolean
+        }
+    >
+    repairWindowsFirewall: () => Promise<
+      { ok: true } | { ok: false; reason: 'cancelled' | 'failed' | 'unsupported' }
+    >
+    openWindowsNetworkSettings: () => Promise<boolean>
     getRuntimePairingUrl: (args?: { address?: string; rotate?: boolean }) => Promise<
       | { available: false }
       | {

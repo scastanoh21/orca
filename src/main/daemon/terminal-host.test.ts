@@ -3,7 +3,7 @@ import { Session, type SubprocessHandle } from './session'
 import { TerminalHost } from './terminal-host'
 
 function createMockSubprocess(
-  options: { startupCommandDeliveredInShellArgs?: boolean } = {}
+  options: { startupCommandDeliveredInShellArgs?: boolean; shellPath?: string } = {}
 ): SubprocessHandle {
   let onDataCb: ((data: string) => void) | null = null
   let onExitCb: ((code: number) => void) | null = null
@@ -12,6 +12,7 @@ function createMockSubprocess(
     ...(options.startupCommandDeliveredInShellArgs
       ? { startupCommandDeliveredInShellArgs: true }
       : {}),
+    ...(options.shellPath ? { shellPath: options.shellPath } : {}),
     getForegroundProcess: vi.fn(() => null),
     write: vi.fn(),
     resize: vi.fn(),
@@ -71,6 +72,29 @@ describe('TerminalHost', () => {
   })
 
   describe('createOrAttach', () => {
+    it('rejects attaching a replacement pane to a reused live session id', async () => {
+      await host.createOrAttach({
+        sessionId: 'session-1',
+        paneKey: 'tab-a:leaf-a',
+        tabId: 'tab-a',
+        cols: 80,
+        rows: 24,
+        streamClient: { onData: vi.fn(), onExit: vi.fn() }
+      })
+
+      await expect(
+        host.createOrAttach({
+          sessionId: 'session-1',
+          paneKey: 'tab-b:leaf-b',
+          tabId: 'tab-b',
+          cols: 80,
+          rows: 24,
+          streamClient: { onData: vi.fn(), onExit: vi.fn() }
+        })
+      ).rejects.toThrow('PTY identity mismatch')
+      expect(spawnFn).toHaveBeenCalledOnce()
+    })
+
     it('creates a new session when none exists', async () => {
       const result = await host.createOrAttach({
         sessionId: 'session-1',
@@ -102,6 +126,69 @@ describe('TerminalHost', () => {
       expect(result.isNew).toBe(false)
       // Should not spawn a second subprocess
       expect(spawnFn).toHaveBeenCalledOnce()
+    })
+
+    it('retains a terminating same-id session until physical exit proof', async () => {
+      await host.createOrAttach({
+        sessionId: 'session-1',
+        cols: 80,
+        rows: 24,
+        streamClient: { onData: vi.fn(), onExit: vi.fn() }
+      })
+      const terminatingSubprocess = lastSubprocess
+
+      host.kill('session-1', { immediate: true })
+      const replacement = host.createOrAttach({
+        sessionId: 'session-1',
+        cols: 80,
+        rows: 24,
+        streamClient: { onData: vi.fn(), onExit: vi.fn() }
+      })
+      await Promise.resolve()
+
+      expect(spawnFn).toHaveBeenCalledOnce()
+      expect(terminatingSubprocess.forceKill).toHaveBeenCalledOnce()
+      expect(terminatingSubprocess.dispose).not.toHaveBeenCalled()
+      expect(host.listSessions()).toHaveLength(1)
+
+      terminatingSubprocess._onExitCb?.(0)
+      await expect(replacement).resolves.toMatchObject({ isNew: true })
+      expect(spawnFn).toHaveBeenCalledTimes(2)
+    })
+
+    it('publishes ownership before buffered data and exit flush on subscription', async () => {
+      const buffered = createMockSubprocess()
+      buffered.onData = vi.fn((callback) => callback('BOOT'))
+      buffered.onExit = vi.fn((callback) => callback(0))
+      const replacement = createMockSubprocess()
+      spawnFn = vi.fn().mockReturnValueOnce(buffered).mockReturnValue(replacement)
+      host.dispose()
+      host = new TerminalHost({ spawnSubprocess: spawnFn as MockSpawnFn })
+      const onData = vi.fn()
+      const onExit = vi.fn()
+
+      const first = await host.createOrAttach({
+        sessionId: 'session-1',
+        cols: 80,
+        rows: 24,
+        streamClient: { onData, onExit }
+      })
+
+      expect(first).toMatchObject({ isNew: true, snapshot: null })
+      expect(onData).toHaveBeenCalledWith('BOOT')
+      expect(onExit).toHaveBeenCalledWith(0, first.sessionGeneration)
+      expect(host.listSessions()).toHaveLength(0)
+
+      await expect(
+        host.createOrAttach({
+          sessionId: 'session-1',
+          cols: 80,
+          rows: 24,
+          streamClient: { onData: vi.fn(), onExit: vi.fn() }
+        })
+      ).resolves.toMatchObject({ isNew: true })
+      expect(host.listSessions()).toHaveLength(1)
+      expect(spawnFn).toHaveBeenCalledTimes(2)
     })
 
     it('returns snapshot when attaching to existing session', async () => {
@@ -193,6 +280,88 @@ describe('TerminalHost', () => {
       }
     })
 
+    it('delivers startup commands immediately when the spawned shell cannot emit the ready marker', async () => {
+      spawnFn = vi.fn(() => {
+        const sub = createMockSubprocess({ shellPath: '/bin/sh' }) as ReturnType<
+          typeof createMockSubprocess
+        > & {
+          _onDataCb: ((data: string) => void) | null
+          _onExitCb: ((code: number) => void) | null
+        }
+        lastSubprocess = sub
+        return sub
+      })
+      host.dispose()
+      host = new TerminalHost({ spawnSubprocess: spawnFn as MockSpawnFn })
+
+      await host.createOrAttach({
+        sessionId: 'session-1',
+        cols: 80,
+        rows: 24,
+        command: 'echo hello',
+        shellReadySupported: true,
+        streamClient: { onData: vi.fn(), onExit: vi.fn() }
+      })
+
+      expect(lastSubprocess.write).toHaveBeenCalledWith(
+        process.platform === 'win32' ? 'echo hello\r' : 'echo hello\n'
+      )
+    })
+
+    it('does not bracketed-paste-wrap multiline commands for a fallback shell without paste mode', async () => {
+      spawnFn = vi.fn(() => {
+        const sub = createMockSubprocess({ shellPath: '/bin/sh' }) as ReturnType<
+          typeof createMockSubprocess
+        > & {
+          _onDataCb: ((data: string) => void) | null
+          _onExitCb: ((code: number) => void) | null
+        }
+        lastSubprocess = sub
+        return sub
+      })
+      host.dispose()
+      host = new TerminalHost({ spawnSubprocess: spawnFn as MockSpawnFn })
+
+      await host.createOrAttach({
+        sessionId: 'session-1',
+        cols: 80,
+        rows: 24,
+        command: 'claude "line one\nline two"',
+        shellReadySupported: true,
+        streamClient: { onData: vi.fn(), onExit: vi.fn() }
+      })
+
+      const written = (lastSubprocess.write as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]
+      expect(written).not.toContain('\x1b[200~')
+      expect(written).toContain('line one\nline two')
+    })
+
+    it('keeps the shell-ready barrier when the spawned shell supports the marker', async () => {
+      spawnFn = vi.fn(() => {
+        const sub = createMockSubprocess({ shellPath: '/bin/bash' }) as ReturnType<
+          typeof createMockSubprocess
+        > & {
+          _onDataCb: ((data: string) => void) | null
+          _onExitCb: ((code: number) => void) | null
+        }
+        lastSubprocess = sub
+        return sub
+      })
+      host.dispose()
+      host = new TerminalHost({ spawnSubprocess: spawnFn as MockSpawnFn })
+
+      await host.createOrAttach({
+        sessionId: 'session-1',
+        cols: 80,
+        rows: 24,
+        command: 'echo hello',
+        shellReadySupported: true,
+        streamClient: { onData: vi.fn(), onExit: vi.fn() }
+      })
+
+      expect(lastSubprocess.write).not.toHaveBeenCalled()
+    })
+
     it('does not write startup commands already embedded in shell args', async () => {
       spawnFn = vi.fn(() => {
         const sub = createMockSubprocess({
@@ -278,6 +447,27 @@ describe('TerminalHost', () => {
   })
 
   describe('kill', () => {
+    it('rejects a stale pane kill before force-killing the current session', async () => {
+      await host.createOrAttach({
+        sessionId: 'session-1',
+        paneKey: 'tab-b:leaf-b',
+        tabId: 'tab-b',
+        cols: 80,
+        rows: 24,
+        streamClient: { onData: vi.fn(), onExit: vi.fn() }
+      })
+
+      expect(() =>
+        host.kill('session-1', {
+          immediate: true,
+          expectedPaneKey: 'tab-a:leaf-a',
+          expectedTabId: 'tab-a'
+        })
+      ).toThrow('PTY identity mismatch')
+      expect(lastSubprocess.forceKill).not.toHaveBeenCalled()
+      expect(host.listSessions()).toHaveLength(1)
+    })
+
     it('kills the session and tombstones it', async () => {
       await host.createOrAttach({
         sessionId: 'session-1',
@@ -299,12 +489,37 @@ describe('TerminalHost', () => {
         streamClient: { onData: vi.fn(), onExit: vi.fn() }
       })
 
+      ;(lastSubprocess.forceKill as ReturnType<typeof vi.fn>).mockImplementation(() =>
+        lastSubprocess._onExitCb?.(-1)
+      )
       host.kill('session-1', { immediate: true })
 
       expect(lastSubprocess.kill).not.toHaveBeenCalled()
       expect(lastSubprocess.forceKill).toHaveBeenCalled()
       expect(lastSubprocess.dispose).toHaveBeenCalled()
       expect(host.isKilled('session-1')).toBe(true)
+    })
+
+    it('retains immediate shutdown ownership when native force kill throws', async () => {
+      await host.createOrAttach({
+        sessionId: 'session-1',
+        cols: 80,
+        rows: 24,
+        streamClient: { onData: vi.fn(), onExit: vi.fn() }
+      })
+      ;(lastSubprocess.forceKill as ReturnType<typeof vi.fn>).mockImplementationOnce(() => {
+        throw new Error('native force kill failed')
+      })
+
+      expect(() => host.kill('session-1', { immediate: true })).toThrow('native force kill failed')
+      expect(host.listSessions()).toHaveLength(1)
+      expect(lastSubprocess.dispose).not.toHaveBeenCalled()
+
+      ;(lastSubprocess.forceKill as ReturnType<typeof vi.fn>).mockImplementation(() =>
+        lastSubprocess._onExitCb?.(-1)
+      )
+      host.kill('session-1', { immediate: true })
+      expect(host.listSessions()).toHaveLength(0)
     })
 
     it('throws for non-existent session', () => {

@@ -12,6 +12,8 @@ export type CreateOrAttachOptions = {
   command?: string
   startupCommandDelivery?: StartupCommandDelivery
   launchAgent?: TuiAgent
+  paneKey?: string
+  tabId?: string
   /** Explicit shell the renderer asked for, forwarded to the subprocess. */
   shellOverride?: string
   terminalWindowsWslDistro?: string | null
@@ -19,7 +21,10 @@ export type CreateOrAttachOptions = {
   shellReadySupported?: boolean
   shellReadyTimeoutMs?: number
   historySeed?: string
-  streamClient: { onData: (data: string) => void; onExit: (code: number) => void }
+  streamClient: {
+    onData: (data: string) => void
+    onExit: (code: number, sessionGeneration: string) => void
+  }
 }
 
 export type CreateOrAttachResult = {
@@ -29,5 +34,6 @@ export type CreateOrAttachResult = {
   shellState: ShellReadyState
   historySeeded?: boolean
   launchAgent?: TuiAgent
+  sessionGeneration: string
   attachToken: symbol
 }

@@ -15,13 +15,19 @@ import { resolveProcessCwd } from './process-cwd'
 import { existsSync } from 'node:fs'
 import * as pty from 'node-pty'
 import { parseWslPath, isWslAvailable } from '../wsl'
-import { splitWorktreeId } from '../../shared/worktree-id'
+import { splitWorktreeIdForFilesystem } from '../../shared/worktree-id'
 import {
   injectHistoryEnv,
   updateHistFileForFallback,
   logHistoryInjection
 } from '../terminal-history'
-import type { IPtyProvider, PtyProcessInfo, PtySpawnOptions, PtySpawnResult } from './types'
+import type {
+  IPtyProvider,
+  PtyProcessInfo,
+  PtyShutdownOptions,
+  PtySpawnOptions,
+  PtySpawnResult
+} from './types'
 import {
   ensureNodePtySpawnHelperExecutable,
   validateWorkingDirectory,
@@ -57,7 +63,13 @@ import { recognizeAgentProcessFromCommandLine } from '../../shared/agent-process
 import { readWindowsConptyProcessIds } from './windows-conpty-process-membership'
 import { shouldUseShellReadyStartupDelivery } from '../../shared/codex-startup-delivery'
 import { assertSafeAgentStartupCwd, resolveSafePtyDefaultCwd } from './pty-default-cwd'
+import { isLocalPtyProcessProvablyExited } from './local-pty-process-exit-proof'
 import { ORCA_HERMES_STARTUP_QUERY_ENV } from '../../shared/hermes-startup-query'
+import {
+  assertPtyPaneIdentity,
+  getPtyPaneIdentityFromEnv,
+  type PtyPaneIdentity
+} from '../pty/pty-shutdown-identity'
 
 const PANE_IDENTITY_ENV_KEYS = [
   'ORCA_PANE_KEY',
@@ -71,6 +83,7 @@ const ptyProcesses = new Map<string, pty.IPty>()
 const ptyShellName = new Map<string, string>()
 const ptyAgentForegroundContextPaths = new Map<string, string[]>()
 const ptyTerminalHandle = new Map<string, string>()
+const ptyPaneIdentity = new Map<string, PtyPaneIdentity>()
 // Why: node-pty's onData/onExit register native NAPI ThreadSafeFunction
 // callbacks. If the PTY is killed without disposing these listeners, the
 // stale callbacks survive into node::FreeEnvironment() where NAPI attempts
@@ -139,6 +152,10 @@ function disposePtyListeners(id: string): void {
   }
 }
 
+const ptyShutdownInProgress = new Set<string>()
+const ptyExitDuringShutdown = new Map<string, number>()
+const ptyShutdownAcceptedAwaitingExit = new Set<string>()
+
 function runPtyCleanup(id: string): void {
   const cleanup = ptyCleanupCallbacks.get(id)
   if (!cleanup) {
@@ -154,7 +171,11 @@ function runPtyCleanup(id: string): void {
 function getWslContextFromWorktreeId(
   worktreeId: string | undefined
 ): { distro: string; treatPosixCwdAsWsl: true } | undefined {
-  const worktreePath = worktreeId ? splitWorktreeId(worktreeId)?.worktreePath : undefined
+  // Why: strip any synthetic `::workspace:<uuid>` folder-workspace suffix so WSL
+  // detection parses the real path, not a nonexistent identifier.
+  const worktreePath = worktreeId
+    ? splitWorktreeIdForFilesystem(worktreeId)?.worktreePath
+    : undefined
   const wslInfo = worktreePath ? parseWslPath(worktreePath) : null
   return wslInfo ? { distro: wslInfo.distro, treatPosixCwdAsWsl: true } : undefined
 }
@@ -172,14 +193,22 @@ function getWslContextFromPreferredDistro(
 /**
  * Removes all local tracking state for a PTY id after teardown.
  */
-function clearPtyState(id: string): void {
+function clearPtyState(id: string, expectedProc?: pty.IPty): boolean {
+  if (expectedProc && ptyProcesses.get(id) !== expectedProc) {
+    return false
+  }
   runPtyCleanup(id)
   disposePtyListeners(id)
   ptyProcesses.delete(id)
   ptyShellName.delete(id)
   ptyAgentForegroundContextPaths.delete(id)
   ptyTerminalHandle.delete(id)
+  ptyPaneIdentity.delete(id)
   ptyLoadGeneration.delete(id)
+  ptyShutdownInProgress.delete(id)
+  ptyExitDuringShutdown.delete(id)
+  ptyShutdownAcceptedAwaitingExit.delete(id)
+  return true
 }
 
 /**
@@ -310,6 +339,7 @@ export type LocalPtyProviderOptions = {
 }
 
 export class LocalPtyProvider implements IPtyProvider {
+  readonly requiresShutdownExitProof = true
   private opts: LocalPtyProviderOptions
 
   constructor(opts: LocalPtyProviderOptions = {}) {
@@ -685,6 +715,7 @@ export class LocalPtyProvider implements IPtyProvider {
 
     const proc = spawnResult.process
     ptyProcesses.set(id, proc)
+    ptyPaneIdentity.set(id, getPtyPaneIdentityFromEnv(finalEnv))
     ptyShellName.set(id, getSpawnedShellName(shellPath))
     if (finalEnv.ORCA_TERMINAL_HANDLE) {
       ptyTerminalHandle.set(id, finalEnv.ORCA_TERMINAL_HANDLE)
@@ -791,12 +822,26 @@ export class LocalPtyProvider implements IPtyProvider {
       if (process.platform !== 'win32') {
         ;(proc as unknown as { kill: (sig?: string) => void }).kill = () => {}
       }
+      if (ptyProcesses.get(id) !== proc) {
+        // Why: native exit delivery can trail a same-id replacement. Clean
+        // only this old handle; id-keyed maps now belong to the new process.
+        startupCommandCleanup?.()
+        for (const disposable of disposables) {
+          disposable.dispose()
+        }
+        destroyPtyProcess(proc)
+        return
+      }
+      if (ptyShutdownInProgress.has(id)) {
+        ptyExitDuringShutdown.set(id, exitCode)
+        return
+      }
       if (shellReadyTimeout) {
         clearTimeout(shellReadyTimeout)
         shellReadyTimeout = null
       }
       startupCommandCleanup?.()
-      clearPtyState(id)
+      clearPtyState(id, proc)
       // Why: release the master ptmx fd on the natural-exit path — without
       // this, a shell that exits cleanly (the common case) never releases its
       // fd until the next GC. See docs/fix-pty-fd-leak.md.
@@ -882,29 +927,75 @@ export class LocalPtyProvider implements IPtyProvider {
     return { cols: proc.cols, rows: proc.rows }
   }
 
-  async shutdown(id: string, _opts: { immediate?: boolean; keepHistory?: boolean }): Promise<void> {
+  async shutdown(id: string, opts: PtyShutdownOptions): Promise<void> {
     const proc = ptyProcesses.get(id)
     if (!proc) {
       return
     }
-    // Why: disposePtyListeners removes the onExit callback, so the natural
-    // exit cleanup path from node-pty won't fire. Cleanup and notification
-    // must happen unconditionally after the try/catch.
-    // Timer/writer cleanup must happen here too: disposing listeners prevents
-    // the natural onExit callback from running the usual clearPtyState path.
-    runPtyCleanup(id)
-    disposePtyListeners(id)
+    assertPtyPaneIdentity(id, ptyPaneIdentity.get(id) ?? { paneKey: null, tabId: null }, opts)
+    // Why: keep listeners live until native shutdown is accepted so a thrown
+    // kill retains retry ownership. The in-progress marker makes a synchronous
+    // onExit an independent death proof without racing duplicate cleanup.
+    ptyShutdownInProgress.add(id)
+    let exitCode = -1
+    let exitObserved = false
+    let osExitProved = false
+    let nativeKillAccepted = false
     try {
-      proc.kill()
-    } catch {
-      /* Process may already be dead */
+      // Why: a renderer or paired/mobile close is destructive. POSIX's
+      // default SIGHUP can be ignored; Windows node-pty requires no argument.
+      if (opts.immediate && process.platform !== 'win32') {
+        proc.kill('SIGKILL')
+      } else {
+        proc.kill()
+      }
+      nativeKillAccepted = true
+    } catch (error) {
+      if (!ptyExitDuringShutdown.has(id)) {
+        if (!isLocalPtyProcessProvablyExited(proc.pid)) {
+          throw error
+        }
+        osExitProved = true
+      }
+    } finally {
+      ptyShutdownInProgress.delete(id)
+      exitCode = ptyExitDuringShutdown.get(id) ?? -1
+      exitObserved = ptyExitDuringShutdown.has(id) || osExitProved
+      ptyExitDuringShutdown.delete(id)
     }
+    if (!exitObserved) {
+      exitObserved = isLocalPtyProcessProvablyExited(proc.pid)
+    }
+    if (nativeKillAccepted && !exitObserved) {
+      ptyShutdownAcceptedAwaitingExit.add(id)
+    }
+    // Why: kill returning is request acceptance, not process-death proof. Keep
+    // the native entry and listeners until onExit (possibly async) confirms it.
+    runPtyCleanup(id)
+    if (exitObserved) {
+      disposePtyListeners(id)
+      destroyPtyProcess(proc, { alreadyKilled: nativeKillAccepted })
+      clearPtyState(id, proc)
+      this.opts.onExit?.(id, exitCode)
+      for (const cb of exitListeners) {
+        cb({ id, code: exitCode })
+      }
+    }
+  }
+
+  private reapTrackedPtyIfProvablyExited(id: string, proc: pty.IPty): boolean {
+    if (ptyProcesses.get(id) !== proc || !isLocalPtyProcessProvablyExited(proc.pid)) {
+      return false
+    }
+    // Why: node-pty can omit onExit after an accepted close. Inventory is an
+    // authoritative retry probe, so ESRCH must perform the same exact cleanup.
+    clearPtyState(id, proc)
     destroyPtyProcess(proc, { alreadyKilled: true })
-    clearPtyState(id)
     this.opts.onExit?.(id, -1)
     for (const cb of exitListeners) {
       cb({ id, code: -1 })
     }
+    return true
   }
 
   async sendSignal(id: string, signal: string): Promise<void> {
@@ -1030,12 +1121,22 @@ export class LocalPtyProvider implements IPtyProvider {
   }
 
   async listProcesses(): Promise<PtyProcessInfo[]> {
-    return Array.from(ptyProcesses.entries()).map(([id, proc]) => ({
-      id,
-      cwd: '',
-      title: proc.process || ptyShellName.get(id) || 'shell',
-      ...(ptyTerminalHandle.get(id) ? { terminalHandle: ptyTerminalHandle.get(id) } : {})
-    }))
+    const processes: PtyProcessInfo[] = []
+    for (const [id, proc] of ptyProcesses) {
+      if (
+        ptyShutdownAcceptedAwaitingExit.has(id) &&
+        this.reapTrackedPtyIfProvablyExited(id, proc)
+      ) {
+        continue
+      }
+      processes.push({
+        id,
+        cwd: '',
+        title: proc.process || ptyShellName.get(id) || 'shell',
+        ...(ptyTerminalHandle.get(id) ? { terminalHandle: ptyTerminalHandle.get(id) } : {})
+      })
+    }
+    return processes
   }
 
   async getDefaultShell(): Promise<string> {
@@ -1081,16 +1182,15 @@ export class LocalPtyProvider implements IPtyProvider {
 
   // ─── Local-only helpers (not part of IPtyProvider interface) ───────
 
-  /** Kill orphaned PTYs from previous page loads. */
-  killOrphanedPtys(currentGeneration: number): { id: string }[] {
-    const killed: { id: string }[] = []
-    for (const [id, proc] of ptyProcesses) {
+  /** Enumerate PTYs owned by renderer generations older than the current page. */
+  listOrphanedPtys(currentGeneration: number): { id: string }[] {
+    const orphaned: { id: string }[] = []
+    for (const id of ptyProcesses.keys()) {
       if ((ptyLoadGeneration.get(id) ?? -1) < currentGeneration) {
-        safeKillAndClean(id, proc)
-        killed.push({ id })
+        orphaned.push({ id })
       }
     }
-    return killed
+    return orphaned
   }
 
   /** Advance the load generation counter (called on renderer reload). */

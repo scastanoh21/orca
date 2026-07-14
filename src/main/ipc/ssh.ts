@@ -14,13 +14,13 @@ import type {
   SshRepoReadoption,
   SshTarget,
   SshConnectionStatus,
-  SshConnectionState
+  SshConnectionState,
+  SshRemotePtyLease
 } from '../../shared/ssh-types'
 import { SSH_TERMINATE_RECONNECT_REQUIRED } from '../../shared/constants'
 import { isRuntimeOwnedSshTargetId } from '../../shared/execution-host'
 import { isAuthError } from '../ssh/ssh-connection-utils'
 import { forceStopRelayForTarget } from '../ssh/ssh-relay-reset'
-import { isSshPtyNotFoundError } from '../providers/ssh-pty-provider'
 import { toAppSshPtyId, toRelaySshPtyId } from '../providers/ssh-pty-id'
 import { registerSshBrowseHandler } from './ssh-browse'
 import {
@@ -35,9 +35,12 @@ import {
   clearProviderPtyState,
   deletePtyOwnership,
   getPtyIdsForConnection,
-  getSshPtyProvider
+  getSshPtyProvider,
+  releasePendingSshShutdownsForTarget,
+  shutdownPtyWithRetainedOwnership
 } from './pty'
 import type { OrcaRuntimeService } from '../runtime/orca-runtime'
+import { isTerminalLeafId, makePaneKey } from '../../shared/stable-pane-id'
 
 let sshStore: SshConnectionStore | null = null
 let connectionManager: SshConnectionManager | null = null
@@ -113,10 +116,22 @@ export async function removeRegisteredSshTarget(targetId: string): Promise<void>
   if (!sshStore) {
     return
   }
-  // Why: removing a target is destructive — dispose() (not detach()) so the
-  // relay shuts down and remote PTY leases are terminated rather than preserved
-  // for a reattach to a target that will no longer exist.
+  await terminateRegisteredSshTargetPtys(targetId)
+  const session = activeSessions.get(targetId)
+  const connection = connectionManager?.getConnection(targetId)
+  if (session && !connection) {
+    throw new Error(
+      `${SSH_TERMINATE_RECONNECT_REQUIRED}: SSH relay is not connected; reconnect before removing this target.`
+    )
+  }
+  // Why: dispose the local mux with an intentional shutdown reason before the
+  // remote kill, so its close cannot enter the relay-lost reconnect loop.
   await disposeActiveSshSession(targetId)
+  if (connection) {
+    // Why: relay grace 0 means “until reset.” After exit-proofing every PTY,
+    // stop that detached process before deleting the only target metadata.
+    await forceStopRelayForTarget(connection, targetId)
+  }
   try {
     await connectionManager?.disconnect(targetId)
   } catch (err) {
@@ -127,7 +142,100 @@ export async function removeRegisteredSshTarget(targetId: string): Promise<void>
     )
   }
   persistedStore?.removeSshRemotePtyLeases(targetId)
+  releasePendingSshShutdownsForTarget(targetId)
   sshStore.removeTarget(targetId)
+}
+
+type RegisteredSshTargetPty = {
+  relayPtyId: string
+  appPtyId: string
+  options: {
+    immediate: true
+    keepHistory: false
+    expectedPaneKey?: string
+    expectedTabId?: string
+  }
+}
+
+function getRegisteredSshTargetPtyIds(targetId: string): RegisteredSshTargetPty[] {
+  const ptysByAppId = new Map<string, RegisteredSshTargetPty>()
+  for (const ptyId of getPtyIdsForConnection(targetId)) {
+    const relayPtyId = toRelaySshPtyId(targetId, ptyId)
+    const appPtyId = toAppSshPtyId(targetId, ptyId)
+    ptysByAppId.set(appPtyId, {
+      relayPtyId,
+      appPtyId,
+      options: { immediate: true, keepHistory: false }
+    })
+  }
+  for (const lease of persistedStore?.getSshRemotePtyLeases(targetId) ?? []) {
+    if (lease.state === 'terminated' || lease.state === 'expired') {
+      continue
+    }
+    const relayPtyId = toRelaySshPtyId(targetId, lease.ptyId)
+    const appPtyId = toAppSshPtyId(targetId, lease.ptyId, lease.relayInstanceId)
+    const options = sshLeaseShutdownOptions(lease)
+    ptysByAppId.set(appPtyId, {
+      relayPtyId,
+      appPtyId,
+      options: { ...ptysByAppId.get(appPtyId)?.options, ...options }
+    })
+  }
+  return [...ptysByAppId.values()]
+}
+
+function sshLeaseShutdownOptions(lease: SshRemotePtyLease): {
+  immediate: true
+  keepHistory: false
+  expectedPaneKey?: string
+  expectedTabId?: string
+} {
+  const expectedTabId = lease.tabId && !lease.tabId.includes(':') ? lease.tabId : undefined
+  const expectedPaneKey =
+    expectedTabId && lease.leafId && isTerminalLeafId(lease.leafId)
+      ? makePaneKey(expectedTabId, lease.leafId)
+      : undefined
+  // Why: persisted identity must survive bulk teardown so a delayed retry
+  // cannot cross into a replacement pane that reused the same relay id.
+  return {
+    immediate: true,
+    keepHistory: false,
+    ...(expectedPaneKey ? { expectedPaneKey } : {}),
+    ...(expectedTabId ? { expectedTabId } : {})
+  }
+}
+
+async function terminateRegisteredSshTargetPtys(targetId: string): Promise<void> {
+  const provider = getSshPtyProvider(targetId)
+  const ptyIds = getRegisteredSshTargetPtyIds(targetId)
+  if (ptyIds.length > 0 && !provider) {
+    throw new Error(
+      `${SSH_TERMINATE_RECONNECT_REQUIRED}: SSH relay is not connected; reconnect before terminating remote sessions.`
+    )
+  }
+  if (!provider) {
+    return
+  }
+  const results = await Promise.allSettled(
+    ptyIds.map(({ appPtyId, options }) =>
+      shutdownPtyWithRetainedOwnership({
+        id: appPtyId,
+        connectionId: targetId,
+        provider,
+        options
+      })
+    )
+  )
+  const failures = results.flatMap((result, index) =>
+    result.status === 'rejected'
+      ? [
+          `${ptyIds[index].relayPtyId}: ${result.reason instanceof Error ? result.reason.message : String(result.reason)}`
+        ]
+      : []
+  )
+  if (failures.length > 0) {
+    throw new Error(`Failed to terminate SSH host sessions: ${failures.join('; ')}`)
+  }
 }
 
 // Why: one session per SSH target encapsulates the entire relay lifecycle
@@ -957,58 +1065,7 @@ export function registerSshHandlers(
 
   ipcMain.handle('ssh:terminateSessions', async (_event, args: { targetId: string }) => {
     const session = activeSessions.get(args.targetId)
-    const provider = getSshPtyProvider(args.targetId)
-    const leasedIds = persistedStore!
-      .getSshRemotePtyLeases(args.targetId)
-      .filter((lease) => lease.state !== 'terminated' && lease.state !== 'expired')
-      .map((lease) => lease.ptyId)
-    const ptyIdsByRelayId = new Map<string, string>()
-    for (const ptyId of getPtyIdsForConnection(args.targetId)) {
-      const relayPtyId = toRelaySshPtyId(args.targetId, ptyId)
-      ptyIdsByRelayId.set(relayPtyId, toAppSshPtyId(args.targetId, ptyId))
-    }
-    for (const ptyId of leasedIds) {
-      const relayPtyId = toRelaySshPtyId(args.targetId, ptyId)
-      ptyIdsByRelayId.set(
-        relayPtyId,
-        ptyIdsByRelayId.get(relayPtyId) ?? toAppSshPtyId(args.targetId, ptyId)
-      )
-    }
-    const ptyIds = Array.from(ptyIdsByRelayId, ([relayPtyId, appPtyId]) => ({
-      relayPtyId,
-      appPtyId
-    }))
-
-    if (ptyIds.length > 0 && !provider) {
-      throw new Error(
-        `${SSH_TERMINATE_RECONNECT_REQUIRED}: SSH relay is not connected; reconnect before terminating remote sessions.`
-      )
-    }
-    const shutdownResults = provider
-      ? await Promise.allSettled(
-          ptyIds.map(({ appPtyId }) =>
-            provider.shutdown(appPtyId, { immediate: true, keepHistory: false })
-          )
-        )
-      : []
-    const shutdownFailures: string[] = []
-    for (const [index, result] of shutdownResults.entries()) {
-      const { appPtyId, relayPtyId } = ptyIds[index]
-      if (result.status !== 'fulfilled' && !isSshPtyNotFoundError(result.reason)) {
-        shutdownFailures.push(
-          `${relayPtyId}: ${result.reason instanceof Error ? result.reason.message : String(result.reason)}`
-        )
-        continue
-      }
-      clearProviderPtyState(appPtyId)
-      deletePtyOwnership(appPtyId)
-      persistedStore!.markSshRemotePtyLease(args.targetId, relayPtyId, 'terminated')
-    }
-    if (shutdownFailures.length > 0) {
-      // Why: a failed relay shutdown can leave the remote process alive in the
-      // grace window. Keep the lease/session intact so the user can retry.
-      throw new Error(`Failed to terminate SSH host sessions: ${shutdownFailures.join('; ')}`)
-    }
+    await terminateRegisteredSshTargetPtys(args.targetId)
     if (session) {
       await portForwardManager!.removeAllForwards(args.targetId)
       session.dispose()
@@ -1043,23 +1100,30 @@ export function registerSshHandlers(
 
     const existingConn = connectionManager!.getConnection(targetId)
     const conn = existingConn ?? (await connectionManager!.connect(target))
+    let relayStopConfirmed = false
     try {
       await forceStopRelayForTarget(conn, targetId)
+      relayStopConfirmed = true
     } finally {
-      const ptyIds = new Set(getPtyIdsForConnection(targetId))
-      for (const lease of persistedStore!.getSshRemotePtyLeases(targetId)) {
-        if (lease.state !== 'terminated' && lease.state !== 'expired') {
-          ptyIds.add(lease.ptyId)
-          persistedStore!.markSshRemotePtyLease(targetId, lease.ptyId, 'expired')
+      // Why: a confirmed daemon stop makes every retained raw or generated
+      // retry unreachable. A pre-accept failure must preserve retry ownership.
+      if (relayStopConfirmed) {
+        releasePendingSshShutdownsForTarget(targetId)
+        const ptyIds = new Set(getPtyIdsForConnection(targetId))
+        for (const lease of persistedStore!.getSshRemotePtyLeases(targetId)) {
+          if (lease.state !== 'terminated' && lease.state !== 'expired') {
+            const appPtyId = toAppSshPtyId(targetId, lease.ptyId, lease.relayInstanceId)
+            ptyIds.add(appPtyId)
+            persistedStore!.markSshRemotePtyLease(targetId, appPtyId, 'expired')
+          }
         }
-      }
-      // Why: reset force-kills the remote relay daemon, so every local PTY
-      // handle owned by that relay is stale even if the reset command failed
-      // after the remote process accepted SIGTERM.
-      for (const ptyId of ptyIds) {
-        const appPtyId = toAppSshPtyId(targetId, ptyId)
-        clearProviderPtyState(appPtyId)
-        deletePtyOwnership(appPtyId)
+        // Why: confirmed reset force-killed the remote relay daemon, so every
+        // local PTY handle owned by that relay is stale.
+        for (const ptyId of ptyIds) {
+          const appPtyId = toAppSshPtyId(targetId, ptyId)
+          clearProviderPtyState(appPtyId)
+          deletePtyOwnership(appPtyId)
+        }
       }
       // Why: reset's connect() can trip onCredentialRequest, which adds to
       // credentialRequestedForTarget. Without this delete, a later doConnect

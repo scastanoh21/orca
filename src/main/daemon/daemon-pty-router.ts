@@ -1,17 +1,36 @@
 import type { DaemonPtyAdapter } from './daemon-pty-adapter'
+import {
+  appendProviderReconciliationIds,
+  discoverProviderSessionsAndBindRoutes,
+  forwardProviderRouteExit,
+  listProviderProcessesAndReconcileRoutes,
+  ProviderRouteSpawnExitFence,
+  reconcileProviderRoutesOnStartup,
+  type ProviderRoute
+} from './pty-provider-route-reconciliation'
 import type {
   IPtyProvider,
   PtyBackgroundStreamEvent,
   PtyProviderBufferSnapshot,
   PtyProcessInfo,
+  PtyShutdownOptions,
   PtySpawnOptions,
   PtySpawnResult
 } from '../providers/types'
 
 export class DaemonPtyRouter implements IPtyProvider {
+  readonly requiresShutdownExitProof = true
   private current: DaemonPtyAdapter
   private legacy: DaemonPtyAdapter[]
-  private sessionAdapters = new Map<string, DaemonPtyAdapter>()
+  private sessionAdapters = new Map<string, ProviderRoute<DaemonPtyAdapter>>()
+  private spawnExitFence = new ProviderRouteSpawnExitFence(this.sessionAdapters, (deferred) =>
+    forwardProviderRouteExit(
+      this.sessionAdapters,
+      deferred.provider,
+      deferred.payload,
+      this.exitListeners
+    )
+  )
   private unsubscribers: (() => void)[] = []
   private dataListeners: ((payload: {
     id: string
@@ -32,10 +51,10 @@ export class DaemonPtyRouter implements IPtyProvider {
           }
         }),
         adapter.onExit((payload) => {
-          this.sessionAdapters.delete(payload.id)
-          for (const listener of this.exitListeners) {
-            listener(payload)
+          if (this.spawnExitFence.deferExit(adapter, payload)) {
+            return
           }
+          forwardProviderRouteExit(this.sessionAdapters, adapter, payload, this.exitListeners)
         })
       )
     }
@@ -44,10 +63,7 @@ export class DaemonPtyRouter implements IPtyProvider {
   async discoverLegacySessions(): Promise<void> {
     for (const adapter of this.legacy) {
       try {
-        const sessions = await adapter.listProcesses()
-        for (const session of sessions) {
-          this.sessionAdapters.set(session.id, adapter)
-        }
+        await discoverProviderSessionsAndBindRoutes(adapter, this.sessionAdapters)
       } catch (error) {
         console.warn('[daemon] Failed to discover legacy daemon sessions', error)
       }
@@ -55,11 +71,9 @@ export class DaemonPtyRouter implements IPtyProvider {
   }
 
   async spawn(opts: PtySpawnOptions): Promise<PtySpawnResult> {
-    const adapter = opts.sessionId ? this.sessionAdapters.get(opts.sessionId) : undefined
+    const adapter = opts.sessionId ? this.sessionAdapters.get(opts.sessionId)?.provider : undefined
     const target = adapter ?? this.current
-    const result = await target.spawn(opts)
-    this.sessionAdapters.set(result.id, target)
-    return result
+    return this.spawnExitFence.spawn(opts.sessionId, target, () => target.spawn(opts))
   }
 
   async attach(id: string): Promise<void> {
@@ -67,7 +81,7 @@ export class DaemonPtyRouter implements IPtyProvider {
   }
 
   hasPty(id: string): boolean {
-    const routed = this.sessionAdapters.get(id)
+    const routed = this.sessionAdapters.get(id)?.provider
     if (routed) {
       return routed.hasPty(id)
     }
@@ -94,17 +108,10 @@ export class DaemonPtyRouter implements IPtyProvider {
     this.adapterFor(id).setPtyBackgrounded(id, background)
   }
 
-  async shutdown(id: string, opts: { immediate?: boolean; keepHistory?: boolean }): Promise<void> {
+  async shutdown(id: string, opts: PtyShutdownOptions): Promise<void> {
     await this.adapterFor(id).shutdown(id, opts)
-    // Why: sleep passes keepHistory=true and re-spawns against the same
-    // sessionId on wake. If we delete the routing entry here, adapterFor()
-    // falls back to `this.current` on wake — for a session that originally
-    // lived on a legacy adapter (different protocolVersion), the wake-side
-    // createOrAttach lands on the wrong adapter and creates a fresh session,
-    // losing the cold-restore from the legacy adapter's history dir.
-    if (!opts.keepHistory) {
-      this.sessionAdapters.delete(id)
-    }
+    // Why: native shutdown acceptance is not exit proof. onExit or a later
+    // successful listProcesses readback retires the exact adapter route.
   }
 
   async sendSignal(id: string, signal: string): Promise<void> {
@@ -161,8 +168,7 @@ export class DaemonPtyRouter implements IPtyProvider {
   async listProcesses(): Promise<PtyProcessInfo[]> {
     // Why: runtime exact-stop/liveness flows must fail closed if any adapter
     // cannot provide a trustworthy process list.
-    const results = await Promise.all(this.allAdapters().map((adapter) => adapter.listProcesses()))
-    return results.flat()
+    return listProviderProcessesAndReconcileRoutes(this.allAdapters(), this.sessionAdapters)
   }
 
   async getDefaultShell(): Promise<string> {
@@ -225,21 +231,12 @@ export class DaemonPtyRouter implements IPtyProvider {
     const alive: string[] = []
     const killed: string[] = []
     for (const adapter of this.allAdapters()) {
-      const result = await adapter.reconcileOnStartup(validWorktreeIds)
-      // Why: daemon startup can reconcile many restored sessions; spreading
-      // those arrays into push can exceed JavaScript's argument limit.
-      for (const id of result.alive) {
-        alive.push(id)
-      }
-      for (const id of result.killed) {
-        killed.push(id)
-      }
-      for (const id of result.alive) {
-        this.sessionAdapters.set(id, adapter)
-      }
-      for (const id of result.killed) {
-        this.sessionAdapters.delete(id)
-      }
+      const result = await reconcileProviderRoutesOnStartup(
+        adapter,
+        this.sessionAdapters,
+        validWorktreeIds
+      )
+      appendProviderReconciliationIds({ alive, killed }, result)
     }
     return { alive, killed }
   }
@@ -261,6 +258,7 @@ export class DaemonPtyRouter implements IPtyProvider {
   // Without this, each restart leaked a router instance pinned by the legacy
   // adapters' listener arrays (one pair per adapter per restart).
   disposeRouterOnly(): void {
+    this.spawnExitFence.clear()
     for (const unsubscribe of this.unsubscribers.splice(0)) {
       unsubscribe()
     }
@@ -292,7 +290,7 @@ export class DaemonPtyRouter implements IPtyProvider {
   }
 
   private adapterFor(sessionId: string): DaemonPtyAdapter {
-    return this.sessionAdapters.get(sessionId) ?? this.current
+    return this.sessionAdapters.get(sessionId)?.provider ?? this.current
   }
 
   private allAdapters(): DaemonPtyAdapter[] {
