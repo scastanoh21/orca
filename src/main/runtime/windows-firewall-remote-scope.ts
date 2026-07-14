@@ -20,6 +20,8 @@ export function hasSufficientWindowsFirewallRemoteScope(
   const rules = Array.isArray(ruleScopes) ? ruleScopes : [ruleScopes]
   const localSubnet = parseSubnet(localAddress, localPrefixLength)
 
+  // Why: coverage is checked per scope, never unioned across rules — this
+  // advisory check fails safe, so accepting fragmented rules only adds risk.
   return rules.some((rule) => ruleHasSufficientScope(rule, localSubnet))
 }
 
