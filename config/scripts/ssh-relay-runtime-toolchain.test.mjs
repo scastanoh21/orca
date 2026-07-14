@@ -58,6 +58,13 @@ describe('SSH relay runtime build provenance', () => {
     ).toThrow(/^Runtime build tool did not report a bounded version line: unexpected x{490}/)
   })
 
+  it('bounds rejected Windows linker path diagnostics', () => {
+    const path = String.raw`C:\${'unexpected\\'.repeat(100)}link.exe`
+    expect(() => sshRelayRuntimeWindowsMsvcToolsetVersion(path)).toThrow(
+      /^Resolved Windows linker is not in a bounded MSVC toolset path: .{1,512}$/
+    )
+  })
+
   it('pins GitHub builder identity to the exact source commit', () => {
     expect(
       sshRelayRuntimeBuilderIdentity({

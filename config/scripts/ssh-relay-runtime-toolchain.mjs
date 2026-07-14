@@ -200,7 +200,8 @@ export function sshRelayRuntimeWindowsMsvcToolsetVersion(path) {
     segments[msvcIndex + 2]?.toLowerCase() !== 'bin' ||
     segments.at(-1)?.toLowerCase() !== 'link.exe'
   ) {
-    throw new Error('Resolved Windows linker is not in a bounded MSVC toolset path')
+    const diagnostic = segments.slice(-12).join(win32.sep).slice(-512) || '<empty>'
+    throw new Error(`Resolved Windows linker is not in a bounded MSVC toolset path: ${diagnostic}`)
   }
   // Why: hosted link.exe has no version resource; its resolved toolset path plus byte hash is exact.
   return `MSVC ${version}`
