@@ -9,6 +9,7 @@ import {
 import { configureLazyArabicShapingJoiner } from '@/lib/pane-manager/terminal-arabic-shaping-joiner'
 import {
   _resetWritePipelineHealthForTests,
+  notifyUndeliverableWrite,
   registerUndeliverableWriteHandler
 } from '@/lib/pane-manager/terminal-write-pipeline-health'
 
@@ -256,6 +257,32 @@ describe('replay-guard', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('short-circuits replays into a certified-dead terminal', () => {
+    const ref = makeRef()
+    const { pane, terminal } = makeFakePane(1)
+    notifyUndeliverableWrite(pane.terminal, 'write-stalled')
+
+    replayIntoTerminal(pane, ref, 'zombie restore bytes')
+
+    // No write reaches the dead pipeline and no guard is engaged — the
+    // watchdog-driven restore loop can no longer produce the wedged drip.
+    expect(terminal.lastData).toHaveLength(0)
+    expect(isPaneReplaying(ref, 1)).toBe(false)
+    _resetWritePipelineHealthForTests(pane.terminal)
+  })
+
+  it('resolves async replays into a certified-dead terminal without writing', async () => {
+    const ref = makeRef()
+    const { pane, terminal } = makeFakePane(1)
+    notifyUndeliverableWrite(pane.terminal, 'replay-wedged')
+
+    await replayIntoTerminalAsync(pane, ref, 'zombie restore bytes')
+
+    expect(terminal.lastData).toHaveLength(0)
+    expect(isPaneReplaying(ref, 1)).toBe(false)
+    _resetWritePipelineHealthForTests(pane.terminal)
   })
 
   it('a healthy parse completion never notifies pane recovery', () => {

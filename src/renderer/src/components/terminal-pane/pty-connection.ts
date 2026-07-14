@@ -50,7 +50,10 @@ import { shouldClaimRemoteDesktopViewport } from './remote-desktop-viewport-clai
 import { getAppliedSizeReadE2eDelayMs } from './pty-applied-size-read-e2e-delay'
 import { createPtySizeReassertion } from './pty-size-reassertion'
 import { isPaneReplaying, replayIntoTerminal, replayIntoTerminalAsync } from './replay-guard'
-import { registerUndeliverableWriteHandler } from '@/lib/pane-manager/terminal-write-pipeline-health'
+import {
+  isTerminalWritePipelineCertifiedDead,
+  registerUndeliverableWriteHandler
+} from '@/lib/pane-manager/terminal-write-pipeline-health'
 import { requestTerminalPaneRecovery } from './terminal-pane-recovery'
 import {
   isDocumentVisibilityProvenStale,
@@ -6134,6 +6137,14 @@ export function connectPanePty(
     }
 
     function requestHiddenOutputRestoreIfNeeded(opts?: { bypassScheduler?: boolean }): boolean {
+      // Why: once the write pipeline is probe-certified dead, a restore can
+      // never parse — replaying just re-arms the wedged breadcrumb drip and
+      // wastes a snapshot fetch each time the delivery watchdog heals stuck
+      // in-flight bytes (~60s while idle). Recovery owns the pane now; the
+      // remounted pane gets a fresh xterm and a fresh restore.
+      if (isTerminalWritePipelineCertifiedDead(pane.terminal)) {
+        return false
+      }
       resetHiddenOutputRestoreIfPtyChanged()
       const ptyId = hiddenOutputRestorePtyId ?? transport.getPtyId()
       if (!hiddenOutputRestoreNeeded && hiddenOutputRestorePendingChunks.length === 0) {

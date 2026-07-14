@@ -91,6 +91,50 @@ describe('requestTerminalPaneRecovery', () => {
     expect(mocks.remountTerminalTabForRecovery).toHaveBeenCalledTimes(3)
   })
 
+  it('a window-cap decline schedules a retry that heals when the window reopens', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(0)
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      vi.setSystemTime(attempt * 20_000)
+      await requestTerminalPaneRecovery({
+        tabId: 'tab-1',
+        ptyId: 'pty-1',
+        reason: 'write-stalled'
+      })
+    }
+    expect(mocks.remountTerminalTabForRecovery).toHaveBeenCalledTimes(3)
+
+    // Cap-declined: without a retry this pane is a permanent zombie — its
+    // certified-dead xterm no longer produces write signals to re-request.
+    vi.setSystemTime(60_000)
+    expect(
+      await requestTerminalPaneRecovery({ tabId: 'tab-1', ptyId: 'pty-1', reason: 'write-stalled' })
+    ).toBe(false)
+    expect(
+      await requestTerminalPaneRecovery({ tabId: 'tab-1', ptyId: 'pty-1', reason: 'replay-wedged' })
+    ).toBe(false)
+    expect(mocks.remountTerminalTabForRecovery).toHaveBeenCalledTimes(3)
+
+    // One retry (deduped across the two declines) fires once the first
+    // attempt ages out of the window, and remounts.
+    await vi.advanceTimersByTimeAsync(250_000)
+    expect(mocks.remountTerminalTabForRecovery).toHaveBeenCalledTimes(4)
+    await vi.advanceTimersByTimeAsync(400_000)
+    expect(mocks.remountTerminalTabForRecovery).toHaveBeenCalledTimes(4)
+  })
+
+  it('a cooldown decline schedules no retry (the tab remount already covers it)', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(0)
+    await requestTerminalPaneRecovery({ tabId: 'tab-1', ptyId: 'pty-1', reason: 'write-stalled' })
+    expect(
+      await requestTerminalPaneRecovery({ tabId: 'tab-1', ptyId: 'pty-1', reason: 'replay-wedged' })
+    ).toBe(false)
+
+    await vi.advanceTimersByTimeAsync(600_000)
+    expect(mocks.remountTerminalTabForRecovery).toHaveBeenCalledTimes(1)
+  })
+
   it('budgets tabs independently', async () => {
     expect(
       await requestTerminalPaneRecovery({ tabId: 'tab-1', ptyId: 'pty-1', reason: 'write-stalled' })
