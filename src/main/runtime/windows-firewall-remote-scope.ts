@@ -31,8 +31,8 @@ function ruleHasSufficientScope(rule: unknown, localSubnet: IpRange | null): boo
     ? rule.remoteAddresses
     : [rule.remoteAddresses]
 
-  return addresses.some((address) =>
-    typeof address === 'string' ? addressScopeIsSufficient(address, localSubnet) : false
+  return addresses.some(
+    (address) => typeof address === 'string' && addressScopeIsSufficient(address, localSubnet)
   )
 }
 
