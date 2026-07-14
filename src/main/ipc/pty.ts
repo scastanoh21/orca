@@ -666,6 +666,13 @@ function retireUnprovableLegacyPtyShutdown(retained: RetainedPtyShutdown): void 
   }
 }
 
+function deferRetainedPtyShutdownRetry(retained: RetainedPtyShutdown): void {
+  retained.attempts += 1
+  retained.nextRetryAt =
+    Date.now() +
+    Math.min(MAX_RETAINED_SHUTDOWN_BACKOFF_MS, 250 * 2 ** Math.min(retained.attempts - 1, 7))
+}
+
 function attemptRetainedPtyShutdown(retained: RetainedPtyShutdown): Promise<void> {
   if (retained.inFlight) {
     return retained.inFlight
@@ -687,7 +694,8 @@ function attemptRetainedPtyShutdown(retained: RetainedPtyShutdown): Promise<void
         return
       }
       if (!stopped) {
-        throw new Error('PTY shutdown accepted but process exit is not yet confirmed')
+        deferRetainedPtyShutdownRetry(retained)
+        return
       }
       completeRetainedPtyShutdown(retained, false)
       return
@@ -728,7 +736,8 @@ function attemptRetainedPtyShutdown(retained: RetainedPtyShutdown): Promise<void
         return
       }
       if (!stopped) {
-        throw new Error('PTY shutdown accepted but process exit is not yet confirmed')
+        deferRetainedPtyShutdownRetry(retained)
+        return
       }
     }
     completeRetainedPtyShutdown(retained, providerExitObserved)
@@ -754,10 +763,7 @@ function attemptRetainedPtyShutdown(retained: RetainedPtyShutdown): Promise<void
         return
       }
       retained.lastError = error instanceof Error ? error : new Error(String(error))
-      retained.attempts += 1
-      retained.nextRetryAt =
-        Date.now() +
-        Math.min(MAX_RETAINED_SHUTDOWN_BACKOFF_MS, 250 * 2 ** Math.min(retained.attempts - 1, 7))
+      deferRetainedPtyShutdownRetry(retained)
       if (retained.attempts <= 2 || retained.attempts === 8) {
         console.warn('[pty] retained shutdown retry failed:', error)
       }
@@ -772,7 +778,10 @@ function attemptRetainedPtyShutdown(retained: RetainedPtyShutdown): Promise<void
   return attempt
 }
 
-async function attemptRetainedPtyShutdownForCaller(retained: RetainedPtyShutdown): Promise<void> {
+async function attemptRetainedPtyShutdownForCaller(
+  retained: RetainedPtyShutdown,
+  settleWhenShutdownAccepted = false
+): Promise<void> {
   const ownerMap = retained.connectionId ? pendingSshShutdownRetries : pendingLocalShutdownRetries
   while (ownerMap.get(retained.id) === retained) {
     await attemptRetainedPtyShutdown(retained)
@@ -790,6 +799,9 @@ async function attemptRetainedPtyShutdownForCaller(retained: RetainedPtyShutdown
     if (currentProvider && retained.nextRetryAt <= Date.now()) {
       continue
     }
+    if (settleWhenShutdownAccepted && retained.shutdownAccepted) {
+      return
+    }
     throw new Error('PTY shutdown still pending')
   }
 }
@@ -800,6 +812,7 @@ export async function shutdownPtyWithRetainedOwnership(args: {
   provider: IPtyProvider
   options: PtyShutdownOptions
   requireExitProof?: boolean
+  settleWhenShutdownAccepted?: boolean
 }): Promise<void> {
   const retained = args.connectionId
     ? retainSshPtyShutdown(args.id, args.connectionId, args.provider, args.options)
@@ -808,7 +821,7 @@ export async function shutdownPtyWithRetainedOwnership(args: {
     throw new Error('PTY shutdown could not retain ownership')
   }
   retained.requireExitProof ||= args.requireExitProof === true
-  await attemptRetainedPtyShutdownForCaller(retained)
+  await attemptRetainedPtyShutdownForCaller(retained, args.settleWhenShutdownAccepted)
 }
 
 function mergePtyShutdownOptions(
@@ -5606,7 +5619,10 @@ export function registerPtyHandlers(
         id: args.id,
         connectionId,
         provider: shutdownProvider,
-        options: shutdownOptions
+        options: shutdownOptions,
+        // Why: main already owns the exact retry. A normal asynchronous exit
+        // must not reject into renderer diagnostics while proof is pending.
+        settleWhenShutdownAccepted: true
       })
     }
   )

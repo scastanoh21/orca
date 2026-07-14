@@ -3531,6 +3531,8 @@ describe('registerPtyHandlers', () => {
       .mockResolvedValueOnce([{ id: 'local-pty', cwd: '', title: 'shell' }])
       .mockResolvedValue([])
     const removePendingLocalPtyShutdown = vi.fn()
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    warn.mockClear()
     setLocalPtyProvider({
       requiresShutdownExitProof: true,
       shutdown,
@@ -3546,14 +3548,14 @@ describe('registerPtyHandlers', () => {
       removePendingLocalPtyShutdown
     } as never)
 
-    await expect(handlers.get('pty:kill')!(null, { id: 'local-pty' })).rejects.toThrow(
-      'process exit is not yet confirmed'
-    )
+    await expect(handlers.get('pty:kill')!(null, { id: 'local-pty' })).resolves.toBeUndefined()
     expect(removePendingLocalPtyShutdown).not.toHaveBeenCalled()
+    expect(warn).not.toHaveBeenCalled()
     await vi.advanceTimersByTimeAsync(250)
 
     expect(shutdown).toHaveBeenCalledOnce()
     expect(removePendingLocalPtyShutdown).toHaveBeenCalledWith('local-pty')
+    expect(warn).not.toHaveBeenCalled()
     vi.useRealTimers()
   })
 
