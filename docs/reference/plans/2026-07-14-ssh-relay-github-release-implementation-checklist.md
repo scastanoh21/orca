@@ -2,7 +2,7 @@
 
 Date created: 2026-07-14<br>
 Last updated: 2026-07-14<br>
-Current phase: Milestone 3 / Work Package 2 target-native runtime assembly — exact-head run 29357355064 keeps Linux x64/arm64, macOS x64/arm64, and Windows x64 exactly reproducible and uploads exactly those five unpublished artifacts; Windows x64 proves the generated compiler/linker flags in both clean builds, while native Windows arm64 fails closed before staging because the generated Release-condition verifier does not accept the runner's lowercase `arm64` platform spelling; no arm64 artifact is uploaded and no disassembly or producer correction is yet justified; exact implementation commit `4207c207a` makes only that architecture comparison case-insensitive while retaining exact Release/configuration cardinality and option checks, is locally green under E-M3-WINDOWS-MSBUILD-PLATFORM-CASE-LOCAL-001, and awaits all six target-native cells; oldest-baseline, native-trust, cross-family remote, and measured-baseline gates remain open; no bundled-runtime path is enabled<br>
+Current phase: Milestone 3 / Work Package 2 target-native runtime assembly — exact-head run 29358223742 proves the lowercase-arm64 generated-setting correction on the real runner, keeps Linux x64/arm64, macOS x64/arm64, and Windows x64 exactly reproducible, and uploads exactly those five unpublished artifacts; Windows arm64 builds, verifies, and executes both complete runtimes, then fails closed with no upload because 2,879 linker-emitted 16-byte function thunks differ only in their unreachable fourth `udf` instruction while each thunk's `adrp`/`add`/`br` control flow is byte-identical; the remaining 68 bytes are derived `/Brepro` COFF/debug identities; the active bounded diagnostic must prove the generated incremental-link state that owns the thunks before any producer correction; oldest-baseline, native-trust, cross-family remote, and measured-baseline gates remain open; no bundled-runtime path is enabled<br>
 Primary design: [SSH relay GitHub Release plan](./2026-07-14-ssh-relay-github-release-plan.html)<br>
 Motivating issues: [#8450](https://github.com/stablyai/orca/issues/8450), [#1693](https://github.com/stablyai/orca/issues/1693)
 
@@ -123,7 +123,13 @@ same change as the work it records.
   arm64 build fails closed at the new Release-condition verifier before runtime staging under
   E-M3-WINDOWS-MSBUILD-PLATFORM-CASE-CI-RED-001. The runner exposes `Platform=arm64`; the active
   correction accepts only a case-insensitive exact match for the expected architecture and retains
-  every option/cardinality check. No producer, comparator, upload, or production behavior changes.
+  every option/cardinality check. Exact-head run 29358223742 proves that correction on the real
+  arm64 runner, preserves five exact controls, and reaches paired disassembly under
+  E-M3-WINDOWS-ARM64-THUNK-DISASSEMBLY-CI-RED-001. The arm64 outputs have 2,879 linker-emitted
+  16-byte function thunks whose three control-flow instructions match and whose unreachable fourth
+  `udf` instruction differs, plus 68 derived identity bytes. Strict comparison and rejected-output
+  no-upload remain intact. The active diagnostic must prove the generated incremental-link state
+  before any producer change. No comparator, publication, or production behavior changes.
 - Windows input correction: E-M3-WINDOWS-INPUT-GAP-001 proved the official Windows ZIP lacks headers
   and `node.lib`. Both artifacts now require the exact signed headers archive and tuple import
   library as explicit inputs. The schema, signed-checksum verifier, bounded ZIP/header extraction,
@@ -163,11 +169,11 @@ same change as the work it records.
   per-target opt-in selects bundled-preferred behavior, and implementing the setting does not
   authorize default-on rollout or legacy removal (E-M1-ROLLOUT-DECISION-001).
 - Legacy fallback removal: not authorized.
-- Next required action: push exact implementation commit `4207c207a` plus its evidence-ledger head
-  and rerun all six target-native cells. Require both Windows jobs to prove their generated
-  compiler/linker settings; only if arm64 reaches the known comparator mismatch may paired bounded
-  disassembly justify a producer correction. Preserve all five controls, rejected-binary no-upload,
-  the repository-wide node-pty patch, legacy/default path, and every other release gate.
+- Next required action: add a bounded generated-project diagnostic for the exact Windows Release
+  `LinkIncremental` state and rerun all six target-native cells. Require both Windows clean builds
+  to report the same state before considering one copied-artifact producer correction. Preserve all
+  five controls, strict comparison, rejected-arm64 no-upload, the repository-wide node-pty patch,
+  legacy/default path, and every other release gate.
 
 ## Non-Negotiable Invariants
 
@@ -675,12 +681,21 @@ no second producer correction is justified before the target-native evidence. Ex
 Windows arm64 before staging because the Release group lookup does not accept the runner's lowercase
 `arm64` platform spelling (E-M3-WINDOWS-MSBUILD-PLATFORM-CASE-CI-RED-001).
 
-**In progress — 2026-07-14, Codex implementation owner:** make only the expected generated Release
-architecture comparison case-insensitive, while retaining one exact Release group, the expected
-tuple architecture, one inherited compiler/linker option block, and exactly one instance of each
-required flag. Exact implementation commit `4207c207a` and its lowercase-arm64 fixture are locally
-green under E-M3-WINDOWS-MSBUILD-PLATFORM-CASE-LOCAL-001; all six native cells remain required. Do
-not change a producer, normalize output, weaken reproducibility, or connect a production consumer.
+Exact-head run 29358223742 then proves that correction on native Windows arm64 and retains all five
+reproducible controls. Both arm64 clean builds log the required compiler/linker options, assemble,
+verify, and execute, but strict comparison still rejects `conpty_console_list.node` and uploads no
+arm64 artifact. The complete PE scan reports 5,826 differing bytes: 5,758 bytes across 2,879
+two-byte `.text` ranges exactly 16 bytes apart plus 68 derived COFF/debug/CodeView bytes. Paired
+disassembly proves each 16-byte function thunk has byte-identical `adrp x16`, `add x16`, and
+`br x16` instructions; only the unreachable fourth instruction changes from `udf #0x24d` to
+`udf #0x16d` (E-M3-WINDOWS-ARM64-THUNK-DISASSEMBLY-CI-RED-001).
+
+**In progress — 2026-07-14, Codex implementation owner:** classify the linker-owned thunk producer
+before changing it. Add a bounded generated-project diagnostic for the exact Release
+`LinkIncremental` state while retaining the existing architecture, option, cardinality, strict
+comparison, and no-upload gates. The thunk layout is consistent with an incremental-link table, but
+that setting is not yet proved on the native runner. Do not normalize rejected bytes, weaken the
+comparator, modify repository-wide node-pty, or connect a production consumer.
 
 Each runtime must contain only the executable closure required by the relay.
 
@@ -1285,16 +1300,16 @@ Baseline measurements must be captured before product behavior changes.
 
 Update status and evidence as work begins. Do not combine these into one large behavior switch.
 
-| Work package              | Scope                                                                                      | Default behavior change     | Status                                                 | PR/evidence                                                                  |
-| ------------------------- | ------------------------------------------------------------------------------------------ | --------------------------- | ------------------------------------------------------ | ---------------------------------------------------------------------------- |
-| 0. #8450 legacy fix       | Coherent Node/npm selection and live repro                                                 | Fixes legacy selection only | Complete and CI-green in draft PR #8724                | E-M0-UNIT-002, E-M0-LIVE-002, E-M0-STATIC-002, E-M0-PR-001, E-M0-CI-001      |
-| 1. Contract and selectors | Manifest schema, identity, platform/libc selection, hostile inputs                         | None                        | Complete and CI-green in draft PR #8728                | `b9d80a4cb`; E-M2-RED-001, E-M2-CONTRACT-001, E-M2-CI-001                    |
-| 2. Runtime builds         | Per-tuple assembly, native smoke, SBOM/provenance/signing                                  | None                        | Draft PR #8741; PE diagnostic awaiting native evidence | `39ee3451b`; E-M3-WINDOWS-PE-DIAGNOSTIC-LOCAL-001; arm64 repeat-red evidence |
-| 3. Release publication    | Prerequisite DAG, embedded manifest, draft upload/read-back gates                          | Asset-only                  | Not started                                            | —                                                                            |
-| 4. Desktop resolver/cache | Verified download, extraction, cache, offline behavior                                     | None/forced mode only       | Not started                                            | —                                                                            |
-| 5. Transfer/install       | Bounded transports, structured sentinel, bundled launch behind per-target Beta/forced mode | Per-target opt-in only      | Not started                                            | —                                                                            |
-| 6. Fallback/diagnostics   | Abort-and-join state machine, mode isolation, reason codes, target-mode configuration/UI   | Per-target Beta only        | Not started                                            | —                                                                            |
-| 7. Live gates/rollout     | Matrix, security, performance, release promotion                                           | Per-tuple staged            | Not started                                            | —                                                                            |
+| Work package              | Scope                                                                                      | Default behavior change     | Status                                                        | PR/evidence                                                             |
+| ------------------------- | ------------------------------------------------------------------------------------------ | --------------------------- | ------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| 0. #8450 legacy fix       | Coherent Node/npm selection and live repro                                                 | Fixes legacy selection only | Complete and CI-green in draft PR #8724                       | E-M0-UNIT-002, E-M0-LIVE-002, E-M0-STATIC-002, E-M0-PR-001, E-M0-CI-001 |
+| 1. Contract and selectors | Manifest schema, identity, platform/libc selection, hostile inputs                         | None                        | Complete and CI-green in draft PR #8728                       | `b9d80a4cb`; E-M2-RED-001, E-M2-CONTRACT-001, E-M2-CI-001               |
+| 2. Runtime builds         | Per-tuple assembly, native smoke, SBOM/provenance/signing                                  | None                        | Draft PR #8741; arm64 linker-thunk producer diagnostic active | `e1a63930b`; E-M3-WINDOWS-ARM64-THUNK-DISASSEMBLY-CI-RED-001            |
+| 3. Release publication    | Prerequisite DAG, embedded manifest, draft upload/read-back gates                          | Asset-only                  | Not started                                                   | —                                                                       |
+| 4. Desktop resolver/cache | Verified download, extraction, cache, offline behavior                                     | None/forced mode only       | Not started                                                   | —                                                                       |
+| 5. Transfer/install       | Bounded transports, structured sentinel, bundled launch behind per-target Beta/forced mode | Per-target opt-in only      | Not started                                                   | —                                                                       |
+| 6. Fallback/diagnostics   | Abort-and-join state machine, mode isolation, reason codes, target-mode configuration/UI   | Per-target Beta only        | Not started                                                   | —                                                                       |
+| 7. Live gates/rollout     | Matrix, security, performance, release promotion                                           | Per-tuple staged            | Not started                                                   | —                                                                       |
 
 Every PR must document:
 
@@ -4893,23 +4908,123 @@ configuration` before runtime staging, verification, smoke, comparison, or diagn
   require both Windows architectures to log the accepted generated settings before interpreting any
   later comparator mismatch.
 
+### E-M3-WINDOWS-ARM64-THUNK-DISASSEMBLY-CI-RED-001 — Native linker-thunk drift isolated
+
+- Date: 2026-07-14
+- Commit SHA / PR: exact head `e1a63930b4d350e8677e2be3a35b0bdec95f268c`, containing exact
+  lowercase-platform implementation commit `4207c207ab932ef67522b4f73b98d63fa32d0924`; stacked draft
+  PR [#8741](https://github.com/stablyai/orca/pull/8741)
+- Run and jobs: [run 29358223742](https://github.com/stablyai/orca/actions/runs/29358223742),
+  conclusion `failure`; Linux arm64 `87171219009` success, Windows arm64 `87171219067` expected
+  strict failure, Linux x64 `87171219080` success, Windows x64 `87171219167` success, macOS arm64
+  `87171219192` success, and macOS x64 `87171219210` success
+- Runners: GitHub-hosted `ubuntu-24.04-arm` / `ubuntu24-arm64` `20260706.52.2` native ARM64;
+  `windows-11-arm` / `win11-arm64` `20260706.102.1` native ARM64; `ubuntu-24.04` / `ubuntu24`
+  `20260705.232.1` native X64; `windows-2022` / `win22` `20260706.237.1` native X64; `macos-15` /
+  `macos15` `20260706.0213.1` native ARM64; and `macos-15-intel` / `macos15`
+  `20260629.0276.1` native X64. Every job recorded Node v24.18.0 and the exact source commit.
+- Remote and transport: none; target-native artifact assembly, generated-project verification,
+  bundled-Node/native-module execution, strict comparison, and unpublished Actions artifacts only
+- Exact evidence commands:
+
+  ```sh
+  gh pr view 8741 --repo stablyai/orca \
+    --json number,state,isDraft,headRefName,headRefOid,url,statusCheckRollup,updatedAt
+  gh api repos/stablyai/orca/actions/runs/29358223742
+  gh api 'repos/stablyai/orca/actions/runs/29358223742/jobs?per_page=100'
+  gh api 'repos/stablyai/orca/actions/runs/29358223742/artifacts?per_page=100'
+  gh run view 29358223742 --repo stablyai/orca --job 87171219167 --log
+  gh run view 29358223742 --repo stablyai/orca --job 87171219067 --log-failed
+  gh api repos/stablyai/orca/actions/jobs/87171219067/logs | \
+    sed -n '/windows_arm64_disassembly=first/,$p'
+  gh run download 29358223742 --repo stablyai/orca --dir <temporary-directory>
+  jq -c '{tupleId,contentId,nodeVersion,archive,fileCount}' \
+    <temporary-directory>/*/*.identity.json
+  ```
+
+- Result: FAIL as the intended strict reproducibility gate. The lowercase `arm64` correction reaches
+  the one expected Release group on both native arm64 clean builds. Both log exactly one inherited
+  compiler and linker option block containing `/Brepro` and `/experimental:deterministic`, then
+  assemble, inspect, verify, and execute the complete runtime. Each bundled Node v24.18.0 smoke
+  proves ABI 137, patched PTY input/resize/exit code 23, watcher create/update/delete, and settled
+  Windows resources. Strict comparison then rejects only
+  `runtime/node_modules/node-pty/build/Release/conpty_console_list.node`; no arm64 output is staged
+  for upload.
+- Windows arm64 outputs: both PE files are 956,928 bytes. The first content identity is
+  `sha256:a6adc716ec39503f68f4e322624ed9193b9343ca4b5f74d22843c47635e81519`, with
+  33,261,547-byte ZIP
+  `sha256:5aebde73ef6cad605d13c5c27977f1229729aa28a6959649989d8ecd4a6d2a9e`; the second is
+  `sha256:2aef13722dd084941069d260591c529d1ca5ebf0b1e2defa34da4c43f44c2d24`, with the same
+  ZIP size and digest
+  `sha256:974612580fa7a008bcf3377ddd13ce5f99b78cc31c99c7b9b720066b3f9dc91c`. Both archives
+  contain 42 files and expand to 86,189,895 bytes.
+- PE oracle: the complete scan reports 5,826 differing bytes across 2,886 coalesced ranges. The
+  `.text` contribution is 5,758 bytes across 2,879 two-byte ranges from file offsets 1,052 through
+  47,102, exactly 16 bytes apart. The remaining 68 bytes are one four-byte COFF timestamp, three
+  four-byte debug timestamps, one 16-byte CodeView identifier, and 36 derived `.rdata` bytes.
+  Section layout, file size, executable control-flow bytes, and all other bytes match.
+- Paired disassembly oracle: the first 512 `.text` bytes contain repeated 16-byte function thunks.
+  For every displayed thunk, `adrp x16, target`, `add x16, x16, offset`, and `br x16` are
+  byte-identical. Only the unreachable fourth instruction differs: first build `0000024d`
+  (`udf #0x24d`), second build `0000016d` (`udf #0x16d`). This classifies the changing bytes as
+  linker-emitted thunk padding; it does not yet prove the generated linker setting responsible.
+- Uploaded controls: exactly five unpublished seven-day artifacts and no Windows arm64 artifact:
+  Linux x64 `8321096098`, 29,281,909 bytes,
+  `sha256:cbe4d1be7664227fa34fb977f568ba0fc9409d5b5f5139fd4937013e46501074`, content ID
+  `sha256:960546cd96c67fcf9bb0a61e96ecdbecbffd9104d3a495578f8bb19dd810649a`, archive
+  `sha256:c87306e069af8c849b7679ccdf0504cc48c51b0ac0586edcdbf698972156bab5`; Linux arm64
+  `8321099340`, 28,212,775 bytes,
+  `sha256:0502a9710a9612c44fc2aa4792ee1f30859158fcac40668b59c35ca670eb83f2`, content ID
+  `sha256:aa3aa8ae8b42334ba7b0dbe5c43fd1184e36b3f4f4a9bec0e990e9b78f090756`, archive
+  `sha256:f017fcd7808cd8ba86175b2fad63103e880d57ccbec70412938e0cc145310eda`; macOS x64
+  `8321127611`, 26,376,349 bytes,
+  `sha256:9297b99e9605c065cbf04d3431edadf8312ee19dd1b60d8790cba95f090bd68e`, content ID
+  `sha256:585ea6034cdd07487d8667059f975a877c795a45dc0d6eeee1617f2e3749faa2`, archive
+  `sha256:5669d69085d268e01fe5ece6e4372832c3f61c89bcefa9acaf732c81eb460775`; macOS arm64
+  `8321085541`, 24,740,934 bytes,
+  `sha256:8ab194c0d0c08ab40aa8f7821738fd5c2e3b1821fb83df6d59992b6106ba46f2`, content ID
+  `sha256:40ff5d2036784b794e7b09f78596409f63f3145280c530bece5280d40897f6cb`, archive
+  `sha256:b51e5a6a53aeff2ae47e4156900981395516c9b246ab1ae3fff5c4c34500ee0a`; and Windows x64
+  `8321159937`, 37,075,308 bytes,
+  `sha256:dcadebbcbb7d3c6f308badeefa7940350022b22bb76fd31baed15bb304af56c1`, content ID
+  `sha256:2a6bfa06b445fb78d6e4a5abba6ec379cbed6f7830c805e82c7145d18a1c3d8b`, archive
+  `sha256:ee1a0cc8bdf55d783ed1c1232dedd788710a1d88edd7e89a2ddfa84e0986d7ca`.
+- Duration and resource metrics: jobs ran 3m07s Linux arm64, 9m15s Windows arm64, 3m02s Linux x64,
+  5m22s Windows x64, 2m41s macOS arm64, and 4m11s macOS x64. Windows arm64 clean builds took
+  149,415.066 ms and 130,574.341 ms; verification took 7,688.862 ms and 8,012.846 ms, with smoke
+  taking 5,865.144 ms at 53,235,712-byte RSS and 5,553.779 ms at 53,133,312-byte RSS. Cancellation,
+  SSH channel/file counts, and fallback delay are outside this artifact-only run.
+- Artifact/log/trace link: run/jobs and the five unpublished artifacts above; rejected arm64 bytes
+  exist only in the bounded job workspace and log diagnostics and were not uploaded
+- Oracle proved: real native lowercase platform acceptance, exact generated compiler/linker option
+  propagation, two complete executable arm64 candidates, strict rejection, exact five-control
+  reproducibility, bounded linker-thunk classification, and rejected-output no-upload.
+- Does not prove: whether MSBuild enabled incremental linking, that disabling it is the safe producer
+  correction, arm64 equality, oldest baselines, native trust, SSH, publication, transfer, fallback,
+  UI, or any enabled tuple. No executable byte may be normalized from this evidence.
+- Checklist items satisfied: target-native platform-case gate and bounded ARM64 instruction
+  diagnostic only; no tuple or production checkbox.
+- Follow-up: add a purpose-tested bounded parser for the exact generated Release
+  `LinkIncremental` state, require both Windows clean builds to report it, and rerun all six native
+  controls before considering one copied-artifact producer correction.
+
 ## Accepted Gaps
 
 No product gap is accepted merely because it appears in this list. Each entry requires explicit
 owner and promotion condition.
 
-| Gap                                        | Current behavior                                                                                       | Risk                                           | Owner                                                   | Promotion/removal condition                                                                                                                               | Status       |
-| ------------------------------------------ | ------------------------------------------------------------------------------------------------------ | ---------------------------------------------- | ------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------ |
-| Bundled runtime only partially implemented | Six unpublished native artifact proofs; no production consumer                                         | #8450/#1693 environment failures remain        | Codex implementation owner                              | Complete Work Packages 2–7 plus Milestones 3–14                                                                                                           | Open         |
-| No bundled tuple enabled                   | Every target's default and effective mode remains legacy                                               | No bundled support claim can be made           | Codex implementation owner                              | Complete target-native build/trust and both required live-evidence layers                                                                                 | Open         |
-| Windows runtime smoke incomplete           | Native x64/arm64 smoke settles and uploads exact evidence                                              | Historical blocker is closed                   | Codex implementation owner                              | Met by E-M3-WINDOWS-CI-001                                                                                                                                | CLOSED       |
-| Native clean-rebuild identity unproved     | Five native cells pass; arm64 generated-setting verification currently stops before the known PE drift | Toolchain drift may change native content IDs  | Codex implementation owner                              | Generated-build-input and ARM64 instruction diagnostics identify a safe producer correction; all six clean builds then match without weakening the oracle | Open         |
-| Cross-family Layer B remotes unavailable   | GitHub native runner labels exist; no approved reachable target pool                                   | Client/remote integration gaps may escape      | Repository release administrator + implementation owner | Approve provider/snapshots/credentials/egress/teardown/cost owner                                                                                         | BLOCKED      |
-| Musl has no accepted official Node binary  | Musl is deliberately legacy-only                                                                       | Unofficial binary would break provenance trust | Codex implementation owner                              | Orca-owned target-native source build, signing, provenance, and live gates                                                                                | ACCEPTED GAP |
-| Native arm64 live matrices incomplete      | Hosted Linux/Windows arm64 labels exist; full SSH/runtime cells do not                                 | Cross-build or unit tests may hide native bugs | Codex implementation owner                              | Full native archive, trust, SFTP/system-SSH, RPC, and baseline evidence                                                                                   | Open         |
-| Legacy performance baseline unmeasured     | Numeric budgets exist; paired cold/warm measurements do not                                            | Regression thresholds lack a measured baseline | Codex implementation owner                              | Purpose-built paired harness with ten samples on pinned runner classes                                                                                    | Open         |
-| Manifest signing environment unprovisioned | Ed25519/key-rotation policy exists; no protected runtime signing secret                                | Runtime assets cannot be safely published      | Repository release administrator                        | Protected environment, reviewers, two test keys, rehearsals, and access audit                                                                             | BLOCKED      |
-| Bootstrap primitives lack full live proof  | POSIX/Windows contracts exist; bounded SSH implementations do not                                      | Hidden dependency or transfer corruption       | Codex implementation owner                              | Purpose-named full-size SFTP/POSIX/Windows system-SSH live suites                                                                                         | Open         |
+| Gap                                        | Current behavior                                                                                         | Risk                                           | Owner                                                   | Promotion/removal condition                                                                                                                                | Status       |
+| ------------------------------------------ | -------------------------------------------------------------------------------------------------------- | ---------------------------------------------- | ------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------ |
+| Bundled runtime only partially implemented | Six unpublished native artifact proofs; no production consumer                                           | #8450/#1693 environment failures remain        | Codex implementation owner                              | Complete Work Packages 2–7 plus Milestones 3–14                                                                                                            | Open         |
+| No bundled tuple enabled                   | Every target's default and effective mode remains legacy                                                 | No bundled support claim can be made           | Codex implementation owner                              | Complete target-native build/trust and both required live-evidence layers                                                                                  | Open         |
+| Windows runtime smoke incomplete           | Native x64/arm64 smoke settles and uploads exact evidence                                                | Historical blocker is closed                   | Codex implementation owner                              | Met by E-M3-WINDOWS-CI-001                                                                                                                                 | CLOSED       |
+| Native clean-rebuild identity unproved     | Five native cells pass; arm64 builds and executes twice but strict comparison rejects linker-thunk drift | Toolchain drift may change native content IDs  | Codex implementation owner                              | Prove the generated incremental-link state, apply only an evidenced producer correction, then make all six clean builds match without weakening the oracle | Open         |
+| Cross-family Layer B remotes unavailable   | GitHub native runner labels exist; no approved reachable target pool                                     | Client/remote integration gaps may escape      | Repository release administrator + implementation owner | Approve provider/snapshots/credentials/egress/teardown/cost owner                                                                                          | BLOCKED      |
+| Musl has no accepted official Node binary  | Musl is deliberately legacy-only                                                                         | Unofficial binary would break provenance trust | Codex implementation owner                              | Orca-owned target-native source build, signing, provenance, and live gates                                                                                 | ACCEPTED GAP |
+| Native arm64 live matrices incomplete      | Hosted Linux/Windows arm64 labels exist; full SSH/runtime cells do not                                   | Cross-build or unit tests may hide native bugs | Codex implementation owner                              | Full native archive, trust, SFTP/system-SSH, RPC, and baseline evidence                                                                                    | Open         |
+| Legacy performance baseline unmeasured     | Numeric budgets exist; paired cold/warm measurements do not                                              | Regression thresholds lack a measured baseline | Codex implementation owner                              | Purpose-built paired harness with ten samples on pinned runner classes                                                                                     | Open         |
+| Manifest signing environment unprovisioned | Ed25519/key-rotation policy exists; no protected runtime signing secret                                  | Runtime assets cannot be safely published      | Repository release administrator                        | Protected environment, reviewers, two test keys, rehearsals, and access audit                                                                              | BLOCKED      |
+| Bootstrap primitives lack full live proof  | POSIX/Windows contracts exist; bounded SSH implementations do not                                        | Hidden dependency or transfer corruption       | Codex implementation owner                              | Purpose-named full-size SFTP/POSIX/Windows system-SSH live suites                                                                                          | Open         |
 
 ## Final Definition of Done
 
@@ -4950,10 +5065,11 @@ The project is not complete until every applicable item below is checked with ev
 
 ## Next Required Action
 
-Push exact implementation commit `4207c207a` plus its evidence-ledger head and rerun all six
-target-native cells. Require both Windows jobs to prove the generated Release compiler/linker
-settings; if arm64 then reaches the known comparator mismatch, record both bounded disassemblies
-while retaining all four POSIX controls, strict comparison, and rejected-arm64 no-upload.
+Add a bounded, purpose-tested generated-project diagnostic for the exact Windows Release
+`LinkIncremental` state, then rerun both Windows architectures and all four POSIX controls at the
+exact implementation head. Require both Windows clean builds to report the same setting. Only if
+that target-native evidence classifies the 2,879 function thunks may one copied-artifact producer
+correction be considered; retain strict comparison, all five controls, and rejected-arm64 no-upload.
 Cross-family Layer B targets, the protected manifest-signing environment,
 oldest-baseline/native-trust cells, and the paired legacy performance baseline remain
 release/default-path blockers; no publication, desktop resolver, SSH transfer/install, per-target

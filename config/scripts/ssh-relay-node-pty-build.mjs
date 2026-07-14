@@ -7,7 +7,9 @@ import { promisify } from 'node:util'
 import { applyWindowsNodePtySettlement } from './ssh-relay-node-pty-windows-settlement.mjs'
 import {
   applyWindowsNodePtyBuildDeterminism,
-  assertWindowsNodePtyGeneratedBuildSettings
+  assertWindowsNodePtyGeneratedBuildSettings,
+  parseWindowsNodePtyLinkIncremental,
+  windowsNodePtyLinkIncrementalCommand
 } from './ssh-relay-node-pty-windows-build-determinism.mjs'
 
 const require = createRequire(import.meta.url)
@@ -192,8 +194,23 @@ export async function buildPatchedSshRelayNodePty({
       tuple
     })
     if (generatedSettings) {
+      const evaluation = windowsNodePtyLinkIncrementalCommand({
+        nodePtyDirectory: buildDirectory,
+        tuple
+      })
+      // Why: the emitted ARM64 thunks cannot justify a producer change without the effective link state.
+      const evaluated = await runCommand(evaluation.command, evaluation.args, {
+        cwd: buildDirectory,
+        signal: controller.signal,
+        timeout: BUILD_TIMEOUT_MS,
+        windowsHide: true,
+        env: buildEnvironment
+      })
       process.stdout.write(
-        `windows_node_pty_msbuild_settings=${JSON.stringify(generatedSettings)}\n`
+        `windows_node_pty_msbuild_settings=${JSON.stringify({
+          ...generatedSettings,
+          linkIncremental: parseWindowsNodePtyLinkIncremental(evaluated.stdout)
+        })}\n`
       )
     }
   } finally {

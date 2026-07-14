@@ -6,7 +6,9 @@ import { afterEach, describe, expect, it } from 'vitest'
 
 import {
   applyWindowsNodePtyBuildDeterminism,
-  assertWindowsNodePtyGeneratedBuildSettings
+  assertWindowsNodePtyGeneratedBuildSettings,
+  parseWindowsNodePtyLinkIncremental,
+  windowsNodePtyLinkIncrementalCommand
 } from './ssh-relay-node-pty-windows-build-determinism.mjs'
 
 const temporaryDirectories = []
@@ -84,6 +86,42 @@ describe('SSH relay Windows node-pty build determinism', () => {
       linkerOptions: ['/Brepro', '/experimental:deterministic'],
       project: 'conpty_console_list.vcxproj'
     })
+  })
+
+  it('evaluates the effective Release incremental-link state with strict output parsing', () => {
+    expect(
+      windowsNodePtyLinkIncrementalCommand({
+        nodePtyDirectory: 'C:\\artifact-node-pty',
+        tuple: 'win32-arm64'
+      })
+    ).toEqual({
+      command: 'MSBuild.exe',
+      args: [
+        join('C:\\artifact-node-pty', 'build', 'conpty_console_list.vcxproj'),
+        '-nologo',
+        '-verbosity:quiet',
+        '-property:Configuration=Release',
+        '-property:Platform=ARM64',
+        '-getProperty:LinkIncremental'
+      ]
+    })
+    expect(parseWindowsNodePtyLinkIncremental('TRUE\r\n')).toBe(true)
+    expect(parseWindowsNodePtyLinkIncremental('false\n')).toBe(false)
+    expect(() => parseWindowsNodePtyLinkIncremental('true\nwarning')).toThrow(
+      'unexpected LinkIncremental evaluation'
+    )
+    expect(
+      windowsNodePtyLinkIncrementalCommand({
+        nodePtyDirectory: 'C:\\artifact-node-pty',
+        tuple: 'win32-x64'
+      }).args
+    ).toContain('-property:Platform=x64')
+    expect(
+      windowsNodePtyLinkIncrementalCommand({
+        nodePtyDirectory: '/not-used-on-posix',
+        tuple: 'linux-arm64-glibc'
+      })
+    ).toBeUndefined()
   })
 
   it('rejects missing, duplicate, non-inherited, or wrong-architecture generated settings', async () => {

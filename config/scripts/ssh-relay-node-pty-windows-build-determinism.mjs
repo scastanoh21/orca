@@ -125,3 +125,29 @@ export async function assertWindowsNodePtyGeneratedBuildSettings({ nodePtyDirect
     project
   }
 }
+
+export function windowsNodePtyLinkIncrementalCommand({ nodePtyDirectory, tuple }) {
+  if (!tuple.startsWith('win32-')) {
+    return undefined
+  }
+  const platform = tuple.endsWith('-arm64') ? 'ARM64' : 'x64'
+  return {
+    command: 'MSBuild.exe',
+    args: [
+      join(nodePtyDirectory, 'build', 'conpty_console_list.vcxproj'),
+      '-nologo',
+      '-verbosity:quiet',
+      '-property:Configuration=Release',
+      `-property:Platform=${platform}`,
+      '-getProperty:LinkIncremental'
+    ]
+  }
+}
+
+export function parseWindowsNodePtyLinkIncremental(output) {
+  const value = output.trim().toLowerCase()
+  if (value !== 'true' && value !== 'false') {
+    throw new Error('unexpected LinkIncremental evaluation from MSBuild')
+  }
+  return value === 'true'
+}
