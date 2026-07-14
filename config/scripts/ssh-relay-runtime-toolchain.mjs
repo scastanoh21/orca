@@ -80,10 +80,14 @@ async function executableRecord({
   versionCommand,
   versionArgs,
   versionPattern,
+  windowsFileVersion = false,
   xcrun = false
 }) {
   const path = await locateExecutable(command, { xcrun })
-  const result = await capture(versionCommand ?? path, versionArgs ?? args)
+  const invocation = windowsFileVersion
+    ? sshRelayRuntimeWindowsFileVersionInvocation(path)
+    : { command: versionCommand ?? path, args: versionArgs ?? args }
+  const result = await capture(invocation.command, invocation.args)
   return {
     version: selectSshRelayRuntimeToolVersion(result, versionPattern),
     sha256: await sha256File(path)
@@ -181,6 +185,20 @@ export function sshRelayRuntimeStripVersionProbe(platform) {
     : { args: ['--version'] }
 }
 
+export function sshRelayRuntimeWindowsFileVersionInvocation(path) {
+  return {
+    command: 'pwsh.exe',
+    args: [
+      '-NoLogo',
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      '[System.Diagnostics.FileVersionInfo]::GetVersionInfo($args[0]).FileVersion',
+      path
+    ]
+  }
+}
+
 export function assertSshRelayRuntimeToolchain(toolchain, tuple) {
   const common = ['buildNode', 'bundledNode', 'compiler', 'buildSystem', 'python', 'archive']
   const expected = tuple.startsWith('win32-')
@@ -224,9 +242,10 @@ export async function collectSshRelayRuntimeToolchain(nodePath) {
       }),
       linker: await executableRecord({
         command: 'link.exe',
-        // Why: direct no-argument invocation is silent on current hosted MSVC runners.
-        args: ['/?'],
-        versionPattern: /Linker Version/i
+        args: [],
+        // Why: hosted link.exe is silent when piped; authenticated PE metadata gives its real version.
+        windowsFileVersion: true,
+        versionPattern: /^\d+(?:\.\d+){2,3}$/
       }),
       buildSystem: await executableRecord({
         command: 'msbuild.exe',

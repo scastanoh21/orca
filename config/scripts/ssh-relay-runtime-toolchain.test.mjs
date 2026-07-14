@@ -6,7 +6,8 @@ import {
   selectSshRelayRuntimeToolVersion,
   sshRelayRuntimeBuilderIdentity,
   sshRelayRuntimeRunnerIdentity,
-  sshRelayRuntimeStripVersionProbe
+  sshRelayRuntimeStripVersionProbe,
+  sshRelayRuntimeWindowsFileVersionInvocation
 } from './ssh-relay-runtime-toolchain.mjs'
 
 const commit = 'a'.repeat(40)
@@ -27,18 +28,25 @@ describe('SSH relay runtime build provenance', () => {
     ).toBe('Microsoft (R) C/C++ Optimizing Compiler Version 19.44.35228 for ARM64')
   })
 
-  it('selects the Windows linker version from bounded help output', () => {
+  it('selects a bounded Windows linker file version', () => {
     expect(
-      selectSshRelayRuntimeToolVersion(
-        {
-          stdout: [
-            'Microsoft (R) Incremental Linker Version 14.44.35228.0',
-            'usage: LINK [options] [files]'
-          ].join('\r\n')
-        },
-        /Linker Version/i
-      )
-    ).toBe('Microsoft (R) Incremental Linker Version 14.44.35228.0')
+      selectSshRelayRuntimeToolVersion({ stdout: '14.44.35228.0\r\n' }, /^\d+(?:\.\d+){2,3}$/)
+    ).toBe('14.44.35228.0')
+  })
+
+  it('passes the resolved linker path as a non-interpolated PowerShell argument', () => {
+    const path = String.raw`C:\Program Files\Microsoft Visual Studio\link.exe`
+    expect(sshRelayRuntimeWindowsFileVersionInvocation(path)).toEqual({
+      command: 'pwsh.exe',
+      args: [
+        '-NoLogo',
+        '-NoProfile',
+        '-NonInteractive',
+        '-Command',
+        '[System.Diagnostics.FileVersionInfo]::GetVersionInfo($args[0]).FileVersion',
+        path
+      ]
+    })
   })
 
   it('pins GitHub builder identity to the exact source commit', () => {
