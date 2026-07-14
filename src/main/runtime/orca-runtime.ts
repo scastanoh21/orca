@@ -886,6 +886,7 @@ type RuntimeStore = {
     terminalMainSideEffectAuthority?: GlobalSettings['terminalMainSideEffectAuthority']
     terminalHiddenDeliveryGate?: GlobalSettings['terminalHiddenDeliveryGate']
     terminalModelQueryAuthority?: GlobalSettings['terminalModelQueryAuthority']
+    activeRuntimeEnvironmentId?: GlobalSettings['activeRuntimeEnvironmentId']
   }
   // Why: narrow to `unknown` return so test mocks can return void without
   // a cast. The runtime never reads the return value — the persisted value
@@ -11311,7 +11312,7 @@ export class OrcaRuntimeService {
     }
     const hostOptions = buildExecutionHostRegistry({
       repos,
-      settings: settings as Pick<GlobalSettings, 'activeRuntimeEnvironmentId'> | null | undefined
+      settings
     }).map((host) => ({
       id: host.id,
       kind: host.kind,
@@ -11355,9 +11356,7 @@ export class OrcaRuntimeService {
       },
       folderWorkspaces: this.store?.getFolderWorkspaces?.() ?? [],
       hostOptions,
-      defaultHostId: getSettingsFocusedExecutionHostId(
-        settings as Pick<GlobalSettings, 'activeRuntimeEnvironmentId'> | null | undefined
-      ),
+      defaultHostId: getSettingsFocusedExecutionHostId(settings),
       sourceCompletenessWarnings: ['runtime-retained-agent-cache-unavailable']
     }
   }
@@ -11373,12 +11372,19 @@ export class OrcaRuntimeService {
         .flat()
         .map((tab) => tab.id)
     )
+    // Why: index leaf ptyIds by tabId once (first match wins) instead of
+    // rescanning every leaf per orphaned tab — was O(tabs x leaves) each poll.
+    const leafPtyIdByTabId = new Map<string, string | null>()
+    for (const leaf of this.leaves.values()) {
+      if (leaf.tabId != null && !leafPtyIdByTabId.has(leaf.tabId)) {
+        leafPtyIdByTabId.set(leaf.tabId, leaf.ptyId ?? null)
+      }
+    }
     for (const tab of this.tabs.values()) {
       if (tabIds.has(tab.tabId)) {
         continue
       }
-      const ptyId =
-        [...this.leaves.values()].find((leaf) => leaf.tabId === tab.tabId)?.ptyId ?? null
+      const ptyId = leafPtyIdByTabId.get(tab.tabId) ?? null
       const list = result[tab.worktreeId] ?? []
       list.push({
         id: tab.tabId,

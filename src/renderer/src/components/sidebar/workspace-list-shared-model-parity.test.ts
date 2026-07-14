@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
+import type { AgentStatusEntry } from '../../../../shared/agent-status-types'
 import { LOCAL_EXECUTION_HOST_ID, toSshExecutionHostId } from '../../../../shared/execution-host'
-import type { Repo, Worktree } from '../../../../shared/types'
+import { makePaneKey } from '../../../../shared/stable-pane-id'
+import type { Repo, TerminalTab, Worktree } from '../../../../shared/types'
 import { cloneDefaultWorkspaceStatuses } from '../../../../shared/workspace-statuses'
 import { deriveWorkspaceListModel } from '../../../../shared/workspace-list/workspace-list-derivation'
 import type {
@@ -46,6 +48,41 @@ function worktree(overrides: Partial<Worktree> & Pick<Worktree, 'id' | 'repoId'>
     sortOrder: 0,
     lastActivityAt: 0,
     ...rest
+  }
+}
+
+const LEAF_ONE = '11111111-1111-4111-8111-111111111111'
+const LEAF_TWO = '22222222-2222-4222-8222-222222222222'
+
+function tab(id: string, worktreeId: string, leafId = LEAF_ONE): TerminalTab {
+  return {
+    id,
+    ptyId: `pty-${id}`,
+    worktreeId,
+    title: 'Terminal',
+    customTitle: null,
+    color: null,
+    sortOrder: 0,
+    createdAt: NOW - 10_000,
+    defaultTitle: 'Terminal',
+    startupCwd: `/tmp/${leafId}`
+  }
+}
+
+function statusEntry(args: {
+  tabId: string
+  leafId?: string
+  state: AgentStatusEntry['state']
+  stateStartedAt: number
+}): AgentStatusEntry {
+  return {
+    paneKey: makePaneKey(args.tabId, args.leafId ?? LEAF_ONE),
+    state: args.state,
+    prompt: 'Fix the thing',
+    updatedAt: NOW,
+    stateStartedAt: args.stateStartedAt,
+    stateHistory: [],
+    agentType: 'codex'
   }
 }
 
@@ -192,6 +229,110 @@ describe('workspace list shared model parity', () => {
       NOW
     )
 
+    expect(rendererRows.map(rendererRowSignature)).toEqual(sharedModel.rows.map(sharedRowSignature))
+  })
+
+  // Why: the parity test above only covers manual sort. Agent-activity ('smart')
+  // sort is the feature this shared model exists to ship, so guard that the
+  // shared derivation reproduces the desktop grouping under a smart order — a
+  // regression here (e.g. no longer prioritizing a waiting agent) would flip the
+  // order and diverge from the desktop buildRows oracle.
+  it('matches the desktop row builder under Smart (agent-activity) sort', () => {
+    const localRepo = repo({ id: 'local-repo', displayName: 'Local repo', addedAt: 1 })
+    // `blocked` last touched long ago but has a live waiting agent; `recent` was
+    // touched seconds ago with no agent. Smart sort must surface `blocked` first.
+    const blocked = worktree({
+      id: 'blocked',
+      repoId: localRepo.id,
+      sortOrder: 1,
+      lastActivityAt: NOW - 100_000
+    })
+    const recent = worktree({
+      id: 'recent',
+      repoId: localRepo.id,
+      sortOrder: 2,
+      lastActivityAt: NOW - 1_000
+    })
+    const blockedTab = tab('tab-blocked', blocked.id)
+    const recentTab = tab('tab-recent', recent.id, LEAF_TWO)
+    const entry = statusEntry({
+      tabId: blockedTab.id,
+      state: 'waiting',
+      stateStartedAt: NOW - 5_000
+    })
+    const repoMap = new Map([[localRepo.id, localRepo]])
+    const workspaceStatuses = cloneDefaultWorkspaceStatuses()
+    const hostOptions: WorkspaceHostOption[] = [
+      {
+        id: LOCAL_EXECUTION_HOST_ID,
+        kind: 'local' as const,
+        label: 'Local',
+        detail: 'This computer',
+        health: 'local' as const
+      }
+    ]
+
+    // Desktop oracle: buildRows groups an already-smart-sorted list (the sidebar
+    // sorts upstream, then groups), so feed it the expected agent-activity order.
+    const rendererRows = addHostSectionRows({
+      rows: buildRows(
+        'repo',
+        [blocked, recent],
+        repoMap,
+        null,
+        new Set(),
+        new Map([[localRepo.id, 0]]),
+        workspaceStatuses,
+        'manual',
+        {},
+        new Map([
+          [blocked.id, blocked],
+          [recent.id, recent]
+        ]),
+        true
+      ) as Row[],
+      hostOptions,
+      workspaceHostScope: 'all',
+      visibleWorkspaceHostIds: [LOCAL_EXECUTION_HOST_ID],
+      defaultHostId: LOCAL_EXECUTION_HOST_ID,
+      collapsedHostKeys: new Set(),
+      preferProjectGrouping: true
+    })
+
+    const sharedModel = deriveWorkspaceListModel(
+      {
+        preferences: {
+          groupBy: 'repo',
+          sortBy: 'smart',
+          projectOrderBy: 'manual',
+          collapsedGroups: [],
+          filterRepoIds: [],
+          showSleepingWorkspaces: true,
+          hideDefaultBranchWorkspace: false,
+          hideAutomationGeneratedWorkspaces: false,
+          workspaceHostScope: 'all',
+          visibleWorkspaceHostIds: [LOCAL_EXECUTION_HOST_ID],
+          workspaceHostOrder: [LOCAL_EXECUTION_HOST_ID]
+        },
+        repos: [localRepo],
+        // Deliberately unsorted so the shared smart sort — not the input order —
+        // decides the result.
+        worktreesByRepo: { [localRepo.id]: [recent, blocked] },
+        workspaceStatuses,
+        tabsByWorktree: { [blocked.id]: [blockedTab], [recent.id]: [recentTab] },
+        ptyIdsByTabId: {
+          [blockedTab.id]: ['pty-blocked'],
+          [recentTab.id]: ['pty-recent']
+        },
+        agentStatusByPaneKey: { [entry.paneKey]: entry },
+        hostOptions,
+        defaultHostId: LOCAL_EXECUTION_HOST_ID
+      },
+      NOW
+    )
+
+    // The shared smart sort independently surfaces the waiting agent first.
+    expect(sharedModel.sortedWorktreeIds).toEqual(['blocked', 'recent'])
     expect(rendererRows.map(rendererRowSignature)).toEqual(sharedModel.rows.map(sharedRowSignature))
   })
 })

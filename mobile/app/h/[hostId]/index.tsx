@@ -1,13 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
-import {
-  View,
-  Text,
-  StyleSheet,
-  SectionList,
-  Pressable,
-  ActivityIndicator,
-  Alert
-} from 'react-native'
+import { View, Text, SectionList, Pressable, ActivityIndicator, Alert } from 'react-native'
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { useFocusEffect, useLocalSearchParams, usePathname, useRouter } from 'expo-router'
 import {
@@ -61,7 +53,8 @@ import { MobileSearchField } from '../../../src/components/MobileSearchField'
 import { WorkspaceDetailPlaceholder } from '../../../src/components/WorkspaceDetailPlaceholder'
 import { getCachedWorktrees } from '../../../src/cache/worktree-cache'
 import { setCachedRepos } from '../../../src/cache/repo-cache'
-import { colors, radii, spacing, typography } from '../../../src/theme/mobile-theme'
+import { colors, spacing } from '../../../src/theme/mobile-theme'
+import { hostScreenStyles as styles } from './host-screen-styles'
 import { useResponsiveLayout } from '../../../src/layout/responsive-layout'
 import { leaveHostRoute } from '../../../src/host-route-exit'
 import { evaluateCompat, type CompatVerdict } from '../../../src/transport/protocol-compat'
@@ -90,6 +83,7 @@ import { applyMobileWorktreeDisplayOverrides } from '../../../src/worktree/mobil
 import { getMobileWorkspaceLineageGroupKey } from '../../../src/worktree/mobile-workspace-lineage'
 import { reconcilePendingSleepWorkspaceIds } from '../../../src/worktree/pending-sleep-workspace-ids'
 import { areWorktreeListsEqual } from '../../../src/worktree/worktree-list-snapshot'
+import { areWorkspaceListModelResultsEqual } from '../../../src/worktree/workspace-list-model-snapshot'
 import { repoColor } from '../../../src/worktree/repo-color'
 import {
   WORKSPACE_GROUP_OPTIONS as GROUP_OPTIONS,
@@ -106,6 +100,10 @@ function isErrorVerdict(v: ConnectionVerdict): boolean {
 }
 
 const REPO_METADATA_REFRESH_MS = 60_000
+// Retry a failed ui.set a few times so a transient error doesn't silently drop
+// an optimistic view-setting change (see persistViewSettings).
+const VIEW_SETTINGS_SET_ATTEMPTS = 3
+const VIEW_SETTINGS_SET_RETRY_MS = 400
 
 type HostScreenProps = {
   // Why: when true, this worktree list is rendered as the persistent tablet
@@ -151,9 +149,14 @@ export function HostScreen({
   // Why: persistViewSettings (declared above fetchWorktrees) needs to force a
   // refresh after a sort/group change so the corrected model lands immediately
   // instead of after the next 3s poll. A ref bridges the declaration order.
-  const fetchWorktreesRef = useRef<
-    ((options?: { allowDuringModal?: boolean }) => void) | null
-  >(null)
+  const fetchWorktreesRef = useRef<((options?: { allowDuringModal?: boolean }) => void) | null>(
+    null
+  )
+  // Why: persistViewSettings supersession must not key off viewStateRef — the
+  // resync effect below rebuilds that ref on every settings state change, so a
+  // `=== next` check breaks on the first re-render. A monotonic id captured per
+  // call stays stable across the ui.set round-trip.
+  const settingsRequestIdRef = useRef(0)
   const fetchRepoMetadataInFlightRef = useRef(false)
   const repoMetadataFetchedAtRef = useRef(0)
   const newWorktreeModalRef = useRef<{ open: () => void }>(null)
@@ -255,6 +258,9 @@ export function HostScreen({
   const persistViewSettings = useCallback(
     (patch: Partial<MobileViewState>) => {
       const next: MobileViewState = { ...viewStateRef.current, ...patch }
+      // Capture before applyViewState so a later persistViewSettings call
+      // (which bumps this id) marks this in-flight write as superseded.
+      const requestId = (settingsRequestIdRef.current += 1)
       // Why: the shared model was derived from the previous host UI state.
       // Fall back locally until the host returns a model for the new settings.
       setWorkspaceListModel(null)
@@ -266,14 +272,35 @@ export function HostScreen({
       // Why: refetch only after ui.set lands so the host derives the model with
       // the new sortBy/groupBy — fetching concurrently would race the write and
       // return the previous order. Until then the null model falls back locally.
-      void client
-        .sendRequest('ui.set', payload)
-        .then(() => {
-          fetchWorktreesRef.current?.()
-        })
-        .catch(() => {
-          // Best-effort: view settings are a convenience preference.
-        })
+      // Why: retry a failed ui.set so a transient error doesn't silently drop the
+      // optimistic change — otherwise the next poll re-derives from the host's
+      // unchanged (old) settings and the order visibly reverts.
+      const activeClient = client
+      void (async () => {
+        for (let attempt = 0; attempt < VIEW_SETTINGS_SET_ATTEMPTS; attempt += 1) {
+          // Bail if a newer view change superseded this one so a stale retry
+          // never clobbers the latest settings or triggers an out-of-date fetch.
+          if (settingsRequestIdRef.current !== requestId) {
+            return
+          }
+          try {
+            await activeClient.sendRequest('ui.set', payload)
+            if (settingsRequestIdRef.current === requestId) {
+              fetchWorktreesRef.current?.()
+            }
+            return
+          } catch {
+            if (attempt < VIEW_SETTINGS_SET_ATTEMPTS - 1) {
+              await new Promise((resolve) =>
+                setTimeout(resolve, VIEW_SETTINGS_SET_RETRY_MS * (attempt + 1))
+              )
+            }
+            // Best-effort after the final attempt: view settings are a
+            // convenience preference; the optimistic local state stands until
+            // the next successful poll reconciles with the host.
+          }
+        }
+      })()
     },
     [client, applyViewState]
   )
@@ -480,7 +507,24 @@ export function HostScreen({
           }
         }
         const hasPendingSleep = pendingSleptIds.size > 0
-        setWorkspaceListModel(hasPendingSleep ? null : nextWorkspaceListModel)
+        setWorkspaceListModel((current) => {
+          if (hasPendingSleep) {
+            // Optimistic sleep: fall back to the local filter until the host's
+            // next model reflects the slept workspace.
+            return null
+          }
+          if (nextWorkspaceListModel == null) {
+            // Why: a transient worktree.listModel failure must not flap the
+            // visible order to the divergent local buildSections engine — retain
+            // the last good shared model until a fetch succeeds again.
+            return current
+          }
+          // Why: preserve the reference on identical content so the section
+          // rebuild stays off the 3s poll path (mirrors the worktrees guard).
+          return areWorkspaceListModelResultsEqual(current, nextWorkspaceListModel)
+            ? current
+            : nextWorkspaceListModel
+        })
         setWorktreesLoaded(
           (loaded) => loaded || (!hasPendingSleep && nextWorkspaceListModel != null)
         )
@@ -1489,310 +1533,3 @@ export default function HostWorktreeRoute() {
 function ListSeparator() {
   return <View style={styles.separator} />
 }
-
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: colors.bgBase
-  },
-  topChrome: {
-    backgroundColor: colors.bgPanel,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.borderSubtle
-  },
-  statusBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    minHeight: 34,
-    paddingTop: spacing.xs,
-    paddingHorizontal: spacing.lg
-  },
-  backButton: {
-    width: 32,
-    height: 32,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: spacing.xs
-  },
-  sidebarCollapseButton: {
-    width: 24,
-    height: 24,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderRadius: radii.button,
-    marginLeft: spacing.xs
-  },
-  hostIdentity: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    minWidth: 0,
-    marginRight: spacing.md
-  },
-  hostNameText: {
-    flex: 1,
-    fontSize: 15,
-    fontWeight: '600',
-    color: colors.textPrimary
-  },
-  reconnectButton: {
-    paddingVertical: 4,
-    paddingHorizontal: spacing.sm,
-    borderRadius: radii.button,
-    backgroundColor: colors.bgPanel,
-    borderWidth: 1,
-    borderColor: colors.borderSubtle
-  },
-  reconnectButtonText: {
-    color: colors.textPrimary,
-    fontSize: typography.metaSize,
-    fontWeight: '600'
-  },
-  toolbar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: spacing.xs + 2,
-    paddingHorizontal: spacing.md,
-    gap: spacing.sm,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.borderSubtle
-  },
-  embeddedToolbar: {
-    paddingVertical: spacing.xs + 2,
-    paddingHorizontal: spacing.sm,
-    gap: spacing.xs,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.borderSubtle
-  },
-  embeddedToolbarRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.sm
-  },
-  embeddedFilterChip: {
-    flex: 1,
-    minWidth: 0,
-    height: 30,
-    justifyContent: 'center',
-    paddingHorizontal: spacing.xs,
-    paddingVertical: 0
-  },
-  embeddedModeButton: {
-    flex: 1,
-    minWidth: 0,
-    height: 30,
-    justifyContent: 'center',
-    paddingHorizontal: spacing.xs,
-    paddingVertical: 0
-  },
-  filterChip: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    paddingHorizontal: spacing.sm + 2,
-    paddingVertical: spacing.xs,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: colors.borderSubtle
-  },
-  filterChipActive: {
-    borderColor: colors.textSecondary,
-    backgroundColor: colors.bgRaised
-  },
-  filterChipText: {
-    fontSize: 12,
-    color: colors.textSecondary
-  },
-  filterChipTextActive: {
-    color: colors.textPrimary
-  },
-  modeButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    flexShrink: 1,
-    minWidth: 0,
-    gap: 4,
-    paddingHorizontal: spacing.sm,
-    paddingVertical: spacing.xs
-  },
-  sortLabel: {
-    flexShrink: 1,
-    minWidth: 0,
-    fontSize: 12,
-    color: colors.textSecondary
-  },
-  toolbarSpacer: {
-    flex: 1
-  },
-  toolbarIconButton: {
-    width: 32,
-    height: 28,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderRadius: radii.button
-  },
-  embeddedToolbarIconButton: {
-    flex: 1,
-    height: 28,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderRadius: radii.button
-  },
-  toolbarIconDisabled: {
-    opacity: 0.6
-  },
-  searchToggle: {
-    padding: spacing.xs
-  },
-  searchBar: {
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: colors.borderSubtle,
-    backgroundColor: colors.bgPanel
-  },
-  centered: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center'
-  },
-  emptyText: {
-    color: colors.textSecondary,
-    fontSize: typography.bodySize
-  },
-  errorText: {
-    color: colors.statusRed,
-    fontSize: typography.bodySize
-  },
-  list: {
-    paddingBottom: spacing.lg
-  },
-  sectionHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: spacing.lg,
-    paddingTop: spacing.md,
-    paddingBottom: spacing.xs
-  },
-  sectionIcon: {
-    marginRight: spacing.xs
-  },
-  sectionRepoIcon: {
-    marginRight: spacing.xs
-  },
-  sectionTitle: {
-    fontSize: 11,
-    fontWeight: '600',
-    color: colors.textMuted,
-    textTransform: 'uppercase',
-    letterSpacing: 0.5
-  },
-  sectionCount: {
-    fontSize: 11,
-    color: colors.textMuted,
-    marginLeft: spacing.xs
-  },
-  separator: {
-    height: 1,
-    backgroundColor: colors.borderSubtle,
-    marginLeft: spacing.lg + 24,
-    marginRight: spacing.lg
-  },
-  filterModalHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: spacing.xs,
-    marginBottom: spacing.md
-  },
-  filterModalTitle: {
-    fontSize: 15,
-    fontWeight: '600',
-    color: colors.textPrimary
-  },
-  clearFiltersText: {
-    fontSize: 13,
-    color: colors.textSecondary
-  },
-  filterSectionLabel: {
-    fontSize: 11,
-    fontWeight: '600',
-    color: colors.textMuted,
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-    marginBottom: spacing.xs,
-    paddingHorizontal: spacing.xs
-  },
-  filterGroup: {
-    backgroundColor: colors.bgPanel,
-    borderRadius: 12,
-    overflow: 'hidden',
-    marginBottom: spacing.md
-  },
-  filterRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: spacing.md,
-    paddingHorizontal: spacing.md + 2,
-    gap: spacing.sm
-  },
-  filterRowText: {
-    flex: 1,
-    fontSize: typography.bodySize,
-    color: colors.textPrimary
-  },
-  filterSeparator: {
-    height: StyleSheet.hairlineWidth,
-    backgroundColor: colors.borderSubtle,
-    marginHorizontal: spacing.md
-  },
-  filterRepoDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4
-  },
-  confirmContent: {
-    paddingBottom: spacing.lg
-  },
-  confirmTitle: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: colors.textPrimary
-  },
-  confirmMessage: {
-    fontSize: typography.bodySize,
-    color: colors.textSecondary,
-    marginTop: spacing.xs,
-    lineHeight: 20
-  },
-  confirmButtons: {
-    flexDirection: 'row',
-    gap: spacing.sm
-  },
-  confirmBtn: {
-    flex: 1,
-    paddingVertical: spacing.sm + 2,
-    borderRadius: 10,
-    alignItems: 'center'
-  },
-  confirmBtnCancel: {
-    backgroundColor: colors.bgPanel
-  },
-  confirmBtnDestructive: {
-    backgroundColor: colors.statusRed
-  },
-  confirmBtnPressed: {
-    opacity: 0.7
-  },
-  confirmBtnCancelText: {
-    fontSize: typography.bodySize,
-    fontWeight: '600',
-    color: colors.textSecondary
-  },
-  confirmBtnDestructiveText: {
-    fontSize: typography.bodySize,
-    fontWeight: '600',
-    color: '#fff'
-  }
-})

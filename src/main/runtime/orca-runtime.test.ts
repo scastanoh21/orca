@@ -23393,6 +23393,61 @@ describe('OrcaRuntimeService', () => {
     await expect(runtime.getWorktreePs(-1)).rejects.toThrow('invalid_limit')
     await expect(runtime.listManagedWorktrees(undefined, 0)).rejects.toThrow('invalid_limit')
     await expect(runtime.searchRepoRefs('id:repo-1', 'main', -5)).rejects.toThrow('invalid_limit')
+    await expect(runtime.getWorkspaceListModel(0)).rejects.toThrow('invalid_limit')
+    await expect(runtime.getWorkspaceListModel(1.5)).rejects.toThrow('invalid_limit')
+  })
+
+  it('coalesces concurrent controller listProcesses round-trips into one call', async () => {
+    const runtime = createRuntime()
+    let calls = 0
+    let release: () => void = () => {}
+    runtime.setPtyController({
+      write: () => true,
+      kill: () => true,
+      getForegroundProcess: async () => null,
+      listProcesses: () =>
+        new Promise((resolve) => {
+          calls += 1
+          release = () => resolve([])
+        })
+    })
+    const internal = runtime as unknown as {
+      listControllerProcessesCoalesced: () => Promise<{ ok: boolean }>
+    }
+    // Two overlapping callers (worktree.ps + worktree.listModel fire together)
+    // must share one in-flight relay round-trip.
+    const first = internal.listControllerProcessesCoalesced()
+    const second = internal.listControllerProcessesCoalesced()
+    release()
+    await Promise.all([first, second])
+    expect(calls).toBe(1)
+  })
+
+  it('does not cache a failed controller listProcesses call', async () => {
+    const runtime = createRuntime()
+    let calls = 0
+    runtime.setPtyController({
+      write: () => true,
+      kill: () => true,
+      getForegroundProcess: async () => null,
+      listProcesses: async () => {
+        calls += 1
+        if (calls === 1) {
+          throw new Error('transient controller failure')
+        }
+        return []
+      }
+    })
+    const internal = runtime as unknown as {
+      listControllerProcessesCoalesced: () => Promise<{ ok: boolean }>
+    }
+    // A rejected round-trip must clear the pending promise so the next caller
+    // retries instead of being served the cached failure.
+    const firstResult = await internal.listControllerProcessesCoalesced()
+    expect(firstResult.ok).toBe(false)
+    const secondResult = await internal.listControllerProcessesCoalesced()
+    expect(calls).toBe(2)
+    expect(secondResult.ok).toBe(true)
   })
 
   it('returns capped SSH refs for empty runtime repo searches', async () => {
