@@ -2,7 +2,7 @@
 
 Date created: 2026-07-14<br>
 Last updated: 2026-07-14<br>
-Current phase: Milestone 3 / Work Package 2 target-native runtime assembly — Work Package 1 contracts are CI-green; cross-family remote infrastructure and measured baselines remain open; no bundled-runtime path is enabled<br>
+Current phase: Milestone 3 / Work Package 2 target-native runtime assembly — four POSIX native-runner artifact builds are CI-green; Windows runtime/ZIP, reproducibility, oldest-baseline, native-trust, cross-family remote, and measured-baseline gates remain open; no bundled-runtime path is enabled<br>
 Primary design: [SSH relay GitHub Release plan](./2026-07-14-ssh-relay-github-release-plan.html)<br>
 Motivating issues: [#8450](https://github.com/stablyai/orca/issues/8450), [#1693](https://github.com/stablyai/orca/issues/1693)
 
@@ -58,7 +58,7 @@ same change as the work it records.
   [#8728](https://github.com/stablyai/orca/pull/8728) at implementation commit `b9d80a4cb`; no
   deploy/resolver call site is connected and no tuple is enabled.
 - Active package: Work Package 2 target-native runtime assembly, archive inspection, executable
-  smoke, SBOM, and provenance only at implementation commit `f2b387b21` in stacked draft PR
+  smoke, SBOM, and provenance only at exact implementation head `151628992` in stacked draft PR
   [#8741](https://github.com/stablyai/orca/pull/8741). It may produce test artifacts but must not
   publish, resolve, transfer, install, launch, or enable them.
 - Active evidence gate: the immutable Node v24.18.0 contract, pinned release key, bounded verifier,
@@ -67,8 +67,10 @@ same change as the work it records.
   archive inspection, deterministic repack, bundled Node 24.18.0 execution, real patched PTY, and
   watcher events. E-M3-STATIC-001 records the current focused, type, lint, format, line-budget, and
   diff gates. The first exact-head native run exposed a macOS `/var` versus `/private/var` watcher
-  oracle mismatch under E-M3-CI-RED-001; the canonical-path fix is pending rerun. Oldest-baseline,
-  native-trust, SSH, and every other tuple cell remain open.
+  oracle mismatch under E-M3-CI-RED-001. The corrected exact-head run passed target-native build,
+  archive/tree verification, bundled Node, patched PTY, and watcher smoke for Linux x64/arm64 and
+  macOS x64/arm64 under E-M3-CI-001. Same-runner clean-rebuild identity, oldest-baseline,
+  native-trust, SSH, Windows, and musl cells remain open.
 - Production behavior: unchanged; Orca embeds relay JavaScript and installs `node-pty` plus
   `@parcel/watcher` with remote npm.
 - New runtime assets published: none.
@@ -81,9 +83,9 @@ same change as the work it records.
 - Rollout control: existing per-SSH-target configuration; legacy is the default and the bundled
   runtime is an explicit per-target Beta opt-in under E-M1-ROLLOUT-DECISION-001.
 - Legacy fallback removal: not authorized.
-- Next required action: push the macOS watcher-path oracle correction, rerun the isolated four-tuple
-  POSIX artifact workflow on the exact draft-PR head, and record each native GitHub runner result.
-  Keep Windows runtime/zip implementation,
+- Next required action: implement the bounded deterministic Windows runtime/ZIP builder and verifier
+  as the next artifact-only slice, add native Windows x64/arm64 runner jobs, and separately add a
+  same-head/same-runner clean-rebuild identity oracle for native build reproducibility. Keep
   cross-family remote infrastructure, signing/trust, and measured legacy baseline gates open; do not
   introduce publication, resolver, transfer, rollout, tuple enablement, or default behavior.
 
@@ -577,16 +579,16 @@ Each runtime must contain only the executable closure required by the relay.
 
 ### Per-tuple build and executable proof
 
-| Runtime tuple     | Build/provenance | Bundled Node | `node-pty` load + real PTY | Watcher events | Oldest baseline | Native trust | Evidence               |
-| ----------------- | ---------------- | ------------ | -------------------------- | -------------- | --------------- | ------------ | ---------------------- |
-| linux-x64-glibc   | [ ]              | [ ]          | [ ]                        | [ ]            | [ ]             | [ ]          | —                      |
-| linux-arm64-glibc | [x]              | [x]          | [x]                        | [x]            | [ ]             | [ ]          | E-M3-RUNTIME-LOCAL-001 |
-| linux-x64-musl    | [ ]              | [ ]          | [ ]                        | [ ]            | [ ]             | [ ]          | —                      |
-| linux-arm64-musl  | [ ]              | [ ]          | [ ]                        | [ ]            | [ ]             | [ ]          | —                      |
-| darwin-x64        | [ ]              | [ ]          | [ ]                        | [ ]            | [ ]             | [ ]          | —                      |
-| darwin-arm64      | [ ]              | [ ]          | [ ]                        | [ ]            | [ ]             | [ ]          | —                      |
-| win32-x64         | [ ]              | [ ]          | [ ]                        | [ ]            | [ ]             | [ ]          | —                      |
-| win32-arm64       | [ ]              | [ ]          | [ ]                        | [ ]            | [ ]             | [ ]          | —                      |
+| Runtime tuple     | Build/provenance | Bundled Node | `node-pty` load + real PTY | Watcher events | Oldest baseline | Native trust | Evidence                            |
+| ----------------- | ---------------- | ------------ | -------------------------- | -------------- | --------------- | ------------ | ----------------------------------- |
+| linux-x64-glibc   | [x]              | [x]          | [x]                        | [x]            | [ ]             | [ ]          | E-M3-CI-001                         |
+| linux-arm64-glibc | [x]              | [x]          | [x]                        | [x]            | [ ]             | [ ]          | E-M3-RUNTIME-LOCAL-001; E-M3-CI-001 |
+| linux-x64-musl    | [ ]              | [ ]          | [ ]                        | [ ]            | [ ]             | [ ]          | —                                   |
+| linux-arm64-musl  | [ ]              | [ ]          | [ ]                        | [ ]            | [ ]             | [ ]          | —                                   |
+| darwin-x64        | [x]              | [x]          | [x]                        | [x]            | [ ]             | [ ]          | E-M3-CI-001                         |
+| darwin-arm64      | [x]              | [x]          | [x]                        | [x]            | [ ]             | [ ]          | E-M3-CI-001                         |
+| win32-x64         | [ ]              | [ ]          | [ ]                        | [ ]            | [ ]             | [ ]          | —                                   |
+| win32-arm64       | [ ]              | [ ]          | [ ]                        | [ ]            | [ ]             | [ ]          | —                                   |
 
 Rules:
 
@@ -1135,16 +1137,16 @@ Baseline measurements must be captured before product behavior changes.
 
 Update status and evidence as work begins. Do not combine these into one large behavior switch.
 
-| Work package              | Scope                                                                                      | Default behavior change     | Status                                   | PR/evidence                                                             |
-| ------------------------- | ------------------------------------------------------------------------------------------ | --------------------------- | ---------------------------------------- | ----------------------------------------------------------------------- |
-| 0. #8450 legacy fix       | Coherent Node/npm selection and live repro                                                 | Fixes legacy selection only | Complete and CI-green in draft PR #8724  | E-M0-UNIT-002, E-M0-LIVE-002, E-M0-STATIC-002, E-M0-PR-001, E-M0-CI-001 |
-| 1. Contract and selectors | Manifest schema, identity, platform/libc selection, hostile inputs                         | None                        | Complete and CI-green in draft PR #8728  | `b9d80a4cb`; E-M2-RED-001, E-M2-CONTRACT-001, E-M2-CI-001               |
-| 2. Runtime builds         | Per-tuple assembly, native smoke, SBOM/provenance/signing                                  | None                        | Draft PR #8741; macOS oracle fix pending | `f2b387b21`; E-M3-NODE-RED-001, E-M3-NODE-PROVENANCE-001, E-M3-RUNTIME-LOCAL-001, E-M3-STATIC-001, E-M3-CI-RED-001 |
-| 3. Release publication    | Prerequisite DAG, embedded manifest, draft upload/read-back gates                          | Asset-only                  | Not started                              | —                                                                       |
-| 4. Desktop resolver/cache | Verified download, extraction, cache, offline behavior                                     | None/forced mode only       | Not started                              | —                                                                       |
-| 5. Transfer/install       | Bounded transports, structured sentinel, bundled launch behind per-target Beta/forced mode | Per-target opt-in only      | Not started                              | —                                                                       |
-| 6. Fallback/diagnostics   | Abort-and-join state machine, mode isolation, reason codes, target-mode configuration/UI   | Per-target Beta only        | Not started                              | —                                                                       |
-| 7. Live gates/rollout     | Matrix, security, performance, release promotion                                           | Per-tuple staged            | Not started                              | —                                                                       |
+| Work package              | Scope                                                                                      | Default behavior change     | Status                                                | PR/evidence                                                                                                                     |
+| ------------------------- | ------------------------------------------------------------------------------------------ | --------------------------- | ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| 0. #8450 legacy fix       | Coherent Node/npm selection and live repro                                                 | Fixes legacy selection only | Complete and CI-green in draft PR #8724               | E-M0-UNIT-002, E-M0-LIVE-002, E-M0-STATIC-002, E-M0-PR-001, E-M0-CI-001                                                         |
+| 1. Contract and selectors | Manifest schema, identity, platform/libc selection, hostile inputs                         | None                        | Complete and CI-green in draft PR #8728               | `b9d80a4cb`; E-M2-RED-001, E-M2-CONTRACT-001, E-M2-CI-001                                                                       |
+| 2. Runtime builds         | Per-tuple assembly, native smoke, SBOM/provenance/signing                                  | None                        | Draft PR #8741; four POSIX jobs green; Windows active | `151628992`; E-M3-NODE-RED-001, E-M3-NODE-PROVENANCE-001, E-M3-RUNTIME-LOCAL-001, E-M3-STATIC-001, E-M3-CI-RED-001, E-M3-CI-001 |
+| 3. Release publication    | Prerequisite DAG, embedded manifest, draft upload/read-back gates                          | Asset-only                  | Not started                                           | —                                                                                                                               |
+| 4. Desktop resolver/cache | Verified download, extraction, cache, offline behavior                                     | None/forced mode only       | Not started                                           | —                                                                                                                               |
+| 5. Transfer/install       | Bounded transports, structured sentinel, bundled launch behind per-target Beta/forced mode | Per-target opt-in only      | Not started                                           | —                                                                                                                               |
+| 6. Fallback/diagnostics   | Abort-and-join state machine, mode isolation, reason codes, target-mode configuration/UI   | Per-target Beta only        | Not started                                           | —                                                                                                                               |
+| 7. Live gates/rollout     | Matrix, security, performance, release promotion                                           | Per-tuple staged            | Not started                                           | —                                                                                                                               |
 
 Every PR must document:
 
@@ -2450,22 +2452,74 @@ fragmentLinks=9`.
 - Follow-up: canonicalize the watched temporary directory before constructing expected event paths,
   retain bounded observed-event diagnostics, rerun all four jobs, and require every upload to pass.
 
+### E-M3-CI-001 — Corrected four-tuple POSIX native artifact run
+
+- Date: 2026-07-14
+- Commit SHA / PR: exact draft-PR head `151628992f8d05d11902604650b3ed884992da5c` in
+  [#8741](https://github.com/stablyai/orca/pull/8741)
+- Workflow: GitHub Actions run
+  [29335399279](https://github.com/stablyai/orca/actions/runs/29335399279), conclusion `success`;
+  no release asset was published
+- Exact evidence commands:
+
+  ```sh
+  gh run view 29335399279 --repo stablyai/orca --json databaseId,headSha,status,conclusion,url,jobs
+  gh run view 29335399279 --repo stablyai/orca --job <job-id> --log
+  gh api --paginate repos/stablyai/orca/actions/runs/29335399279/artifacts
+  gh api repos/stablyai/orca/actions/artifacts/<artifact-id>/zip
+  unzip -p <downloaded-artifact.zip> '*.identity.json' | jq
+  ```
+
+- Native runner, artifact, identity, and resource results:
+
+  | Tuple               | Job / requested runner / resolved image                                                                                                                | Artifact ID / Actions ZIP bytes | Runtime archive bytes / expanded bytes / files | Content ID / archive SHA-256                                                                                                            | Build / full verify / smoke / RSS                             |
+  | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------- | ---------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
+  | `darwin-arm64`      | [87093265074](https://github.com/stablyai/orca/actions/runs/29335399279/job/87093265074); `macos-15`; `macos15` `20260706.0213.1`; native ARM64        | `8311761833`; 24,755,748        | 24,742,840 / 122,027,869 / 35                  | `16a9814a2af4adfbcce55ead3ab53f3982d8043d4b18d85762586212a481bdca` / `a7e31f92c1a0793b656f79ceff5fe63b7a1cf56a70394336a92c2ab207d30ea7` | 52,648.921 ms / 2,090.791 ms / 556.324 ms / 51,068,928 bytes  |
+  | `darwin-x64`        | [87093265143](https://github.com/stablyai/orca/actions/runs/29335399279/job/87093265143); `macos-15-intel`; `macos15` `20260629.0276.1`; native X64    | `8311834044`; 26,420,360        | 26,405,780 / 124,316,655 / 35                  | `ad3a4cdaf25cd8f2657e348fca5c68df69923f9f50295afa2227a8c195e2014b` / `9b6c492b4fda250c6b6688e343499e79afc7ca53be355b1e687e61ed8430a759` | 108,328.464 ms / 1,956.297 ms / 325.008 ms / 40,546,304 bytes |
+  | `linux-x64-glibc`   | [87093265139](https://github.com/stablyai/orca/actions/runs/29335399279/job/87093265139); `ubuntu-24.04`; `ubuntu24` `20260705.232.1`; native X64      | `8311766570`; 29,276,673        | 29,260,688 / 124,846,502 / 34                  | `960546cd96c67fcf9bb0a61e96ecdbecbffd9104d3a495578f8bb19dd810649a` / `b28fc4837d17399246926ab4d565e30f21b6adc6c22401910627e820aca7c52b` | 61,805.875 ms / 2,288.790 ms / 159.950 ms / 56,315,904 bytes  |
+  | `linux-arm64-glibc` | [87093265142](https://github.com/stablyai/orca/actions/runs/29335399279/job/87093265142); `ubuntu-24.04-arm`; `ubuntu24` `20260706.52.2`; native ARM64 | `8311785832`; 28,215,447        | 28,200,600 / 122,865,172 / 34                  | `aa3aa8ae8b42334ba7b0dbe5c43fd1184e36b3f4f4a9bec0e990e9b78f090756` / `d73d03c0507408e538b93549d449359e78c986c45f1bd5811c15197720fc5da8` | 69,030.100 ms / 1,618.140 ms / 159.037 ms / 52,219,904 bytes  |
+
+- Result: PASS. All four jobs checked out the exact source head, used Node v24.18.0, authenticated
+  the pinned Node release metadata and tuple archive, used a frozen source install, passed 15/15
+  focused contracts, assembled on the target-native architecture, verified the complete archive and
+  unpacked tree before native execution, loaded the Orca-patched PTY addon, exercised a real PTY
+  input/101×37 resize/exit-23 lifecycle, observed bounded create/update/rename/delete watcher events,
+  and uploaded only an unpublished seven-day Actions artifact.
+- Oracle proved: target-native build/provenance, bundled Node execution, patched native PTY load and
+  lifecycle, watcher lifecycle, exact archive/tree equality, size bounds, and artifact-only workflow
+  behavior for the four named POSIX tuples on the exact runner images above.
+- Does not prove: deterministic native rebuilding. The local versus CI Linux arm64 runtime differed
+  in the Orca-built `pty.node`, and the red versus corrected macOS runs produced different content
+  identities despite no intended runtime-tree source change. The current jobs record image and
+  toolchain versions but do not pin all apt/Homebrew/compiler inputs or compare two clean native
+  builds on the same runner. This evidence also does not prove oldest OS/libc/kernel baselines,
+  native signing/trust, Windows/ZIP, musl, SSH/SFTP/system-SSH transfer, relay RPC conformance,
+  cancellation/file/channel peaks, release publication/read-back, cache, fallback, UI, or any
+  enabled tuple.
+- Checklist items satisfied: build/provenance, bundled Node, real patched PTY, and watcher cells for
+  `linux-x64-glibc`, `linux-arm64-glibc`, `darwin-x64`, and `darwin-arm64` only. Oldest-baseline and
+  native-trust cells remain unchecked.
+- Follow-up: add a same-head/same-runner two-clean-build identity comparison, implement bounded
+  deterministic Windows ZIP assembly and native Windows jobs, and leave all tuples disabled until
+  the remaining trust, baseline, and two-layer live SSH gates pass.
+
 ## Accepted Gaps
 
 No product gap is accepted merely because it appears in this list. Each entry requires explicit
 owner and promotion condition.
 
-| Gap                                        | Current behavior                                                        | Risk                                           | Owner                                                   | Promotion/removal condition                                                   | Status       |
-| ------------------------------------------ | ----------------------------------------------------------------------- | ---------------------------------------------- | ------------------------------------------------------- | ----------------------------------------------------------------------------- | ------------ |
-| Bundled runtime only partially implemented | One unpublished Linux arm64 artifact proof; no production consumer      | #8450/#1693 environment failures remain        | Codex implementation owner                              | Complete Work Packages 2–7 plus Milestones 3–14                               | Open         |
-| No bundled tuple enabled                   | Every target's default and effective mode remains legacy                | No bundled support claim can be made           | Codex implementation owner                              | Complete target-native build/trust and both required live-evidence layers     | Open         |
-| Windows runtime/zip builder absent         | Windows targets remain entirely on the legacy path                      | POSIX proof cannot establish Windows behavior  | Codex implementation owner                              | Bounded deterministic zip, Node/native build, signing, smoke, and live gates  | Open         |
-| Cross-family Layer B remotes unavailable   | GitHub native runner labels exist; no approved reachable target pool    | Client/remote integration gaps may escape      | Repository release administrator + implementation owner | Approve provider/snapshots/credentials/egress/teardown/cost owner             | BLOCKED      |
-| Musl has no accepted official Node binary  | Musl is deliberately legacy-only                                        | Unofficial binary would break provenance trust | Codex implementation owner                              | Orca-owned target-native source build, signing, provenance, and live gates    | ACCEPTED GAP |
-| Native arm64 live matrices incomplete      | Hosted Linux/Windows arm64 labels exist; full SSH/runtime cells do not  | Cross-build or unit tests may hide native bugs | Codex implementation owner                              | Full native archive, trust, SFTP/system-SSH, RPC, and baseline evidence       | Open         |
-| Legacy performance baseline unmeasured     | Numeric budgets exist; paired cold/warm measurements do not             | Regression thresholds lack a measured baseline | Codex implementation owner                              | Purpose-built paired harness with ten samples on pinned runner classes        | Open         |
-| Manifest signing environment unprovisioned | Ed25519/key-rotation policy exists; no protected runtime signing secret | Runtime assets cannot be safely published      | Repository release administrator                        | Protected environment, reviewers, two test keys, rehearsals, and access audit | BLOCKED      |
-| Bootstrap primitives lack full live proof  | POSIX/Windows contracts exist; bounded SSH implementations do not       | Hidden dependency or transfer corruption       | Codex implementation owner                              | Purpose-named full-size SFTP/POSIX/Windows system-SSH live suites             | Open         |
+| Gap                                        | Current behavior                                                        | Risk                                           | Owner                                                   | Promotion/removal condition                                                    | Status       |
+| ------------------------------------------ | ----------------------------------------------------------------------- | ---------------------------------------------- | ------------------------------------------------------- | ------------------------------------------------------------------------------ | ------------ |
+| Bundled runtime only partially implemented | Four unpublished POSIX native artifact proofs; no production consumer   | #8450/#1693 environment failures remain        | Codex implementation owner                              | Complete Work Packages 2–7 plus Milestones 3–14                                | Open         |
+| No bundled tuple enabled                   | Every target's default and effective mode remains legacy                | No bundled support claim can be made           | Codex implementation owner                              | Complete target-native build/trust and both required live-evidence layers      | Open         |
+| Windows runtime/zip builder absent         | Windows targets remain entirely on the legacy path                      | POSIX proof cannot establish Windows behavior  | Codex implementation owner                              | Bounded deterministic zip, Node/native build, signing, smoke, and live gates   | Open         |
+| Native clean-rebuild identity unproved     | One successful artifact per corrected-head hosted runner                | Toolchain drift may change native content IDs  | Codex implementation owner                              | Same-head, same-runner clean builds match or a reviewed reproducibility policy | Open         |
+| Cross-family Layer B remotes unavailable   | GitHub native runner labels exist; no approved reachable target pool    | Client/remote integration gaps may escape      | Repository release administrator + implementation owner | Approve provider/snapshots/credentials/egress/teardown/cost owner              | BLOCKED      |
+| Musl has no accepted official Node binary  | Musl is deliberately legacy-only                                        | Unofficial binary would break provenance trust | Codex implementation owner                              | Orca-owned target-native source build, signing, provenance, and live gates     | ACCEPTED GAP |
+| Native arm64 live matrices incomplete      | Hosted Linux/Windows arm64 labels exist; full SSH/runtime cells do not  | Cross-build or unit tests may hide native bugs | Codex implementation owner                              | Full native archive, trust, SFTP/system-SSH, RPC, and baseline evidence        | Open         |
+| Legacy performance baseline unmeasured     | Numeric budgets exist; paired cold/warm measurements do not             | Regression thresholds lack a measured baseline | Codex implementation owner                              | Purpose-built paired harness with ten samples on pinned runner classes         | Open         |
+| Manifest signing environment unprovisioned | Ed25519/key-rotation policy exists; no protected runtime signing secret | Runtime assets cannot be safely published      | Repository release administrator                        | Protected environment, reviewers, two test keys, rehearsals, and access audit  | BLOCKED      |
+| Bootstrap primitives lack full live proof  | POSIX/Windows contracts exist; bounded SSH implementations do not       | Hidden dependency or transfer corruption       | Codex implementation owner                              | Purpose-named full-size SFTP/POSIX/Windows system-SSH live suites              | Open         |
 
 ## Final Definition of Done
 
@@ -2506,9 +2560,9 @@ The project is not complete until every applicable item below is checked with ev
 
 ## Next Required Action
 
-Run `.github/workflows/ssh-relay-runtime-artifacts.yml` on the exact stacked draft-PR head and record
-the four native POSIX runner results without publishing assets. Then implement Windows zip/native
-assembly as its own evidence-gated slice. The cross-family Layer B target pool, protected
+Implement bounded deterministic Windows ZIP/native assembly as its own evidence-gated slice, add
+native Windows x64/arm64 jobs without publishing assets, and add a same-head/same-runner clean-build
+identity comparison for native reproducibility. The cross-family Layer B target pool, protected
 manifest-signing environment, and paired legacy performance baseline remain release/default-path
 blockers; no publication, desktop resolver, SSH transfer/install, per-target Beta, fallback, tuple
 enablement, or default behavior may be connected by this package.
