@@ -160,6 +160,81 @@ describe('ModelManager download resume', () => {
     }
   })
 
+  it('uses a complete archive after a late transport failure without requesting past EOF', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'orca-model-resume-'))
+    try {
+      scriptRequest(() => ({
+        statusCode: 200,
+        headers: { 'content-length': String(PAYLOAD.length) },
+        chunks: [PAYLOAD],
+        failWith: 'net::ERR_CONNECTION_RESET'
+      }))
+      const manager = new ModelManager(dir) as unknown as ModelManagerInternals
+      const archivePath = join(dir, 'model.tar.bz2')
+
+      await manager.downloadArchiveWithRetry(
+        'https://example.com/model.tar.bz2',
+        archivePath,
+        PAYLOAD.length,
+        'm',
+        () => false,
+        new AbortController().signal
+      )
+
+      expect(netRequestMock).toHaveBeenCalledTimes(1)
+      expect(readFileSync(archivePath)).toEqual(PAYLOAD)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('requests the remaining bytes when a clean range response ends before the archive total', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'orca-model-resume-'))
+    try {
+      const first = scriptRequest((sentHeaders) => {
+        expect(sentHeaders.range).toBe('bytes=10-')
+        return {
+          statusCode: 206,
+          headers: {
+            'content-length': '5',
+            'content-range': `bytes 10-14/${PAYLOAD.length}`
+          },
+          chunks: [PAYLOAD.subarray(10, 15)]
+        }
+      })
+      const second = scriptRequest((sentHeaders) => {
+        expect(sentHeaders.range).toBe('bytes=15-')
+        return {
+          statusCode: 206,
+          headers: {
+            'content-length': '5',
+            'content-range': `bytes 15-19/${PAYLOAD.length}`
+          },
+          chunks: [PAYLOAD.subarray(15)]
+        }
+      })
+      const manager = new ModelManager(dir) as unknown as ModelManagerInternals
+      const archivePath = join(dir, 'model.tar.bz2')
+      writeFileSync(archivePath, PAYLOAD.subarray(0, 10))
+
+      await manager.downloadArchiveWithRetry(
+        'https://example.com/model.tar.bz2',
+        archivePath,
+        PAYLOAD.length,
+        'm',
+        () => false,
+        new AbortController().signal
+      )
+
+      expect(netRequestMock).toHaveBeenCalledTimes(2)
+      expect(first.sentHeaders.range).toBe('bytes=10-')
+      expect(second.sentHeaders.range).toBe('bytes=15-')
+      expect(readFileSync(archivePath)).toEqual(PAYLOAD)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   it('rejects and discards a partial when Content-Range does not match the offset', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'orca-model-resume-'))
     try {
@@ -286,6 +361,7 @@ describe('ModelManager download resume', () => {
     const dir = mkdtempSync(join(tmpdir(), 'orca-model-resume-'))
     try {
       const manager = new ModelManager(dir) as unknown as ModelManagerInternals
+      const archivePath = join(dir, 'model.tar.bz2')
       const rateLimitError = Object.assign(new Error('HTTP 429'), {
         httpStatusCode: 429,
         retryAfterMs: 3_000
@@ -293,10 +369,13 @@ describe('ModelManager download resume', () => {
       const downloadFileMock = vi
         .spyOn(manager, 'downloadFile')
         .mockRejectedValueOnce(rateLimitError)
-        .mockResolvedValueOnce()
+        .mockImplementationOnce(() => {
+          writeFileSync(archivePath, PAYLOAD)
+          return Promise.resolve()
+        })
       const download = manager.downloadArchiveWithRetry(
         'https://example.com/model.tar.bz2',
-        join(dir, 'model.tar.bz2'),
+        archivePath,
         PAYLOAD.length,
         'm',
         () => false,
@@ -364,8 +443,19 @@ describe('ModelManager download resume', () => {
       )
       // Let the first rejection schedule its backoff before advancing timers;
       // this avoids racing fake time against stream/file I/O under full-suite load.
-      await Promise.resolve()
-      await vi.runAllTimersAsync()
+      await vi.advanceTimersByTimeAsync(0)
+      expect(downloadFileMock).toHaveBeenCalledTimes(1)
+      await vi.advanceTimersByTimeAsync(999)
+      expect(downloadFileMock).toHaveBeenCalledTimes(1)
+      await vi.advanceTimersByTimeAsync(1)
+      expect(downloadFileMock).toHaveBeenCalledTimes(2)
+      await vi.advanceTimersByTimeAsync(1_999)
+      expect(downloadFileMock).toHaveBeenCalledTimes(2)
+      await vi.advanceTimersByTimeAsync(1)
+      expect(downloadFileMock).toHaveBeenCalledTimes(3)
+      await vi.advanceTimersByTimeAsync(3_999)
+      expect(downloadFileMock).toHaveBeenCalledTimes(3)
+      await vi.advanceTimersByTimeAsync(1)
 
       await expect(outcome).resolves.toMatch(
         /Model download interrupted at 0% \(0 of 20 bytes\) after 4 attempts: .*net::ERR_CONNECTION_RESET/

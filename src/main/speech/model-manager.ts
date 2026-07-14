@@ -456,6 +456,11 @@ export class ModelManager {
     for (;;) {
       attempt += 1
       const offset = this.getPartialArchiveBytes(archivePath)
+      // Why: the transport can fail after the final byte reached disk; the
+      // caller's SHA-256 check is the authoritative completion test.
+      if (offset === totals.totalBytes) {
+        return
+      }
       try {
         // Why: each attempt restarts from the canonical URL rather than the
         // last redirect target, because CDN redirect URLs are signed and expire.
@@ -470,12 +475,43 @@ export class ModelManager {
           offset,
           totals
         )
-        return
+        const receivedBytes = this.getPartialArchiveBytes(archivePath)
+        if (receivedBytes === totals.totalBytes) {
+          return
+        }
+        if (receivedBytes > totals.totalBytes) {
+          throw new Error(
+            `Model download exceeded its expected size (${receivedBytes} of ${totals.totalBytes} bytes)`
+          )
+        }
+        const incompleteResponse = new Error(
+          `Model download response ended at ${receivedBytes} of ${totals.totalBytes} bytes`
+        )
+        if (attempt >= MAX_DOWNLOAD_ATTEMPTS) {
+          throw describeInterruptedDownload(
+            incompleteResponse,
+            receivedBytes,
+            totals.totalBytes,
+            attempt
+          )
+        }
+        if (receivedBytes > offset) {
+          // Why: some proxies return a valid but bounded range segment; request
+          // the next segment immediately instead of failing checksum or waiting.
+          noProgressStreak = 0
+          continue
+        }
+        const retryableIncompleteResponse = incompleteResponse as HttpStatusError
+        retryableIncompleteResponse.retryable = true
+        throw retryableIncompleteResponse
       } catch (err) {
         if (isAborted() || signal.aborted) {
           throw err
         }
         const receivedBytes = this.getPartialArchiveBytes(archivePath)
+        if (receivedBytes === totals.totalBytes) {
+          return
+        }
         noProgressStreak = receivedBytes > offset ? 0 : noProgressStreak + 1
         if (!isRetryableDownloadError(err)) {
           throw err
@@ -497,7 +533,7 @@ export class ModelManager {
         await sleepUnlessAborted(
           retryAfterMs ??
             DOWNLOAD_RETRY_DELAYS_MS[
-              Math.min(noProgressStreak, DOWNLOAD_RETRY_DELAYS_MS.length - 1)
+              Math.min(Math.max(0, noProgressStreak - 1), DOWNLOAD_RETRY_DELAYS_MS.length - 1)
             ],
           signal
         )
