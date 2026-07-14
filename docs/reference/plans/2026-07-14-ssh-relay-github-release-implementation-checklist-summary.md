@@ -22,13 +22,13 @@ complete a box.
 
 - [ ] **WP2 — Finish target-native artifact metadata and provenance.**
   - Four POSIX GitHub runner cells pass build, smoke, equality, metadata upload, and direct payload
-    audit in [run 29371551072](https://github.com/stablyai/orca/actions/runs/29371551072).
-  - Windows x64/arm64 prove hosted `link.exe` has no usable PE version resource (`0.0.0.0`); neither
-    cell downloads inputs or produces an artifact.
-  - Local commit `18d10da27` records the bounded MSVC toolset directory from the resolved linker path
-    plus the exact linker SHA-256. It is green across 20 test files / 98 tests plus static gates.
-  - Next gate: push that exact correction, rerun all six native jobs, then inspect every uploaded
-    artifact before completing the metadata/provenance box.
+    audit in [run 29372156145](https://github.com/stablyai/orca/actions/runs/29372156145).
+  - Windows x64/arm64 fail closed because the resolved `link.exe` path differs from the assumed MSVC
+    layout; neither cell downloads inputs or produces an artifact.
+  - Local commit `d1eb45d61` adds a bounded path-tail diagnostic and is green across 20 test files /
+    99 tests plus static gates.
+  - Next gate: push the diagnostic, inspect both native path shapes, then make only the evidenced
+    parser correction and rerun all six jobs.
 
 ## Work packages, in required order
 

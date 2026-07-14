@@ -8,7 +8,7 @@ work; keep exact commands, runner identities, hashes, metrics, and residual gaps
 
 Date created: 2026-07-14<br>
 Last updated: 2026-07-14<br>
-Current phase: Milestone 3 / Work Package 2 SBOM/provenance closure — **In progress — 2026-07-14, Codex implementation owner**; exact-head run [29371551072](https://github.com/stablyai/orca/actions/runs/29371551072) and direct payload audit keep Linux x64/arm64 and macOS x64/arm64 green but both Windows cells fail closed before build/upload because the authenticated linker has no usable PE version resource and returns `0.0.0.0` on both hosted architectures (E-M3-METADATA-CI-RED-005); exact implementation commit `18d10da27` derives a bounded toolset identity from the canonical resolved `.../MSVC/<version>/bin/.../link.exe` path while retaining the exact linker SHA-256, rejects malformed/ambiguous/non-MSVC paths, and passes 20 files / 98 tests plus typecheck, full lint, formatting, max-lines, and diff gates (E-M3-WINDOWS-LINKER-TOOLSET-LOCAL-001); the correction still requires an exact-head all-six native run and direct artifact inspection before any remaining SBOM/provenance/toolchain box is checked; oldest-baseline, native-trust, cross-family remote, and measured-baseline gates remain open; production/default behavior and every tuple state remain unchanged; no bundled-runtime path is enabled<br>
+Current phase: Milestone 3 / Work Package 2 SBOM/provenance closure — **In progress — 2026-07-14, Codex implementation owner**; exact-head run [29372156145](https://github.com/stablyai/orca/actions/runs/29372156145) and direct payload audit keep Linux x64/arm64 and macOS x64/arm64 green but both Windows cells fail closed before build/upload because their resolved linker paths do not match the assumed MSVC toolset layout (E-M3-METADATA-CI-RED-006); exact implementation commit `d1eb45d61` retains that strict parser and exact linker SHA-256 while adding only a 512-byte bounded path-tail diagnostic, and passes 20 files / 99 tests plus typecheck, full lint, formatting, max-lines, and diff gates (E-M3-WINDOWS-LINKER-PATH-DIAGNOSTIC-LOCAL-001); the next native run must expose both real path shapes before any parser correction, and the eventual exact head must pass all six cells plus direct artifact inspection before any remaining SBOM/provenance/toolchain box is checked; oldest-baseline, native-trust, cross-family remote, and measured-baseline gates remain open; production/default behavior and every tuple state remain unchanged; no bundled-runtime path is enabled<br>
 Primary design: [SSH relay GitHub Release plan](./2026-07-14-ssh-relay-github-release-plan.html)<br>
 Motivating issues: [#8450](https://github.com/stablyai/orca/issues/8450), [#1693](https://github.com/stablyai/orca/issues/1693)
 
@@ -175,11 +175,11 @@ same change as the work it records.
   per-target opt-in selects bundled-preferred behavior, and implementing the setting does not
   authorize default-on rollout or legacy removal (E-M1-ROLLOUT-DECISION-001).
 - Legacy fallback removal: not authorized.
-- Next required action: push exact MSVC-toolset linker identity commit `18d10da27` plus its evidence
-  ledger head and rerun all six target-native cells. Require the expected bounded toolset identity and
-  exact linker SHA-256, exact SPDX ownership, archive-scoped document identity, commit-pinned builder
-  identity, resolved runner identity, complete bounded tool records, regenerated Windows content
-  identities, smoke, exact clean-build equality, and upload. Preserve the artifact-only boundary,
+- Next required action: push bounded linker-path diagnostic commit `d1eb45d61` plus its evidence
+  ledger head and rerun all six target-native cells. Inspect the bounded x64 and arm64 path tails,
+  then make only the parser correction supported by those native paths. The corrected exact head
+  must retain the exact linker SHA-256 and pass all metadata, smoke, equality, upload, and direct
+  payload audits before the all-six provenance item can close. Preserve the artifact-only boundary,
   legacy/default path, and every other release gate.
 
 ## Non-Negotiable Invariants
@@ -6738,6 +6738,99 @@ bounded version line: <empty>`. The PE lookup returned successfully but the `Fil
 - Follow-up: push this exact implementation and ledger head, then require all six native jobs and
   direct inspection of every uploaded artifact before closing any metadata/provenance claim.
 
+### E-M3-METADATA-CI-RED-006 — Hosted linker paths reject the assumed MSVC layout
+
+- Date: 2026-07-14
+- Commit SHA / PR: exact tested head `2ed6c8e3b3609a9cb4785011996988de915e807a`;
+  stacked draft PR [#8741](https://github.com/stablyai/orca/pull/8741)
+- Runner: [GitHub Actions run 29372156145](https://github.com/stablyai/orca/actions/runs/29372156145),
+  final conclusion `failure` after 6m15s. Native job IDs and wall durations: Linux x64
+  `87217674004` / 3m06s, Linux arm64 `87217674003` / 3m34s, macOS x64 `87217674012` /
+  6m09s, macOS arm64 `87217674005` / 3m44s, Windows x64 `87217674050` / 1m29s, and
+  Windows arm64 `87217674002` / 3m52s.
+- Remote and transport: none; target-native artifact-only build workflow
+- Exact evidence commands:
+
+  ```sh
+  gh run view 29372156145 --repo stablyai/orca \
+    --json status,conclusion,headSha,createdAt,updatedAt,url,jobs
+  gh api repos/stablyai/orca/actions/runs/29372156145/artifacts
+  gh api repos/stablyai/orca/actions/jobs/87217674050/logs
+  gh api repos/stablyai/orca/actions/jobs/87217674002/logs
+  gh run download 29372156145 --repo stablyai/orca \
+    --dir /tmp/orca-8450-metadata-red-29372156145
+  # Repeat the exact fail-closed jq/shasum audit in E-M3-METADATA-CI-RED-003 with:
+  # evidence=/tmp/orca-8450-metadata-red-29372156145
+  # commit=2ed6c8e3b3609a9cb4785011996988de915e807a
+  # run_id=29372156145
+  ```
+
+- Result: EXPECTED RED. All four POSIX cells passed contracts, two clean native builds,
+  archive/tree inspection, bundled runtime smoke, byte-for-byte comparison, and upload. Windows x64
+  and arm64 each rejected `Resolved Windows linker is not in a bounded MSVC toolset path` during
+  contract tests after native MSVC setup. Both stopped before input download, build, smoke,
+  comparison, or upload, so no Windows artifact exists.
+- Downloaded-artifact audit:
+
+  | Tuple             | Artifact ID  | Archive SHA-256                                                    | Content ID prefix | Files |
+  | ----------------- | ------------ | ------------------------------------------------------------------ | ----------------- | ----- |
+  | linux-x64-glibc   | `8326530355` | `ec09bf6a0068b3a5954af0fa17e538c9972a8389ccf420a525546fc7c63dfeb4` | `960546cd…`       | 34    |
+  | linux-arm64-glibc | `8326541076` | `c13d1454e3e2592bf667a7c5925d147fd06e0f68eec7fb875dbc3750628f88b7` | `aa3aa8ae…`       | 34    |
+  | darwin-x64        | `8326590799` | `5de3e4ae940a47839f8a7a2ec24bc7b63d54954357beccf7916ff7c72fab7ff3` | `585ea603…`       | 35    |
+  | darwin-arm64      | `8326543567` | `8ee92c0d45d25b0fa05360c2dada50c21b2ac4ac837089a5c40c64d22ac2b9f5` | `40ff5d20…`       | 35    |
+
+  All archive/subject hashes, archive-scoped SPDX namespaces, one-owner-per-file counts, eight
+  dependency relationships, prohibited-content assertions, exact commit/run identities, runner
+  labels/images/architectures, and bounded tool version/hash records passed.
+
+- Oracle proved: the assumed strict MSVC directory layout does not match either hosted Windows
+  architecture; both jobs fail closed before consuming inputs; four independent POSIX controls
+  remain complete at the exact head.
+- Does not prove: either actual resolved Windows path shape, a corrected bounded parser, any Windows
+  artifact/metadata, oldest baselines, native trust/signing, SSH, publication, or an enabled tuple.
+- Checklist items satisfied: no new completion box; the all-six SBOM/provenance/toolchain item
+  remains in progress.
+- Follow-up: expose only a bounded path-tail diagnostic, rerun both native Windows architectures,
+  and correct the parser only after inspecting those exact paths.
+
+### E-M3-WINDOWS-LINKER-PATH-DIAGNOSTIC-LOCAL-001 — Bounded native path evidence
+
+- Date: 2026-07-14
+- Commit SHA / PR: exact implementation commit
+  `d1eb45d613f504d7363230420f14a0c8126fe125`; stacked draft PR
+  [#8741](https://github.com/stablyai/orca/pull/8741)
+- Runner: local macOS 26.2 build 25C56, Darwin 25.2.0 arm64 on Apple Silicon; Node v26.0.0 and
+  pnpm 10.24.0 for pure path/provenance tests
+- Remote and transport: none; artifact-only local contracts
+- Exact evidence commands:
+
+  ```sh
+  pnpm exec vitest run --config config/vitest.config.ts \
+    config/scripts/ssh-relay-*.test.mjs \
+    src/main/ssh/ssh-relay-artifact-selector.test.ts
+  pnpm run typecheck
+  pnpm run lint
+  pnpm run check:max-lines-ratchet
+  pnpm exec oxfmt --check \
+    config/scripts/ssh-relay-runtime-toolchain.mjs \
+    config/scripts/ssh-relay-runtime-toolchain.test.mjs
+  git diff --check
+  ```
+
+- Result: PASS. Twenty focused test files passed 99 tests. Typecheck passed all three TypeScript
+  projects. Full lint passed with only existing unrelated warnings; the independent max-lines,
+  focused formatting, and diff checks passed.
+- Oracle proved: linker-path rejection includes at most the final 12 path segments and at most 512
+  characters; truncation and suffix retention are purpose-tested. The strict identity parser and
+  exact linker SHA-256 requirement remain unchanged.
+- Does not prove: either native path shape, that 12 segments are sufficient to identify the correct
+  bounded grammar, a Windows build/smoke/equality/upload, oldest Windows execution, native trust,
+  SSH, publication, or an enabled tuple.
+- Checklist items satisfied: local diagnostic only; the all-six compiler/toolchain item remains
+  unchecked.
+- Follow-up: push this exact commit and ledger head, inspect both bounded native path tails, and make
+  only the parser correction supported by that evidence.
+
 ## Accepted Gaps
 
 No product gap is accepted merely because it appears in this list. Each entry requires explicit
@@ -6795,12 +6888,14 @@ The project is not complete until every applicable item below is checked with ev
 
 ## Next Required Action
 
-Push exact MSVC-toolset linker identity commit `18d10da27` plus this evidence-ledger head and rerun
-all six target-native cells. Require the expected bounded toolset identity and exact linker SHA-256,
-exact SPDX ownership, archive-scoped document identity, commit-pinned builder identity, resolved
-runner identity, complete bounded tool records with SHA-256, clean-build metadata equality, smoke,
-upload, and regenerated Windows content identities before checking the remaining Milestone 3
-metadata/toolchain claims. Then proceed to oldest-baseline and native-trust proof.
+Push bounded linker-path diagnostic commit `d1eb45d61` plus this evidence-ledger head and rerun all
+six target-native cells. Inspect the bounded x64 and arm64 path tails, then make only the parser
+correction supported by those native paths. Require the corrected exact head to retain the exact
+linker SHA-256 and pass exact SPDX ownership, archive-scoped document identity, commit-pinned builder
+identity, resolved runner identity, complete bounded tool records, clean-build metadata equality,
+smoke, upload, regenerated Windows content identities, and direct artifact inspection before
+checking the remaining Milestone 3 metadata/toolchain claims. Then proceed to oldest-baseline and
+native-trust proof.
 
 Cross-family Layer B targets, the protected manifest-signing environment, oldest-baseline/native-
 trust cells, and the paired legacy performance baseline remain release/default-path blockers. No
