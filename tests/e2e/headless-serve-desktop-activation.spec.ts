@@ -144,7 +144,10 @@ test('promotes the headless owner without replacing its daemon terminal', async 
 
     activatingProcess = spawn(electronPath, getOrcaElectronLaunchArgs(mainPath, false), {
       env,
-      stdio: 'pipe'
+      stdio: 'ignore'
+    })
+    activatingProcess.on('error', (error) => {
+      console.error('[e2e] activating process failed to spawn:', error)
     })
 
     const page = await serveApp.firstWindow({ timeout: 60_000 })

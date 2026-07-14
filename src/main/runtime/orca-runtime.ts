@@ -17801,7 +17801,9 @@ export class OrcaRuntimeService {
         // Why: a headless-created pane has no renderer session writer. Persist
         // its tab/leaf binding at spawn so a later promoted window reattaches
         // the live daemon or SSH PTY instead of replacing it with a fresh one.
-        ...(launchOpts.persistHostSessionBinding || availableAuthoritativeWindow === null
+        // Re-check freshly: the entry-time snapshot can go stale across the
+        // awaits above if the authoritative window is destroyed mid-spawn.
+        ...(launchOpts.persistHostSessionBinding || this.getAvailableAuthoritativeWindow() === null
           ? { persistHostSessionBinding: true }
           : {})
       })

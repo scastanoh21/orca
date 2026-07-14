@@ -40,6 +40,7 @@ describe('serve desktop activation wiring', () => {
     const rpcIndex = source.indexOf('await runtimeRpc.start()', serveIndex)
     const settleIndex = source.indexOf('settleServeDesktopActivation()', rpcIndex)
 
+    expect(serveIndex).toBeGreaterThanOrEqual(0)
     expect(sentinelIndex).toBeGreaterThan(serveIndex)
     expect(rpcIndex).toBeGreaterThan(sentinelIndex)
     expect(settleIndex).toBeGreaterThan(rpcIndex)
