@@ -1697,7 +1697,7 @@ describe('registerPtyHandlers', () => {
         try {
           const env = await daemonSpawnAndGetEnv({ PATH: '/usr/local/bin:/usr/bin' })
           const entries = env.PATH.split(posix.delimiter)
-          const shimDir = join('/tmp/orca-user-data', 'linux-orca-cli-shim')
+          const shimDir = posix.join('/tmp/orca-user-data', 'linux-orca-cli-shim')
           // Why: bare `orca` must resolve to the Orca CLI before /usr/bin/orca
           // (the GNOME screen reader) inside Orca-managed terminals (#7904).
           expect(entries.indexOf(shimDir)).toBeGreaterThanOrEqual(0)
