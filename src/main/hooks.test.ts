@@ -1169,6 +1169,20 @@ describe('createSetupRunnerScript', () => {
         .waitForAgentStartup
     ).toBe(true)
   })
+
+  it('marks setup-runner terminals for the always-on credential guard', async () => {
+    gitExecFileSyncMock.mockReset()
+    gitExecFileSyncMock.mockReturnValue('/test/repo/.git/orca/setup-runner.sh\n')
+    const { createSetupRunnerScript } = await import('./hooks')
+
+    const setup = createSetupRunnerScript(makeRepo(), '/test/worktree', 'git fetch')
+
+    expect(setup.envVars).toMatchObject({
+      ORCA_ROOT_PATH: '/test/repo',
+      ORCA_WORKTREE_PATH: '/test/worktree',
+      ORCA_INTERNAL_TERMINAL_GIT_CREDENTIAL_GUARD_POLICY: 'guard'
+    })
+  })
 })
 
 describe('shouldRunSetupForCreate', () => {

@@ -256,7 +256,14 @@ export function applyTerminalGitCredentialPromptGuard(
     recognizeAgentProcessFromCommandLine(opts.launchCommand, { includeHeadlessOneShot: true })
   )
   const platform = opts.platform ?? process.platform
-  const shouldGuard = isAgentTerminal || (opts.suppressUserTerminalPrompt && platform === 'win32')
+  const explicitlyGuarded = env[TERMINAL_GIT_CREDENTIAL_GUARD_POLICY_ENV] === 'guard'
+  delete env[TERMINAL_GIT_CREDENTIAL_GUARD_POLICY_ENV]
+  // Why: setup/issue runners are unattended automation even though their shell
+  // command is not an agent executable; their internal marker must beat opt-out.
+  const shouldGuard =
+    explicitlyGuarded ||
+    isAgentTerminal ||
+    (opts.suppressUserTerminalPrompt && platform === 'win32')
 
   if (!shouldGuard) {
     clearTerminalGitCredentialPromptGuard(env)

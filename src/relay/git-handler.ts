@@ -59,7 +59,7 @@ import {
   resolveEffectiveGitUpstream
 } from '../shared/git-effective-upstream'
 import { loadGitHistoryFromExecutor } from '../shared/git-history'
-import { buildRelayGitEnv } from './relay-command-env'
+import { buildRelayCloneEnv, buildRelayGitEnv } from './relay-command-env'
 import {
   removeSafeUntrackedDiscardTarget,
   removeSafeUntrackedDiscardTargets
@@ -1182,7 +1182,7 @@ export class GitHandler {
     return await new Promise((resolve, reject) => {
       const child = spawn('git', args, {
         cwd: expandTilde(cwd),
-        env: buildRelayGitEnv(),
+        env: buildRelayCloneEnv(),
         stdio: ['ignore', 'pipe', 'pipe']
       })
       let stdout = ''

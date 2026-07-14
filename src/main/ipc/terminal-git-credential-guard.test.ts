@@ -26,6 +26,39 @@ describe('applyTerminalGitCredentialPromptGuard', () => {
     }
   })
 
+  it('guards explicitly marked automation on every platform and consumes its internal marker', () => {
+    for (const platform of ['win32', 'darwin', 'linux'] as const) {
+      const env: Record<string, string> = {
+        PATH: '/usr/bin',
+        [TERMINAL_GIT_CREDENTIAL_GUARD_POLICY_ENV]: 'guard'
+      }
+      applyTerminalGitCredentialPromptGuard(env, {
+        launchCommand: '/bin/zsh',
+        suppressUserTerminalPrompt: false,
+        platform
+      })
+
+      expect(isGuarded(env), platform).toBe(true)
+      expect(env[TERMINAL_GIT_CREDENTIAL_GUARD_POLICY_ENV], platform).toBeUndefined()
+    }
+  })
+
+  it('forwards an explicit automation guard to the detached daemon host', () => {
+    const env: Record<string, string> = {
+      PATH: '/usr/bin',
+      [TERMINAL_GIT_CREDENTIAL_GUARD_POLICY_ENV]: 'guard'
+    }
+    applyTerminalGitCredentialPromptGuard(env, {
+      launchCommand: '/bin/zsh',
+      suppressUserTerminalPrompt: false,
+      platform: 'linux',
+      deferGitConfigGuardToHost: true
+    })
+
+    expect(isGuarded(env)).toBe(true)
+    expect(env[TERMINAL_GIT_CREDENTIAL_GUARD_POLICY_ENV]).toBe('guard')
+  })
+
   it('guards a plain user terminal by default on a Windows host', () => {
     const env: Record<string, string> = { PATH: '/usr/bin' }
     applyTerminalGitCredentialPromptGuard(env, {

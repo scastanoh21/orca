@@ -6,6 +6,7 @@ import { getDefaultRepoHookSettings } from '../shared/constants'
 import { getRuntimePathBasename } from '../shared/cross-platform-path'
 import { resolveHookCommandSourcePolicy } from '../shared/hook-command-source-policy'
 import { shouldWaitForSetupBeforeAgentStartup } from '../shared/setup-agent-startup-policy'
+import { TERMINAL_GIT_CREDENTIAL_GUARD_POLICY_ENV } from '../shared/terminal-git-credential-guard'
 import { parseOrcaYaml } from '../shared/orca-yaml'
 import { gitExecFileSync, promptGuardShellEnv } from './git/runner'
 import { isWslPath, parseWslPath, toWindowsWslPath, toLinuxPath } from './wsl'
@@ -455,7 +456,12 @@ export function createSetupRunnerScript(
 }
 
 export function getSetupRunnerEnvVars(repo: Repo, worktreePath: string): Record<string, string> {
-  return getSetupEnvVars(repo, worktreePath)
+  return {
+    ...getSetupEnvVars(repo, worktreePath),
+    // Why: the visible Setup terminal is still unattended automation; user
+    // terminal opt-out must not let its git commands open credential UI.
+    [TERMINAL_GIT_CREDENTIAL_GUARD_POLICY_ENV]: 'guard'
+  }
 }
 
 export function buildPosixRunnerScript(script: string): string {
@@ -511,7 +517,7 @@ function createWorktreeRunnerScript(
   runtimeTarget?: HookRuntimeTarget,
   waitForAgentStartup?: boolean
 ): WorktreeSetupLaunch {
-  const envVars = getSetupEnvVars(repo, worktreePath)
+  const envVars = getSetupRunnerEnvVars(repo, worktreePath)
   // Why: WSL worktrees run on a Linux filesystem even though process.platform
   // is 'win32'. Use bash scripts for WSL, .cmd for native Windows.
   const wslWorktree = isWslPath(worktreePath) || Boolean(runtimeTarget?.wslDistro)
