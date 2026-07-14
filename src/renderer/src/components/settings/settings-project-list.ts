@@ -45,8 +45,19 @@ export function getSettingsProjectRepresentativeRepoId(
  */
 export function buildSettingsProjectList(repos: readonly Repo[]): SettingsProject[] {
   const projection = projectHostSetupProjectionFromRepos(repos)
+  const setupsByProjectId = new Map<string, ProjectHostSetup[]>()
+  for (const setup of projection.setups) {
+    const projectSetups = setupsByProjectId.get(setup.projectId)
+    if (projectSetups) {
+      projectSetups.push(setup)
+    } else {
+      setupsByProjectId.set(setup.projectId, [setup])
+    }
+  }
   return projection.projects.map((project) => {
-    const setups = projection.setups.filter((setup) => setup.projectId === project.id)
+    // Why: Settings metadata is rebuilt as repos refresh across hosts; index
+    // setups once so many projects do not turn each refresh into an O(n²) scan.
+    const setups = setupsByProjectId.get(project.id) ?? []
     return {
       projectId: project.id,
       project,

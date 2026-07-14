@@ -193,4 +193,21 @@ describe('deep-link resolution', () => {
   it('defaults to the local host repo row when no host is selected', () => {
     expect(getSettingsProjectHostRepo(projects[0], repos, undefined)?.id).toBe('local-1')
   })
+
+  it('distinguishes same-id repo rows by execution host', () => {
+    const sameIdRepos = [
+      makeRepo({ id: 'same-repo', gitRemoteIdentity: gitRemote }),
+      makeRepo({
+        id: 'same-repo',
+        gitRemoteIdentity: gitRemote,
+        executionHostId: 'runtime:home-mac',
+        path: '/remote/repo'
+      })
+    ]
+    const sameIdProjects = buildSettingsProjectList(sameIdRepos)
+
+    expect(
+      getSettingsProjectHostRepo(sameIdProjects[0], sameIdRepos, 'runtime:home-mac')?.path
+    ).toBe('/remote/repo')
+  })
 })

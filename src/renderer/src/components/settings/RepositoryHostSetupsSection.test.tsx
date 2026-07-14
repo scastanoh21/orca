@@ -271,6 +271,7 @@ describe('RepositoryHostSetupsSection', () => {
   it('sets up the project on another known host from an existing folder path', async () => {
     const openSettingsPage = vi.fn()
     const openSettingsTarget = vi.fn()
+    const setSettingsProjectHostSelection = vi.fn()
     const setupProjectExistingFolder = vi.fn().mockResolvedValue({
       project: makeProject({ id: 'github:stablyai/orca' }),
       setup: makeSetup({
@@ -307,6 +308,7 @@ describe('RepositoryHostSetupsSection', () => {
       sshTargetLabels: new Map([['openclaw 2', 'openclaw 2']]),
       openSettingsPage,
       openSettingsTarget,
+      setSettingsProjectHostSelection,
       setupProjectExistingFolder
     })
 
@@ -334,13 +336,18 @@ describe('RepositoryHostSetupsSection', () => {
       kind: 'git',
       displayName: 'Orca'
     })
-    expect(openSettingsPage).toHaveBeenCalledTimes(1)
-    expect(openSettingsTarget).toHaveBeenCalledWith({ pane: 'repo', repoId: 'remote-repo' })
+    expect(setSettingsProjectHostSelection).toHaveBeenCalledWith(
+      'github:stablyai/orca',
+      'ssh:openclaw%202'
+    )
+    expect(openSettingsPage).not.toHaveBeenCalled()
+    expect(openSettingsTarget).not.toHaveBeenCalled()
   })
 
   it('clones the project onto another known host from settings', async () => {
     const openSettingsPage = vi.fn()
     const openSettingsTarget = vi.fn()
+    const setSettingsProjectHostSelection = vi.fn()
     const setupProjectClone = vi.fn().mockResolvedValue({
       project: makeProject({ id: 'github:stablyai/orca' }),
       setup: makeSetup({
@@ -377,6 +384,7 @@ describe('RepositoryHostSetupsSection', () => {
       sshTargetLabels: new Map([['openclaw 2', 'openclaw 2']]),
       openSettingsPage,
       openSettingsTarget,
+      setSettingsProjectHostSelection,
       setupProjectClone
     })
 
@@ -409,8 +417,12 @@ describe('RepositoryHostSetupsSection', () => {
       destination: '/home/alice',
       displayName: 'Orca'
     })
-    expect(openSettingsPage).toHaveBeenCalledTimes(1)
-    expect(openSettingsTarget).toHaveBeenCalledWith({ pane: 'repo', repoId: 'remote-repo' })
+    expect(setSettingsProjectHostSelection).toHaveBeenCalledWith(
+      'github:stablyai/orca',
+      'ssh:openclaw%202'
+    )
+    expect(openSettingsPage).not.toHaveBeenCalled()
+    expect(openSettingsTarget).not.toHaveBeenCalled()
   })
 
   it('creates pending setup metadata for a known host without requiring a path', async () => {

@@ -10,7 +10,7 @@ import {
   type MutableRefObject
 } from 'react'
 import { toast } from 'sonner'
-import type { GlobalSettings, OrcaHooks, ProjectHostSetup } from '../../../../shared/types'
+import type { GlobalSettings, OrcaHooks, ProjectHostSetup, Repo } from '../../../../shared/types'
 import type { SpeechModelState } from '../../../../shared/speech-types'
 import type {
   SourceControlAiSettings,
@@ -29,7 +29,11 @@ import {
   mergeFontSuggestions
 } from './SettingsConstants'
 import { DEFAULT_APP_FONT_FAMILY, getDefaultVoiceSettings } from '../../../../shared/constants'
-import { getRepoExecutionHostId, LOCAL_EXECUTION_HOST_ID } from '../../../../shared/execution-host'
+import {
+  getRepoExecutionHostId,
+  LOCAL_EXECUTION_HOST_ID,
+  parseExecutionHostId
+} from '../../../../shared/execution-host'
 import { GeneralPane } from './GeneralPane'
 import { BrowserPane } from './BrowserPane'
 import { AppearancePane } from './AppearancePane'
@@ -96,13 +100,10 @@ import {
   useInstalledAgentSkill
 } from '@/hooks/useInstalledAgentSkills'
 import { useActiveProjectSkillRuntime } from '@/hooks/useActiveProjectSkillRuntime'
-import {
-  deriveNeededSectionIds,
-  getInitialMountedSectionIds,
-  getRuntimeTargetIdentity
-} from './settings-load-performance'
+import { deriveNeededSectionIds, getInitialMountedSectionIds } from './settings-load-performance'
 import { translate } from '@/i18n/i18n'
 import { getProjectHostSetupProjectionFromState } from '../../store/selectors'
+import { getRepoHostIdentity } from '../../store/slices/repo-host-identity'
 import {
   buildRepoIdToHostSelection,
   buildRepoIdToRepresentative,
@@ -391,7 +392,6 @@ function Settings(): React.JSX.Element {
   const pendingScrollTargetRef = useRef<string | null>(null)
   const pendingSubsectionScrollFrameRef = useRef<number | null>(null)
   const repoHooksRequestSeqRef = useRef(0)
-  const repoHooksRuntimeIdentityRef = useRef<string>('local')
   const shortcutsEscapeConfirmUntilRef = useRef(0)
   const sourceControlAiWriteQueueRef = useRef<Promise<void>>(Promise.resolve())
 
@@ -541,8 +541,6 @@ function Settings(): React.JSX.Element {
       canceled = true
     }
   }, [refreshModelStates, showDesktopOnlySettings])
-
-  const runtimeTargetIdentity = getRuntimeTargetIdentity(settings)
 
   useEffect(() => {
     const hasVisibleOverlay = (): boolean =>
@@ -872,8 +870,8 @@ function Settings(): React.JSX.Element {
   // Why: each mounted project pane renders its SELECTED host's repo, so hooks
   // must load for that repo id — not the representative id parsed from the
   // section string (they differ when a non-default host is selected).
-  const neededRepoIds = useMemo(() => {
-    const ids = new Set<string>()
+  const neededRepos = useMemo(() => {
+    const reposByHostIdentity = new Map<string, Repo>()
     for (const settingsProject of settingsProjectList) {
       if (!neededSectionIds.has(`repo-${settingsProject.representativeRepoId}`)) {
         continue
@@ -884,72 +882,65 @@ function Settings(): React.JSX.Element {
         settingsProjectHostSelection[settingsProject.projectId]
       )
       if (repo) {
-        ids.add(repo.id)
+        reposByHostIdentity.set(getRepoHostIdentity(repo), repo)
       }
     }
-    return [...ids]
+    return [...reposByHostIdentity.values()]
   }, [neededSectionIds, repos, settingsProjectHostSelection, settingsProjectList])
 
   useEffect(() => {
-    const repoIdSet = new Set(repos.map((repo) => repo.id))
+    const repoHostIdentitySet = new Set(repos.map(getRepoHostIdentity))
     setRepoHooksMap((previous) => {
       const next = Object.fromEntries(
-        Object.entries(previous).filter(([repoId]) => repoIdSet.has(repoId))
+        Object.entries(previous).filter(([identity]) => repoHostIdentitySet.has(identity))
       ) as Record<string, { hasHooks: boolean; hooks: OrcaHooks | null; mayNeedUpdate: boolean }>
       return Object.keys(next).length === Object.keys(previous).length ? previous : next
     })
   }, [repos])
 
   useEffect(() => {
-    if (repoHooksRuntimeIdentityRef.current !== runtimeTargetIdentity) {
-      repoHooksRuntimeIdentityRef.current = runtimeTargetIdentity
-      repoHooksRequestSeqRef.current += 1
-      setRepoHooksMap({})
-    }
-  }, [runtimeTargetIdentity])
-
-  useEffect(() => {
-    if (neededRepoIds.length === 0) {
+    if (neededRepos.length === 0) {
       return
     }
 
     let stale = false
     const requestSeq = ++repoHooksRequestSeqRef.current
-    const repoById = new Map(repos.map((repo) => [repo.id, repo] as const))
+    const liveRepoHostIdentities = new Set(repos.map(getRepoHostIdentity))
 
     void Promise.all(
-      neededRepoIds.map(async (repoId) => {
-        const repo = repoById.get(repoId)
-        if (!repo) {
-          return
-        }
+      neededRepos.map(async (repo) => {
+        const repoHostIdentity = getRepoHostIdentity(repo)
         if (isFolderRepo(repo)) {
           setRepoHooksMap((previous) => {
-            if (previous[repoId]) {
+            if (previous[repoHostIdentity]) {
               return previous
             }
             return {
               ...previous,
-              [repoId]: { hasHooks: false, hooks: null, mayNeedUpdate: false }
+              [repoHostIdentity]: { hasHooks: false, hooks: null, mayNeedUpdate: false }
             }
           })
           return
         }
         try {
+          const hostId = getRepoExecutionHostId(repo)
+          const parsedHost = parseExecutionHostId(hostId)
           const result = await checkRuntimeHooks(
-            runtimeTargetIdentity === 'local'
-              ? { activeRuntimeEnvironmentId: null }
-              : { activeRuntimeEnvironmentId: runtimeTargetIdentity },
-            repoId
+            {
+              activeRuntimeEnvironmentId:
+                parsedHost?.kind === 'runtime' ? parsedHost.environmentId : null
+            },
+            repo.id,
+            hostId
           )
           if (stale || requestSeq !== repoHooksRequestSeqRef.current) {
             return
           }
           setRepoHooksMap((previous) => {
-            if (!repos.some((entry) => entry.id === repoId)) {
+            if (!liveRepoHostIdentities.has(repoHostIdentity)) {
               return previous
             }
-            return { ...previous, [repoId]: result }
+            return { ...previous, [repoHostIdentity]: result }
           })
         } catch {
           // Keep last known value on transient failures.
@@ -957,15 +948,15 @@ function Settings(): React.JSX.Element {
             return
           }
           setRepoHooksMap((previous) => {
-            if (!repos.some((entry) => entry.id === repoId)) {
+            if (!liveRepoHostIdentities.has(repoHostIdentity)) {
               return previous
             }
-            if (previous[repoId]) {
+            if (previous[repoHostIdentity]) {
               return previous
             }
             return {
               ...previous,
-              [repoId]: { hasHooks: false, hooks: null, mayNeedUpdate: false }
+              [repoHostIdentity]: { hasHooks: false, hooks: null, mayNeedUpdate: false }
             }
           })
         }
@@ -975,7 +966,7 @@ function Settings(): React.JSX.Element {
     return () => {
       stale = true
     }
-  }, [neededRepoIds, repos, runtimeTargetIdentity])
+  }, [neededRepos, repos])
 
   useEffect(() => {
     const scrollTargetId = pendingScrollTargetRef.current
@@ -1739,7 +1730,8 @@ function Settings(): React.JSX.Element {
                   if (!repo) {
                     return null
                   }
-                  const repoHooksState = repoHooksMap[repo.id]
+                  const repoHostIdentity = getRepoHostIdentity(repo)
+                  const repoHooksState = repoHooksMap[repoHostIdentity]
                   const project = projectByRepoId.get(repo.id) ?? settingsProject.project
 
                   return (
@@ -1755,7 +1747,10 @@ function Settings(): React.JSX.Element {
                       searchEntries={getSectionSearchEntries(repoSectionId)}
                     >
                       {isSectionMounted(repoSectionId) ? (
+                        // Why: same-id hosts otherwise reuse drafts and effects
+                        // from the previously selected host inside this pane.
                         <RepositoryPane
+                          key={repoHostIdentity}
                           repo={repo}
                           yamlHooks={repoHooksState?.hooks ?? null}
                           hasHooksFile={repoHooksState?.hasHooks ?? false}

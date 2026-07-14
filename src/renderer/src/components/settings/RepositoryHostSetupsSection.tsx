@@ -34,8 +34,6 @@ export function RepositoryHostSetupsSection({
   searchQuery,
   searchEntries
 }: RepositoryHostSetupsSectionProps): React.JSX.Element | null {
-  const openSettingsPage = useAppStore((state) => state.openSettingsPage)
-  const openSettingsTarget = useAppStore((state) => state.openSettingsTarget)
   const setSettingsProjectHostSelection = useAppStore(
     (state) => state.setSettingsProjectHostSelection
   )
@@ -74,8 +72,9 @@ export function RepositoryHostSetupsSection({
   const projectHostSetupProjection = useAppStore((state) =>
     getProjectHostSetupProjectionFromState(state)
   )
+  const selectedHostId = getRepoExecutionHostId(repo)
   const selectedProjectHostSetup = projectHostSetupProjection.setups.find(
-    (setup) => setup.repoId === repo.id
+    (setup) => setup.repoId === repo.id && setup.hostId === selectedHostId
   )
   const projectHostSetups = selectedProjectHostSetup
     ? projectHostSetupProjection.setups.filter(
@@ -89,7 +88,6 @@ export function RepositoryHostSetupsSection({
   })
   const hostOptionById = new Map(hostOptions.map((option) => [option.id, option]))
   const [deletingSetupId, setDeletingSetupId] = useState<string | null>(null)
-  const selectedHostId = getRepoExecutionHostId(repo)
   const projectId = selectedProjectHostSetup?.projectId
   // Why: the single project pane switches host in place — set the ephemeral
   // per-project selection instead of navigating to a separate repo section.
@@ -98,13 +96,6 @@ export function RepositoryHostSetupsSection({
       setSettingsProjectHostSelection(projectId, hostId)
     }
   }
-  // Why: the "Add to another host" flow lands on a freshly-created repo row —
-  // navigate so the deep-link → selection coupling switches to that new host.
-  const openSetup = (repoId: string) => {
-    openSettingsPage()
-    openSettingsTarget({ pane: 'repo', repoId })
-  }
-
   if (
     (projectHostSetups.length <= 1 && setupHostOptions.length === 0) ||
     (!forceVisible && !matchesSettingsSearch(searchQuery, searchEntries))
@@ -147,7 +138,7 @@ export function RepositoryHostSetupsSection({
                 </SelectTrigger>
                 <SelectContent>
                   {openableProjectHostSetups.map((setup) => (
-                    <SelectItem key={setup.id} value={setup.hostId}>
+                    <SelectItem key={setup.hostId} value={setup.hostId}>
                       <span className="block min-w-0 truncate">
                         {hostOptionById.get(setup.hostId)?.label ??
                           getExecutionHostLabel(setup.hostId)}
@@ -173,7 +164,7 @@ export function RepositoryHostSetupsSection({
           const canRemoveSetup = !canOpenSetup && deletingSetupId !== setup.id
           return (
             <div
-              key={setup.id}
+              key={setup.hostId}
               className={cn(
                 'flex w-full items-start gap-3 px-3 py-2.5 text-left transition-colors',
                 isCurrentSetup ? 'bg-muted/30' : ''
@@ -239,7 +230,7 @@ export function RepositoryHostSetupsSection({
           setupProjectExistingFolder={setupProjectExistingFolder}
           setupProjectClone={setupProjectClone}
           createProjectHostSetup={createProjectHostSetup}
-          onOpenSetup={openSetup}
+          onSetupReady={selectHost}
         />
       ) : null}
     </SearchableSetting>

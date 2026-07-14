@@ -131,6 +131,12 @@ export function buildSettingsNavigationMetadata({
   const runtimeEnvironmentsSearchEntry = isWebClient
     ? getWebRuntimeEnvironmentsSearchEntry()
     : getRuntimeEnvironmentsSearchEntry()
+  const reposById = new Map<string, Repo>()
+  for (const repo of repos) {
+    if (!reposById.has(repo.id)) {
+      reposById.set(repo.id, repo)
+    }
+  }
 
   return [
     // Why: this array's order must mirror SETTINGS_NAV_GROUPS so the Settings
@@ -542,8 +548,7 @@ export function buildSettingsNavigationMetadata({
     // multiple hosts (local + a Remote Orca Server, or two clones) collapses to
     // a single entry. Derived from repos alone so this list matches the panes.
     ...buildSettingsProjectList(repos).map(({ project, representativeRepoId, setups }) => {
-      const representativeRepo =
-        repos.find((entry) => entry.id === representativeRepoId) ?? repos[0]
+      const representativeRepo = reposById.get(representativeRepoId) ?? repos[0]
       const hostSummary =
         setups.length > 1 ? `${setups.length} hosts` : (setups[0]?.path ?? representativeRepo.path)
       return {
