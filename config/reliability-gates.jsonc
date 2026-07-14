@@ -265,6 +265,15 @@
           "date": "2026-07-13",
           "runner": "local",
           "platform": "macos",
+          "command": "pnpm exec vitest run --config config/vitest.config.ts src/renderer/src/components/editor/monaco-content-sync.undo-history.test.ts",
+          "result": "passed",
+          "durationSeconds": 4,
+          "summary": "The real-Monaco undo-history test confirmed a read-only live-tail append leaves canUndo false while an ordinary external update remains undoable."
+        },
+        {
+          "date": "2026-07-13",
+          "runner": "local",
+          "platform": "macos",
           "command": "node --expose-gc ./node_modules/vitest/vitest.mjs bench src/renderer/src/components/editor/monaco-content-sync.undo-retention.bench.ts --pool=threads",
           "result": "passed",
           "durationSeconds": 5,
