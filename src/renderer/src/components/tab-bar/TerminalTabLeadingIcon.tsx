@@ -35,7 +35,10 @@ function activityDotState(status: TerminalTabActivityStatus): AgentDotState | nu
       return 'permission'
     case 'done':
       return 'done'
-    default:
+    case 'active':
+    case 'inactive':
+      // Why: live/idle attribution carries no activity glyph — the tab falls
+      // through to its agent or shell identity icon (see fn doc above).
       return null
   }
 }
