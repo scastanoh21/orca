@@ -531,6 +531,75 @@ describe('terminal scroll intent', () => {
     expect(getTerminalScrollIntentKind(terminal)).toBe('pinnedViewport')
   })
 
+  it('heals a stale pin when typing scrolls the terminal to the bottom', async () => {
+    vi.stubGlobal('requestAnimationFrame', () => 0)
+    vi.stubGlobal('Element', TestElement)
+    const capturedInput: { listener: (() => void) | null } = { listener: null }
+    const terminal = createTerminal({ viewportY: 42, baseY: 100 })
+    const terminalWithCore = terminal as typeof terminal & {
+      _core?: {
+        coreService?: { onUserInput?: (listener: () => void) => { dispose: () => void } }
+      }
+    }
+    terminalWithCore._core = {
+      coreService: {
+        onUserInput: (listener: () => void) => {
+          capturedInput.listener = listener
+          return { dispose: vi.fn() }
+        }
+      }
+    }
+    const host = new TestElement() as unknown as HTMLElement
+    const disposable = attachTerminalScrollIntentTracking(terminal, host)
+
+    markTerminalPinnedViewport(terminal)
+    expect(getTerminalScrollIntentKind(terminal)).toBe('pinnedViewport')
+
+    // Typing: xterm's scrollOnUserInput moves the viewport to the bottom and
+    // core fires onUserInput. The stored pin must not survive as stale state
+    // that a later workspace-switch restore would re-apply.
+    terminal.buffer.active.viewportY = terminal.buffer.active.baseY
+    expect(capturedInput.listener).not.toBeNull()
+    capturedInput.listener?.()
+    await Promise.resolve()
+
+    expect(getTerminalScrollIntentKind(terminal)).toBe('followOutput')
+    disposable.dispose()
+  })
+
+  it('keeps a real pin when user input arrives while scrolled up', async () => {
+    vi.stubGlobal('requestAnimationFrame', () => 0)
+    vi.stubGlobal('Element', TestElement)
+    const capturedInput: { listener: (() => void) | null } = { listener: null }
+    const terminal = createTerminal({ viewportY: 42, baseY: 100 })
+    const terminalWithCore = terminal as typeof terminal & {
+      _core?: {
+        coreService?: { onUserInput?: (listener: () => void) => { dispose: () => void } }
+      }
+    }
+    terminalWithCore._core = {
+      coreService: {
+        onUserInput: (listener: () => void) => {
+          capturedInput.listener = listener
+          return { dispose: vi.fn() }
+        }
+      }
+    }
+    const host = new TestElement() as unknown as HTMLElement
+    const disposable = attachTerminalScrollIntentTracking(terminal, host)
+
+    markTerminalPinnedViewport(terminal)
+    // A mouse report or a key the app consumes: the viewport does not move.
+    capturedInput.listener?.()
+    await Promise.resolve()
+
+    expect(getTerminalScrollIntentKind(terminal)).toBe('pinnedViewport')
+    terminal.buffer.active.viewportY = 0
+    enforceTerminalCurrentScrollIntent(terminal)
+    expect(terminal.scrollToLine).toHaveBeenLastCalledWith(42)
+    disposable.dispose()
+  })
+
   it('supports bottom-offset restore for buffer-rebuild write paths', () => {
     const terminal = createTerminal({ viewportY: 550, baseY: 600 })
     markTerminalPinnedViewport(terminal)
