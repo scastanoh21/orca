@@ -1,4 +1,4 @@
-import { open, readFile, readdir, writeFile } from 'node:fs/promises'
+import { open, readFile, readdir, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
 const COMPILER_OPTIONS = `            'VCCLCompilerTool': {
@@ -47,6 +47,7 @@ const MAX_LINK_COMMAND_TRACKING_CANDIDATES = 32
 const MAX_LINK_COMMAND_TRACKING_DEPTH = 8
 const MAX_LINK_COMMAND_TRACKING_ENTRIES = 10_000
 const TARGET_LINK_OUTPUT_PATTERN = /(?:^|[\\/:"'\s])conpty_console_list\.node(?=$|[\\/:"'\s])/i
+const TARGET_INCREMENTAL_DATABASE = 'conpty_console_list.ilk'
 
 function decodeXmlText(value) {
   return value
@@ -154,6 +155,7 @@ async function discoverLinkCommandTracking(nodePtyDirectory) {
   // Why: generated dependency projects live elsewhere; only Release contains target link outputs.
   const queue = [{ depth: 0, path: join(nodePtyDirectory, 'build', 'Release') }]
   const candidates = []
+  const incrementalDatabases = []
   let entries = 0
   for (let index = 0; index < queue.length; index += 1) {
     const current = queue[index]
@@ -178,10 +180,15 @@ async function discoverLinkCommandTracking(nodePtyDirectory) {
         if (candidates.length > MAX_LINK_COMMAND_TRACKING_CANDIDATES) {
           throw new Error('MSBuild linker tracking discovery has too many candidates')
         }
+      } else if (child.isFile() && child.name.toLowerCase() === TARGET_INCREMENTAL_DATABASE) {
+        incrementalDatabases.push(childPath)
+        if (incrementalDatabases.length > 1) {
+          throw new Error('MSBuild incremental database discovery has duplicate target files')
+        }
       }
     }
   }
-  return { candidates, entries }
+  return { candidates, entries, incrementalDatabases }
 }
 
 function decodeLinkCommandTracking(bytes) {
@@ -270,9 +277,19 @@ export async function inspectWindowsNodePtyLinkCommandTracking({ nodePtyDirector
       `MSBuild linker tracking discovery requires exactly one target command file (candidates=${discovery.candidates.length}, matches=${matching.length}, entries=${discovery.entries})`
     )
   }
+  // Why: /DEBUG can imply incremental linking without spelling /INCREMENTAL in the command record.
+  let incrementalDatabase = { state: 'absent' }
+  if (discovery.incrementalDatabases.length === 1) {
+    const bytes = (await stat(discovery.incrementalDatabases[0])).size
+    if (!Number.isSafeInteger(bytes) || bytes < 0) {
+      throw new Error('MSBuild incremental database has an invalid size')
+    }
+    incrementalDatabase = { bytes, state: 'present' }
+  }
   return {
     ...parseWindowsNodePtyLinkCommandTracking(matching[0]),
     candidateFiles: discovery.candidates.length,
+    incrementalDatabase,
     searchedEntries: discovery.entries
   }
 }

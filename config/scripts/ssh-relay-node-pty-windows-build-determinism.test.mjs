@@ -151,30 +151,34 @@ describe('SSH relay Windows node-pty build determinism', () => {
   it('bounds linker tracking bytes while reading the generated file', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'orca-node-pty-link-tracking-'))
     temporaryDirectories.push(directory)
-    const trackingPath = join(
-      directory,
-      'build',
-      'Release',
-      'unexpected',
-      'target.tlog',
-      'link.command.1.tlog'
-    )
-    const otherPath = join(directory, 'build', 'Release', 'other', 'link.command.1.tlog')
-    await mkdir(join(directory, 'build', 'Release', 'unexpected', 'target.tlog'), {
+    const releaseDirectory = join(directory, 'build', 'Release')
+    const trackingPath = join(releaseDirectory, 'unexpected', 'target.tlog', 'link.command.1.tlog')
+    const otherPath = join(releaseDirectory, 'other', 'link.command.1.tlog')
+    const incrementalPath = join(releaseDirectory, 'unexpected', 'conpty_console_list.ilk')
+    await mkdir(join(releaseDirectory, 'unexpected', 'target.tlog'), {
       recursive: true
     })
-    await mkdir(join(directory, 'build', 'Release', 'other'), { recursive: true })
+    await mkdir(join(releaseDirectory, 'other'), { recursive: true })
     await writeFile(
       trackingPath,
       '^one\n/OUT:conpty_console_list.node /INCREMENTAL:NO /Brepro /GUARD:CF /experimental:deterministic'
     )
     await writeFile(otherPath, '^other\n/OUT:not_conpty_console_list.node /INCREMENTAL:NO')
+    await writeFile(incrementalPath, Buffer.alloc(4096))
     await expect(
       inspectWindowsNodePtyLinkCommandTracking({
         nodePtyDirectory: directory,
         tuple: 'win32-x64'
       })
-    ).resolves.toMatchObject({ candidateFiles: 2, incremental: 'disabled' })
+    ).resolves.toMatchObject({
+      candidateFiles: 2,
+      incremental: 'disabled',
+      incrementalDatabase: { bytes: 4096, state: 'present' }
+    })
+    await rm(incrementalPath)
+    await expect(
+      inspectWindowsNodePtyLinkCommandTracking({ nodePtyDirectory: directory, tuple: 'win32-x64' })
+    ).resolves.toMatchObject({ incrementalDatabase: { state: 'absent' } })
     await expect(
       inspectWindowsNodePtyLinkCommandTracking({
         nodePtyDirectory: '/not-used-on-posix',
@@ -204,6 +208,17 @@ describe('SSH relay Windows node-pty build determinism', () => {
       '^one\n/OUT:conpty_console_list.node /Brepro /GUARD:CF /experimental:deterministic'
     await writeFile(join(directory, 'build', 'Release', 'first', 'link.command.1.tlog'), command)
     await mkdir(join(directory, 'build', 'Release', 'second'), { recursive: true })
+    const firstIlk = join(directory, 'build', 'Release', 'first', 'conpty_console_list.ilk')
+    const secondIlk = join(directory, 'build', 'Release', 'second', 'conpty_console_list.ilk')
+    await writeFile(firstIlk, '')
+    await writeFile(secondIlk, '')
+    await expect(
+      inspectWindowsNodePtyLinkCommandTracking({
+        nodePtyDirectory: directory,
+        tuple: 'win32-arm64'
+      })
+    ).rejects.toThrow('duplicate target files')
+    await Promise.all([rm(firstIlk), rm(secondIlk)])
     await writeFile(join(directory, 'build', 'Release', 'second', 'link.command.1.tlog'), command)
     await expect(
       inspectWindowsNodePtyLinkCommandTracking({
