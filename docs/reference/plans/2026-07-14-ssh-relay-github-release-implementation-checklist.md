@@ -2,7 +2,7 @@
 
 Date created: 2026-07-14<br>
 Last updated: 2026-07-14<br>
-Current phase: Milestone 1 decision closure — Work Package 0 is CI-green in draft PR #8724; no bundled-runtime path is enabled; runner and per-target Beta rollout policies are recorded<br>
+Current phase: Milestone 2 / Work Package 1 contracts and selectors — Milestone 1 safety decisions are recorded; cross-family remote infrastructure and measured baselines remain open; no bundled-runtime path is enabled<br>
 Primary design: [SSH relay GitHub Release plan](./2026-07-14-ssh-relay-github-release-plan.html)<br>
 Motivating issues: [#8450](https://github.com/stablyai/orca/issues/8450), [#1693](https://github.com/stablyai/orca/issues/1693)
 
@@ -65,9 +65,9 @@ same change as the work it records.
 - Rollout control: existing per-SSH-target configuration; legacy is the default and the bundled
   runtime is an explicit per-target Beta opt-in under E-M1-ROLLOUT-DECISION-001.
 - Legacy fallback removal: not authorized.
-- Next required action: close the remaining Milestone 1 baselines, provenance/trust, numeric-budget,
-  and concrete runner/remote decisions. Begin the contract-only package on its own branch/PR
-  boundary; do not add Work Package 1 implementation to PR #8724.
+- Next required action: implement the versioned manifest/identity/selector contracts and hostile-input
+  tests in draft PR #8728. Keep cross-family remote infrastructure and measured legacy baseline
+  gates open and do not introduce any resolver, transfer, rollout, or default behavior.
 
 ## Non-Negotiable Invariants
 
@@ -157,10 +157,6 @@ link.
 No production implementation begins until every blocking item has an owner and decision record.
 
 ### Supported runtime baselines
-
-**In progress — 2026-07-14, Codex implementation owner:** resolve the baseline, provenance, trust,
-runner/remote, and numeric-budget decisions with authoritative evidence before starting Work Package
-1 implementation on a separate branch/PR boundary.
 
 - [x] Define the oldest supported glibc version as 2.28 for initial Linux x64/arm64 candidates.
       (E-M1-BASELINE-001)
@@ -467,6 +463,11 @@ matrix cells.
 ## Milestone 2 — Define the Artifact, Manifest, and Identity Contract
 
 Suggested modules are provisional; update this file before choosing different names.
+
+**In progress — 2026-07-14, Codex implementation owner:** implement the pure manifest schema,
+canonical unsigned bytes/signature verification, content identity, and fail-conservative
+platform/libc selector with hostile-input tests only. No deploy/resolver call site or bundled tuple is
+enabled in this package.
 
 ### Manifest schema
 
@@ -1100,16 +1101,16 @@ Baseline measurements must be captured before product behavior changes.
 
 Update status and evidence as work begins. Do not combine these into one large behavior switch.
 
-| Work package              | Scope                                                                                      | Default behavior change     | Status                                                        | PR/evidence                                                             |
-| ------------------------- | ------------------------------------------------------------------------------------------ | --------------------------- | ------------------------------------------------------------- | ----------------------------------------------------------------------- |
-| 0. #8450 legacy fix       | Coherent Node/npm selection and live repro                                                 | Fixes legacy selection only | Complete and CI-green in draft PR #8724                       | E-M0-UNIT-002, E-M0-LIVE-002, E-M0-STATIC-002, E-M0-PR-001, E-M0-CI-001 |
-| 1. Contract and selectors | Manifest schema, identity, platform/libc selection, hostile inputs                         | None                        | Milestone 1 decisions in progress; implementation not started | Draft PR #8728; a84d52dc6                                               |
-| 2. Runtime builds         | Per-tuple assembly, native smoke, SBOM/provenance/signing                                  | None                        | Not started                                                   | —                                                                       |
-| 3. Release publication    | Prerequisite DAG, embedded manifest, draft upload/read-back gates                          | Asset-only                  | Not started                                                   | —                                                                       |
-| 4. Desktop resolver/cache | Verified download, extraction, cache, offline behavior                                     | None/forced mode only       | Not started                                                   | —                                                                       |
-| 5. Transfer/install       | Bounded transports, structured sentinel, bundled launch behind per-target Beta/forced mode | Per-target opt-in only      | Not started                                                   | —                                                                       |
-| 6. Fallback/diagnostics   | Abort-and-join state machine, mode isolation, reason codes, target-mode configuration/UI   | Per-target Beta only        | Not started                                                   | —                                                                       |
-| 7. Live gates/rollout     | Matrix, security, performance, release promotion                                           | Per-tuple staged            | Not started                                                   | —                                                                       |
+| Work package              | Scope                                                                                      | Default behavior change     | Status                                           | PR/evidence                                                             |
+| ------------------------- | ------------------------------------------------------------------------------------------ | --------------------------- | ------------------------------------------------ | ----------------------------------------------------------------------- |
+| 0. #8450 legacy fix       | Coherent Node/npm selection and live repro                                                 | Fixes legacy selection only | Complete and CI-green in draft PR #8724          | E-M0-UNIT-002, E-M0-LIVE-002, E-M0-STATIC-002, E-M0-PR-001, E-M0-CI-001 |
+| 1. Contract and selectors | Manifest schema, identity, platform/libc selection, hostile inputs                         | None                        | Safety decisions recorded; contracts in progress | Draft PR #8728; a84d52dc6, 5c37e8efe                                    |
+| 2. Runtime builds         | Per-tuple assembly, native smoke, SBOM/provenance/signing                                  | None                        | Not started                                      | —                                                                       |
+| 3. Release publication    | Prerequisite DAG, embedded manifest, draft upload/read-back gates                          | Asset-only                  | Not started                                      | —                                                                       |
+| 4. Desktop resolver/cache | Verified download, extraction, cache, offline behavior                                     | None/forced mode only       | Not started                                      | —                                                                       |
+| 5. Transfer/install       | Bounded transports, structured sentinel, bundled launch behind per-target Beta/forced mode | Per-target opt-in only      | Not started                                      | —                                                                       |
+| 6. Fallback/diagnostics   | Abort-and-join state machine, mode isolation, reason codes, target-mode configuration/UI   | Per-target Beta only        | Not started                                      | —                                                                       |
+| 7. Live gates/rollout     | Matrix, security, performance, release promotion                                           | Per-tuple staged            | Not started                                      | —                                                                       |
 
 Every PR must document:
 
@@ -1819,8 +1820,8 @@ fragmentLinks=9`.
 ### E-M1-LEGACY-INVENTORY-001 — Current legacy families versus bundled candidates
 
 - Date: 2026-07-14
-- Commit SHA / PR: stacked draft PR [#8728](https://github.com/stablyai/orca/pull/8728); decision
-  change pending commit on `Jinwoo-H/bug-8450-ssh-relay-contracts`
+- Commit SHA / PR: `5c37e8efe`; stacked draft PR
+  [#8728](https://github.com/stablyai/orca/pull/8728)
 - Runner: macOS 26.2 arm64 native; Vitest Node environment
 - Remote: none; source-declared platform identities and deterministic tests only
 - Transport/network: local files only
@@ -1842,8 +1843,8 @@ fragmentLinks=9`.
 ### E-M1-BOOTSTRAP-DECISION-001 — No-Node POSIX and bounded Windows primitive contract
 
 - Date: 2026-07-14
-- Commit SHA / PR: stacked draft PR [#8728](https://github.com/stablyai/orca/pull/8728); decision
-  change pending commit on `Jinwoo-H/bug-8450-ssh-relay-contracts`
+- Commit SHA / PR: `5c37e8efe`; stacked draft PR
+  [#8728](https://github.com/stablyai/orca/pull/8728)
 - Runner: macOS 26.2 arm64 native; Docker Desktop native arm64 Linux containers
 - Remote: local Ubuntu 24.04, Debian 12/bookworm-slim, and AlmaLinux 8 arm64 containers; no SSH
   daemon, Windows host, or BusyBox image
@@ -1869,8 +1870,8 @@ fragmentLinks=9`.
 ### E-M1-BUSYBOX-001 — BusyBox-only primitive baseline fails closed
 
 - Date: 2026-07-14
-- Commit SHA / PR: stacked draft PR [#8728](https://github.com/stablyai/orca/pull/8728); decision
-  change pending commit on `Jinwoo-H/bug-8450-ssh-relay-contracts`
+- Commit SHA / PR: `5c37e8efe`; stacked draft PR
+  [#8728](https://github.com/stablyai/orca/pull/8728)
 - Runner: macOS 26.2 arm64 native; Ubuntu 24.04 arm64 Docker container
 - Remote: BusyBox v1.36.1, Ubuntu package `1:1.36.1-6ubuntu3.1`; no SSH daemon
 - Transport/network: Docker stdin and Ubuntu package mirror; no SSH
@@ -1894,8 +1895,8 @@ fragmentLinks=9`.
 ### E-M1-BUDGET-DECISION-001 — Fail-closed resource, timeout, and rollout budgets
 
 - Date: 2026-07-14
-- Commit SHA / PR: stacked draft PR [#8728](https://github.com/stablyai/orca/pull/8728); decision
-  change pending commit on `Jinwoo-H/bug-8450-ssh-relay-contracts`
+- Commit SHA / PR: `5c37e8efe`; stacked draft PR
+  [#8728](https://github.com/stablyai/orca/pull/8728)
 - Runner: documentation decision in the macOS 26.2 arm64 native worktree
 - Remote: not applicable; measured legacy and bundled baselines remain open
 - Transport/network: not applicable; the decision defines later 1/10/100 Mbps and 50/100/200 ms
@@ -1920,8 +1921,8 @@ fragmentLinks=9`.
 ### E-M1-TRUST-DECISION-001 — Manifest and native-signing trust policy
 
 - Date: 2026-07-14
-- Commit SHA / PR: stacked draft PR [#8728](https://github.com/stablyai/orca/pull/8728); decision
-  change pending commit on `Jinwoo-H/bug-8450-ssh-relay-contracts`
+- Commit SHA / PR: `5c37e8efe`; stacked draft PR
+  [#8728](https://github.com/stablyai/orca/pull/8728)
 - Runner: macOS 26.2 arm64 native for local Ed25519 probe; historical native Windows Server 2022 x64
   GitHub-hosted signing rehearsal jobs
 - Remote: not applicable; no SSH transfer or target-native execution of a relay artifact
@@ -1960,8 +1961,8 @@ fragmentLinks=9`.
 ### E-M1-ENDPOINT-DECISION-001 — Native trust validation environment contract
 
 - Date: 2026-07-14
-- Commit SHA / PR: stacked draft PR [#8728](https://github.com/stablyai/orca/pull/8728); decision
-  change pending commit on `Jinwoo-H/bug-8450-ssh-relay-contracts`
+- Commit SHA / PR: `5c37e8efe`; stacked draft PR
+  [#8728](https://github.com/stablyai/orca/pull/8728)
 - Runner: documentation decision in the macOS 26.2 arm64 native worktree
 - Remote: no approved macOS 13.5, Windows Server 2022/Windows 11 arm64, or WDAC-enforced snapshot was
   executed
@@ -1983,8 +1984,8 @@ fragmentLinks=9`.
 ### E-M1-DECISION-DOC-002 — Remaining Milestone 1 plan-content validation
 
 - Date: 2026-07-14
-- Commit SHA / PR: stacked draft PR [#8728](https://github.com/stablyai/orca/pull/8728); decision
-  change pending commit on `Jinwoo-H/bug-8450-ssh-relay-contracts`
+- Commit SHA / PR: `5c37e8efe`; stacked draft PR
+  [#8728](https://github.com/stablyai/orca/pull/8728)
 - Runner: macOS 26.2 arm64 native; Node v26.0.0 and pnpm 10.24.0
 - Remote: not applicable; documentation/content validation only
 - Transport/network: local files only
@@ -2003,8 +2004,8 @@ fragmentLinks=9`.
   transfer, or any enabled tuple.
 - Checklist items satisfied: evidence-backed synchronization of the remaining safely decidable
   Milestone 1 policy content.
-- Follow-up: commit this decision package, replace pending references with the exact SHA, and keep
-  unresolved operational/live gates open.
+- Follow-up: keep unresolved remote-pool and measured-baseline gates open while contract-only work
+  proceeds without secrets or a runtime behavior switch.
 
 ## Accepted Gaps
 
