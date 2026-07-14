@@ -2,7 +2,7 @@
 
 Date created: 2026-07-14<br>
 Last updated: 2026-07-14<br>
-Current phase: Milestone 0 / Work Package 0 — verification refresh and authorized draft-PR boundary in progress; Milestone 1 runner and per-target Beta rollout policies recorded<br>
+Current phase: Milestone 0 / Work Package 0 — draft PR #8724 open; GitHub Actions verification in progress; Milestone 1 runner and per-target Beta rollout policies recorded<br>
 Primary design: [SSH relay GitHub Release plan](./2026-07-14-ssh-relay-github-release-plan.html)<br>
 Motivating issues: [#8450](https://github.com/stablyai/orca/issues/8450), [#1693](https://github.com/stablyai/orca/issues/1693)
 
@@ -47,8 +47,9 @@ same change as the work it records.
 
 ## Current Status
 
-- Implementation status: Work Package 0 implementation, focused regression proof, and live #8450
-  SSH/PTY proof are complete in the uncommitted worktree (E-M0-UNIT-001, E-M0-LIVE-001).
+- Implementation status: Work Package 0 is committed at `c4259d94f` on current `main`, with refreshed
+  focused, static, full-lint, and live #8450 SSH/PTY proof (E-M0-UNIT-002, E-M0-STATIC-002,
+  E-M0-LIVE-002). Draft PR [#8724](https://github.com/stablyai/orca/pull/8724) is open; CI is running.
 - Production behavior: unchanged; Orca embeds relay JavaScript and installs `node-pty` plus
   `@parcel/watcher` with remote npm.
 - New runtime assets published: none.
@@ -59,10 +60,9 @@ same change as the work it records.
 - Rollout control: existing per-SSH-target configuration; legacy is the default and the bundled
   runtime is an explicit per-target Beta opt-in under E-M1-ROLLOUT-DECISION-001.
 - Legacy fallback removal: not authorized.
-- Next required action: resolve or explicitly baseline the unrelated repository-wide lint failure
-  recorded in E-M0-LINT-001, then place Work Package 0 behind its separately authorized commit/PR
-  boundary before closing Milestone 1 decisions. Do not mix artifact-distribution changes into this
-  uncommitted fix.
+- Next required action: collect and record every required PR #8724 check. Do not add Work Package 1
+  implementation to this PR. After the WP0 CI boundary is green, continue closing Milestone 1
+  decisions and begin the next contract-only package on its own branch/PR boundary.
 
 ## Non-Negotiable Invariants
 
@@ -117,16 +117,15 @@ coherent Node/npm resolver.
 Work Package 0 implementation evidence was completed on 2026-07-14 by the Codex implementation
 owner. No relay artifact-distribution behavior is included.
 
-**In progress — 2026-07-14, Codex implementation owner:** refresh the focused/static/live evidence,
-resolve or explicitly baseline the repository lint result, and establish the authorized independent
-draft-PR/CI boundary before any Work Package 1 implementation.
+**In progress — 2026-07-14, Codex implementation owner:** collect GitHub Actions evidence for draft
+PR #8724 and keep Work Package 1 implementation outside this branch/PR.
 
 - [x] Confirm the #8450 implementation selects Node and npm from the same bin directory on POSIX.
-      (E-M0-UNIT-001, E-M0-LIVE-001)
+      (E-M0-UNIT-001, E-M0-UNIT-002, E-M0-LIVE-002)
 - [x] Confirm Windows selects `node.exe` and `npm.cmd` from one toolchain directory.
       (E-M0-UNIT-001; mocked Windows command construction, not live Windows)
 - [x] Reject an incomplete system Node and continue to the usable NVM candidate.
-      (E-M0-UNIT-001, E-M0-LIVE-001)
+      (E-M0-UNIT-001, E-M0-UNIT-002, E-M0-LIVE-002)
 - [x] Preserve minimum supported Node-version enforcement. (E-M0-UNIT-001)
 - [x] Preserve login-shell, known-path, version-manager, noisy-startup, cancellation, and
       `MaxSessions=1` behaviors. (E-M0-UNIT-001; live `MaxSessions=1` remains outside this WP0 proof)
@@ -134,17 +133,19 @@ draft-PR/CI boundary before any Work Package 1 implementation.
       (E-M0-UNIT-001, E-M0-LIVE-001)
 - [x] Add negative tests for Node present/npm missing, npm present/Node too old, mismatched bin
       directories, and an unusable npm shim. (E-M0-UNIT-001)
-- [x] Run focused resolver and deploy tests and record evidence. (E-M0-UNIT-001)
+- [x] Run focused resolver and deploy tests and record evidence. (E-M0-UNIT-001, E-M0-UNIT-002)
 - [x] Run a live SSH reproduction matching issue #8450 and record the selected paths and successful
       relay/PTY launch without recording usernames or home paths in committed evidence.
-      (E-M0-LIVE-001)
-- [ ] Keep this fix in a separate PR or commit from GitHub Release distribution.
+      (E-M0-LIVE-001, E-M0-LIVE-002)
+- [x] Keep this fix in a separate PR or commit from GitHub Release distribution. The reviewed plan
+      is commit `2b67de870`; WP0 code is the separate commit `c4259d94f` in draft PR #8724.
+      (E-M0-PR-001)
 - [x] Document which tuples have a live passing legacy E2E. Fallback is only a support claim for
       those tuples. (E-M0-LIVE-001)
 
-| Legacy remote tuple                                                               | Client           | Transport                                    | Evidence      | Scope limit                                                       |
-| --------------------------------------------------------------------------------- | ---------------- | -------------------------------------------- | ------------- | ----------------------------------------------------------------- |
-| Ubuntu 24.04 arm64, glibc, system Node 18 without npm, guarded NVM Node 22/npm 10 | macOS 26.2 arm64 | Built-in SSH2 connection + SFTP relay upload | E-M0-LIVE-001 | Does not prove x64, system SSH, Windows, musl, or `MaxSessions=1` |
+| Legacy remote tuple                                                               | Client           | Transport                                    | Evidence                     | Scope limit                                                       |
+| --------------------------------------------------------------------------------- | ---------------- | -------------------------------------------- | ---------------------------- | ----------------------------------------------------------------- |
+| Ubuntu 24.04 arm64, glibc, system Node 18 without npm, guarded NVM Node 22/npm 10 | macOS 26.2 arm64 | Built-in SSH2 connection + SFTP relay upload | E-M0-LIVE-001, E-M0-LIVE-002 | Does not prove x64, system SSH, Windows, musl, or `MaxSessions=1` |
 
 Completion evidence required: focused red/green tests, live #8450 SSH run, typecheck, lint, and PR
 link.
@@ -1261,7 +1262,8 @@ fragmentLinks=9`.
 - Remote: not applicable
 - Transport/network: local only
 - Exact command: `pnpm run lint`
-- Result: FAIL after 4.56 s
+- Result: SUPERSEDED for current PR by E-M0-STATIC-002 after rebasing onto `origin/main`; originally
+  FAIL after 4.56 s
 - Duration and resource metrics: 4.56 s; resource usage not instrumented
 - Artifact/log/trace link: local lint output
 - Oracle proved: repository-wide oxlint completed with warnings only, then the type-aware
@@ -1271,8 +1273,121 @@ fragmentLinks=9`.
 - Does not prove: a WP0 lint regression. The failing renderer file is clean in `git status` and is
   outside this work package; touched-file oxlint passes in E-M0-STATIC-001.
 - Checklist items satisfied: none; the full `pnpm run lint` checkbox remains open.
-- Follow-up: separately fix or explicitly baseline the existing renderer exhaustiveness failure,
-  then rerun the exact full lint command.
+- Follow-up: none for WP0. Upstream `main` added the missing cases before this branch rebased; the
+  full lint command now passes at `c4259d94f` without an authored renderer change in this PR.
+
+### E-M0-UNIT-002 — Rebased Work Package 0 focused regression suites
+
+- Date: 2026-07-14
+- Commit SHA / PR: `c4259d94fccf8d1465280b8e69c22db328710f9e`; draft PR
+  [#8724](https://github.com/stablyai/orca/pull/8724)
+- Runner: macOS 26.2 arm64 native; Node v26.0.0 and pnpm 10.24.0 (repository requests Node 24)
+- Remote: local POSIX fixture and mocked Windows PowerShell command construction; no live SSH remote
+- Transport/network: local Vitest only
+- Exact command:
+
+  ```sh
+  pnpm exec vitest run --config config/vitest.config.ts src/main/ssh/ssh-remote-node-resolution.test.ts
+  pnpm exec vitest run --config config/vitest.config.ts src/main/ssh/ssh-remote-node-toolchain-resolution.test.ts
+  pnpm exec vitest run --config config/vitest.config.ts src/main/ssh/ssh-relay-native-deps-install.test.ts
+  pnpm exec vitest run --config config/vitest.config.ts src/main/ssh/ssh-relay-versioned-install.test.ts
+  pnpm exec vitest run --config config/vitest.config.ts src/main/ssh/ssh-relay-deploy.test.ts
+  pnpm exec vitest run --config config/vitest.config.ts src/main/ssh/ssh-relay-cross-version-isolation.test.ts
+  pnpm exec vitest run --config config/vitest.config.ts src/main/ssh/ssh-remote-platform-detection.test.ts
+  ```
+
+- Result: PASS; respectively 32/32, 8/8, 16/16, 26/26, 21/21, 1/1, and 6/6 tests (110 total)
+- Duration and resource metrics: respectively 461 ms, 1.73 s, 324 ms, 339 ms, 284 ms, 245 ms, and
+  189 ms Vitest duration; 10.52 s aggregate wall time; resource usage not instrumented
+- Artifact/log/trace link: local command output and the exact sources in PR #8724
+- Oracle proved: the focused resolver/deploy contracts from E-M0-UNIT-001 remain green after rebasing
+  onto `9d5173252`, including colocated toolchains, guarded NVM, shell-noise markers, cancellation,
+  session-limit classification, and propagation of the selected bin directory to npm install.
+- Does not prove: live SSH, live Windows, system SSH, a real `MaxSessions=1` server, or bundled runtime
+  behavior.
+- Checklist items satisfied: refreshed Milestone 0 focused regression gate on the exact PR commit.
+- Follow-up: use E-M0-LIVE-002 for the one claimed live tuple and PR CI for additional runner signal.
+
+### E-M0-STATIC-002 — Rebased Work Package 0 full static and repository lint gates
+
+- Date: 2026-07-14
+- Commit SHA / PR: `c4259d94fccf8d1465280b8e69c22db328710f9e`; draft PR
+  [#8724](https://github.com/stablyai/orca/pull/8724)
+- Runner: macOS 26.2 arm64 native; Node v26.0.0 and pnpm 10.24.0 (repository requests Node 24)
+- Remote: not applicable
+- Transport/network: local only
+- Exact command:
+
+  ```sh
+  pnpm run typecheck
+  pnpm run check:max-lines-ratchet
+  pnpm exec oxfmt --check src/main/ssh/ssh-remote-node-resolution.ts src/main/ssh/ssh-remote-node-toolchain-probe.ts src/main/ssh/ssh-remote-node-resolution.test.ts src/main/ssh/ssh-remote-node-toolchain-resolution.test.ts src/main/ssh/ssh-relay-native-deps-install.test.ts tests/e2e/helpers/docker-ssh-relay-target.ts tests/e2e/helpers/docker-ssh-relay-processes.ts tests/e2e/ssh-node-toolchain-resolution.spec.ts config/scripts/run-ssh-node-toolchain-resolution-e2e.mjs package.json docs/reference/plans/2026-07-14-ssh-relay-github-release-implementation-checklist.md docs/reference/plans/2026-07-14-ssh-relay-github-release-plan.html
+  git diff --check
+  pnpm run lint
+  ```
+
+- Result: PASS; typecheck, 355-entry max-lines ratchet, 12-file formatting check, diff check, and the
+  complete repository lint/reliability/localization chain all exited zero
+- Duration and resource metrics: typecheck/max-lines/format/diff group 7.39 s; full lint 14.11 s;
+  resource usage not instrumented
+- Artifact/log/trace link: local command output; exact PR commits
+- Oracle proved: the exact rebased PR commit compiles, adds no line-budget bypass, is formatted, has
+  no tracked whitespace errors, and passes the full repository lint chain. E-M0-LINT-001 is no
+  longer a current blocker; its renderer fix came from upstream `main`, not this PR's authored diff.
+- Does not prove: packaged runtime behavior, live SSH, or GitHub-hosted runner behavior.
+- Checklist items satisfied: Milestone 0 typecheck, full lint, max-lines, format, and diff gates.
+- Follow-up: record the GitHub-hosted `verify` result separately when PR #8724 completes.
+
+### E-M0-LIVE-002 — Rebased Ubuntu 24.04 guarded-NVM relay and PTY reproduction
+
+- Date: 2026-07-14
+- Commit SHA / PR: `c4259d94fccf8d1465280b8e69c22db328710f9e`; draft PR
+  [#8724](https://github.com/stablyai/orca/pull/8724)
+- Runner: macOS 26.2 arm64 native client; Docker 29.2.1; Node v26.0.0; pnpm 10.24.0
+- Remote: Ubuntu 24.04 Linux arm64/glibc container,
+  `ubuntu@sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebffbc7092d90`;
+  system Node v18.19.1 with no sibling npm; guarded NVM-layout Node v22.22.3/npm 10.9.8
+- Transport/network: authenticated built-in SSH2 over Docker loopback; SFTP relay upload; remote
+  registry and Node-header egress available for the legacy native dependency install
+- Exact command: `pnpm run test:e2e:ssh-node-toolchain-resolution`
+- Result: PASS; one purpose-named Playwright test passed
+- Duration and resource metrics: test oracle `durationMs=144224`; full build plus E2E 3.2 minutes;
+  memory/channel/file counts not instrumented for this narrow legacy resolver proof
+- Artifact/log/trace link: local Playwright stdout recorded
+  `remote=ubuntu-24.04 architecture=arm64 systemNode=v18.19.1 nvmNode=v22.22.3 npm=10.9.8 selected=nvm relayPty=pass durationMs=144224`
+- Oracle proved: the exact rebased app/relay build selects the complete guarded NVM toolchain,
+  launches the detached relay with that Node, and round-trips a marker through a real remote PTY.
+- Does not prove: Linux x64, musl, Windows, macOS remote, system SSH, `MaxSessions=1`, blocked remote
+  egress, fallback behavior, performance budgets, or bundled runtimes.
+- Checklist items satisfied: refreshed Milestone 0 exact live #8450 reproduction on the PR commit.
+- Follow-up: retain this narrow tuple claim and use later matrix work for all broader coverage.
+
+### E-M0-PR-001 — Independent draft PR boundary
+
+- Date: 2026-07-14
+- Commit SHA / PR: plan/checklist `2b67de870120b9a9230cb4464bff39665fa9bb44`; WP0 code
+  `c4259d94fccf8d1465280b8e69c22db328710f9e`; draft PR
+  [#8724](https://github.com/stablyai/orca/pull/8724)
+- Runner: GitHub PR metadata; execution checks still running when recorded
+- Remote: not applicable
+- Transport/network: authenticated Git push and GitHub API
+- Exact command:
+
+  ```sh
+  git push -u origin Jinwoo-H/bug-8450-ssh-node-npm-toolchain
+  gh pr create --repo stablyai/orca --draft --base main --head Jinwoo-H/bug-8450-ssh-node-npm-toolchain
+  gh pr view 8724 --repo stablyai/orca --json number,url,isDraft,state,headRefOid,baseRefOid,mergeStateStatus,statusCheckRollup
+  ```
+
+- Result: PASS for the independent review boundary; PR is open and draft with the expected head/base
+- Duration and resource metrics: push and PR creation 7.1 s; metadata read 0.8 s
+- Artifact/log/trace link: https://github.com/stablyai/orca/pull/8724
+- Oracle proved: reviewed planning artifacts and the WP0 resolver correction are separate commits;
+  no bundled-runtime distribution implementation is present; GitHub Actions checks were triggered.
+- Does not prove: CI success, reviewer approval, mergeability after later base changes, or any bundled
+  runtime behavior.
+- Checklist items satisfied: Milestone 0 separate commit/PR boundary.
+- Follow-up: append GitHub-hosted runner/check details as E-M0-CI-001 only after completion.
 
 ### E-M1-RUNNER-DECISION-001 — GitHub Actions validation topology decision
 
