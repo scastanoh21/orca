@@ -2825,12 +2825,20 @@ function App(): React.JSX.Element {
             >
               <RecentTabSwitcher />
             </RecoverableRenderErrorBoundary>
+            {/* Why: the dialog hosts a live terminal pane, which requires the
+                link-routing preference context; mounting outside crashes it. */}
+            <RecoverableRenderErrorBoundary
+              boundaryId="overlay.skill-freshness-update-dialog"
+              surface="overlay"
+              compact
+            >
+              <SkillFreshnessUpdateDialog />
+            </RecoverableRenderErrorBoundary>
           </LinkRoutingPreferenceDialogProvider>
         </ConfirmationDialogProvider>
       </TooltipProvider>
       <Toaster closeButton toastOptions={{ className: 'font-sans text-sm' }} />
       <SkillFreshnessNudge />
-      <SkillFreshnessUpdateDialog />
       <PinnedTabCloseDialog />
       {/* Why: rendered last so it sits after all -webkit-app-region:drag elements
           in DOM order. Electron's hit-test for drag regions is DOM-order-based and

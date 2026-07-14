@@ -3641,8 +3641,10 @@
           "checkNow": "立即检查",
           "close": "关闭"
         },
-        "SkillFreshnessCheckButton": {
-          "label": "检查技能更新"
+        "SkillFreshnessStatusPill": {
+          "updateAvailable": "有可用更新",
+          "upToDate": "已是最新",
+          "installed": "已安装"
         }
       },
       "sidebar": {

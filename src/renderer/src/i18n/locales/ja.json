@@ -3641,8 +3641,10 @@
           "checkNow": "今すぐ確認",
           "close": "閉じる"
         },
-        "SkillFreshnessCheckButton": {
-          "label": "スキルの更新を確認"
+        "SkillFreshnessStatusPill": {
+          "updateAvailable": "更新があります",
+          "upToDate": "最新です",
+          "installed": "インストール済み"
         }
       },
       "sidebar": {

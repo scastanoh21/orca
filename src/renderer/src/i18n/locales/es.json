@@ -3641,8 +3641,10 @@
           "checkNow": "Comprobar ahora",
           "close": "Cerrar"
         },
-        "SkillFreshnessCheckButton": {
-          "label": "Buscar actualizaciones de skills"
+        "SkillFreshnessStatusPill": {
+          "updateAvailable": "Actualización disponible",
+          "upToDate": "Actualizado",
+          "installed": "Instalado"
         }
       },
       "sidebar": {
