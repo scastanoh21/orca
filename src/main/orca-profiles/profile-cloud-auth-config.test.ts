@@ -44,6 +44,26 @@ describe('Orca cloud auth config', () => {
     })
   })
 
+  it('uses first-party production endpoints without runtime env in packaged builds', () => {
+    expect(getOrcaCloudAuthConfig({}, true)).toEqual({
+      configured: true,
+      config: {
+        apiBaseUrl: 'https://login.onorca.dev',
+        authorizeEndpoint: 'https://login.onorca.dev/v1/desktop/auth/authorize',
+        sessionEndpoint: 'https://login.onorca.dev/v1/desktop/auth/session',
+        refreshEndpoint: 'https://login.onorca.dev/v1/desktop/auth/refresh',
+        capabilitiesEndpoint: 'https://login.onorca.dev/v1/desktop/auth/capabilities',
+        profileEndpoint: 'https://login.onorca.dev/v1/desktop/auth/profile',
+        orgEndpoint: 'https://login.onorca.dev/v1/desktop/auth/org',
+        logoutEndpoint: 'https://login.onorca.dev/v1/desktop/auth/logout',
+        relayTokenEndpoint: 'https://login.onorca.dev/v1/desktop/auth/relay-token',
+        relayDirectorUrl: 'https://relay.onorca.dev',
+        clientId: 'orca-desktop',
+        scope: 'openid profile email offline_access'
+      }
+    })
+  })
+
   it('allows loopback HTTP endpoints for local desktop auth development', () => {
     const state = getOrcaCloudAuthConfig({
       ORCA_CLOUD_API_URL: 'http://localhost:4100',
