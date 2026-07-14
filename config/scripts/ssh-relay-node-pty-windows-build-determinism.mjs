@@ -1,6 +1,30 @@
 import { readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
+const COMPILER_OPTIONS = `            'VCCLCompilerTool': {
+              'AdditionalOptions': [
+                '/guard:cf',
+                '/sdl',
+                '/W3',
+                '/w34244',
+                '/w34267',
+                '/ZH:SHA_256'
+              ]
+            }`
+
+const REPRODUCIBLE_COMPILER_OPTIONS = `            'VCCLCompilerTool': {
+              'AdditionalOptions': [
+                '/guard:cf',
+                '/sdl',
+                '/W3',
+                '/w34244',
+                '/w34267',
+                '/ZH:SHA_256',
+                '/Brepro',
+                '/experimental:deterministic'
+              ]
+            }`
+
 const LINKER_OPTIONS = `            'VCLinkerTool': {
               'AdditionalOptions': [
                 '/DYNAMICBASE',
@@ -12,7 +36,8 @@ const REPRODUCIBLE_LINKER_OPTIONS = `            'VCLinkerTool': {
               'AdditionalOptions': [
                 '/DYNAMICBASE',
                 '/guard:cf',
-                '/Brepro'
+                '/Brepro',
+                '/experimental:deterministic'
               ]
             }`
 
@@ -22,10 +47,18 @@ export async function applyWindowsNodePtyBuildDeterminism({ nodePtyDirectory, tu
   }
   const bindingPath = join(nodePtyDirectory, 'binding.gyp')
   const source = await readFile(bindingPath, 'utf8')
-  if (source.split(LINKER_OPTIONS).length !== 2 || source.includes("'/Brepro'")) {
-    throw new Error('node-pty Windows linker settings do not match the reviewed source')
+  if (
+    source.split(COMPILER_OPTIONS).length !== 2 ||
+    source.split(LINKER_OPTIONS).length !== 2 ||
+    source.includes("'/Brepro'") ||
+    source.includes("'/experimental:deterministic'")
+  ) {
+    throw new Error('node-pty Windows build settings do not match the reviewed source')
   }
-  // Why: MSVC otherwise embeds per-build timestamps/identities in the copied artifact binaries.
-  await writeFile(bindingPath, source.replace(LINKER_OPTIONS, REPRODUCIBLE_LINKER_OPTIONS), 'utf8')
+  // Why: ARM64 compiler output changes even with a reproducible linker unless both stages opt in.
+  const reproducibleSource = source
+    .replace(COMPILER_OPTIONS, REPRODUCIBLE_COMPILER_OPTIONS)
+    .replace(LINKER_OPTIONS, REPRODUCIBLE_LINKER_OPTIONS)
+  await writeFile(bindingPath, reproducibleSource, 'utf8')
   return true
 }

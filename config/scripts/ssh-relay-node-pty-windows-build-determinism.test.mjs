@@ -19,13 +19,24 @@ async function copiedSource() {
 }
 
 describe('SSH relay Windows node-pty build determinism', () => {
-  it('adds deterministic MSVC linking only to the copied Windows source', async () => {
+  it('adds deterministic MSVC compilation and linking only to the copied Windows source', async () => {
     const directory = await copiedSource()
+    const repositorySource = await readFile(resolve('node_modules/node-pty/binding.gyp'), 'utf8')
     await expect(
       applyWindowsNodePtyBuildDeterminism({ nodePtyDirectory: directory, tuple: 'win32-arm64' })
     ).resolves.toBe(true)
     const source = await readFile(join(directory, 'binding.gyp'), 'utf8')
-    expect(source.match(/'\/Brepro'/g)).toHaveLength(1)
+    const compilerStart = source.indexOf("'VCCLCompilerTool'")
+    const linkerStart = source.indexOf("'VCLinkerTool'")
+    const compilerOptions = source.slice(compilerStart, linkerStart)
+    const linkerOptions = source.slice(linkerStart)
+    expect(compilerOptions).toContain("'/Brepro'")
+    expect(compilerOptions).toContain("'/experimental:deterministic'")
+    expect(linkerOptions).toContain("'/Brepro'")
+    expect(linkerOptions).toContain("'/experimental:deterministic'")
+    expect(await readFile(resolve('node_modules/node-pty/binding.gyp'), 'utf8')).toBe(
+      repositorySource
+    )
   })
 
   it('leaves POSIX source untouched and rejects an unexpected Windows source shape', async () => {
