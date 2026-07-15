@@ -131,6 +131,10 @@ jobs:
           node --check config/scripts/ssh-relay-runtime-native-signing-selection.test.mjs
           node --check config/scripts/ssh-relay-runtime-native-signing-payload.mjs
           node --check config/scripts/ssh-relay-runtime-native-signing-payload.test.mjs
+          node --check config/scripts/ssh-relay-runtime-windows-authenticode-assessment.mjs
+          node --check config/scripts/ssh-relay-runtime-windows-authenticode-assessment.test.mjs
+          node --check config/scripts/ssh-relay-runtime-native-signing-stage.mjs
+          node --check config/scripts/ssh-relay-runtime-native-signing-stage.test.mjs
           pnpm exec vitest run --config config/vitest.config.ts \
             config/scripts/ssh-relay-node-release-verification.test.mjs \
             config/scripts/ssh-relay-node-tar-inspection.test.mjs \
@@ -146,6 +150,8 @@ jobs:
             config/scripts/ssh-relay-runtime-native-signing-plan.test.mjs \
             config/scripts/ssh-relay-runtime-native-signing-selection.test.mjs \
             config/scripts/ssh-relay-runtime-native-signing-payload.test.mjs \
+            config/scripts/ssh-relay-runtime-windows-authenticode-assessment.test.mjs \
+            config/scripts/ssh-relay-runtime-native-signing-stage.test.mjs \
             config/scripts/ssh-relay-runtime-closure.test.mjs \
             config/scripts/ssh-relay-runtime-pty-smoke.test.mjs \
             config/scripts/ssh-relay-runtime-reproducibility.test.mjs \
@@ -224,6 +230,25 @@ jobs:
                 --evidence-directory "$GITHUB_WORKSPACE/runtime-evidence/${{ matrix.tuple }}" \
                 --source-date-epoch "$source_date_epoch" \
                 --git-commit "$source_commit"
+            first_output="$output_root/first"
+            identity="$first_output/orca-ssh-relay-runtime-${{ matrix.tuple }}.identity.json"
+            signing_stage="$output_root/signing-stage"
+            signing_report="$output_root/orca-ssh-relay-runtime-${{ matrix.tuple }}.signing-stage.json"
+            node config/scripts/ssh-relay-runtime-native-signing-stage.mjs \
+              --identity "$identity" \
+              --runtime-directory "$first_output/runtime" \
+              --staging-directory "$signing_stage" > "$signing_report"
+            node -e '
+              const { readFileSync } = require("node:fs")
+              const report = JSON.parse(readFileSync(process.argv[1], "utf8"))
+              if (report.platform !== "linux" || report.assessments.length !== 0 ||
+                  report.signingFiles.length !== 0 || report.preservedUpstreamFiles.length !== 0 ||
+                  report.payload.stagingRequired !== false || report.payload.stagedFiles.length !== 0) {
+                throw new Error("Linux signing-stage report violates the hash-only contract")
+              }
+            ' "$signing_report"
+            test ! -e "$signing_stage"
+            cp "$signing_report" "$GITHUB_WORKSPACE/runtime-evidence/${{ matrix.tuple }}/"
             exit 0
           fi
           mkdir -p "$output_root"
@@ -256,9 +281,27 @@ jobs:
             --tuple '${{ matrix.tuple }}' \
             --first-output-directory "$first_output" \
             --second-output-directory "$second_output"
+          signing_stage="$output_root/signing-stage"
+          signing_report="$output_root/orca-ssh-relay-runtime-${{ matrix.tuple }}.signing-stage.json"
+          node config/scripts/ssh-relay-runtime-native-signing-stage.mjs \
+            --identity "$first_output/orca-ssh-relay-runtime-${{ matrix.tuple }}.identity.json" \
+            --runtime-directory "$first_output/runtime" \
+            --staging-directory "$signing_stage" > "$signing_report"
+          node -e '
+            const { readFileSync } = require("node:fs")
+            const report = JSON.parse(readFileSync(process.argv[1], "utf8"))
+            if (report.platform !== "darwin" || report.assessments.length !== 0 ||
+                report.signingFiles.length !== 3 || report.preservedUpstreamFiles.length !== 0 ||
+                report.payload.stagingRequired !== true || report.payload.stagedFiles.length !== 3) {
+              throw new Error("macOS signing-stage report violates the Developer ID contract")
+            }
+          ' "$signing_report"
+          test "$(find "$signing_stage" -type f | wc -l | tr -d ' ')" = 3
+          test ! -e "$signing_stage/bin/node"
+          rm -rf -- "$signing_stage"
           mkdir -p "$GITHUB_WORKSPACE/runtime-evidence/${{ matrix.tuple }}"
           cp "$first_output"/*.tar.xz "$first_output"/*.spdx.json "$first_output"/*.provenance.json "$first_output"/*.identity.json \
-            "$GITHUB_WORKSPACE/runtime-evidence/${{ matrix.tuple }}/"
+            "$signing_report" "$GITHUB_WORKSPACE/runtime-evidence/${{ matrix.tuple }}/"
 
       - name: Upload unpublished artifact evidence
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -400,6 +443,14 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'runtime native signing payload script syntax check failed' }
           node --check config/scripts/ssh-relay-runtime-native-signing-payload.test.mjs
           if ($LASTEXITCODE -ne 0) { throw 'runtime native signing payload test syntax check failed' }
+          node --check config/scripts/ssh-relay-runtime-windows-authenticode-assessment.mjs
+          if ($LASTEXITCODE -ne 0) { throw 'runtime Windows Authenticode assessment script syntax check failed' }
+          node --check config/scripts/ssh-relay-runtime-windows-authenticode-assessment.test.mjs
+          if ($LASTEXITCODE -ne 0) { throw 'runtime Windows Authenticode assessment test syntax check failed' }
+          node --check config/scripts/ssh-relay-runtime-native-signing-stage.mjs
+          if ($LASTEXITCODE -ne 0) { throw 'runtime native signing stage script syntax check failed' }
+          node --check config/scripts/ssh-relay-runtime-native-signing-stage.test.mjs
+          if ($LASTEXITCODE -ne 0) { throw 'runtime native signing stage test syntax check failed' }
           pnpm exec vitest run --config config/vitest.config.ts `
             config/scripts/ssh-relay-node-release-verification.test.mjs `
             config/scripts/ssh-relay-node-tar-inspection.test.mjs `
@@ -415,6 +466,8 @@ jobs:
             config/scripts/ssh-relay-runtime-native-signing-plan.test.mjs `
             config/scripts/ssh-relay-runtime-native-signing-selection.test.mjs `
             config/scripts/ssh-relay-runtime-native-signing-payload.test.mjs `
+            config/scripts/ssh-relay-runtime-windows-authenticode-assessment.test.mjs `
+            config/scripts/ssh-relay-runtime-native-signing-stage.test.mjs `
             config/scripts/ssh-relay-runtime-closure.test.mjs `
             config/scripts/ssh-relay-runtime-pty-smoke.test.mjs `
             config/scripts/ssh-relay-runtime-reproducibility.test.mjs `
@@ -524,6 +577,45 @@ jobs:
             }
             throw 'runtime reproducibility verification failed'
           }
+          $signingStage = Join-Path $outputRoot 'signing-stage'
+          $signingReport = Join-Path $outputRoot 'orca-ssh-relay-runtime-${{ matrix.tuple }}.signing-stage.json'
+          $reportLines = & node config/scripts/ssh-relay-runtime-native-signing-stage.mjs `
+            --identity (Join-Path $firstOutput 'orca-ssh-relay-runtime-${{ matrix.tuple }}.identity.json') `
+            --runtime-directory (Join-Path $firstOutput 'runtime') `
+            --staging-directory $signingStage
+          if ($LASTEXITCODE -ne 0) { throw 'runtime native signing assessment/staging failed' }
+          $reportJson = $reportLines -join [Environment]::NewLine
+          $report = $reportJson | ConvertFrom-Json
+          if (
+            $report.platform -ne 'win32' -or
+            @($report.assessments).Count -ne 5 -or
+            @($report.signingFiles).Count -ne 3 -or
+            @($report.preservedUpstreamFiles).Count -ne 2 -or
+            -not $report.payload.stagingRequired -or
+            @($report.payload.stagedFiles).Count -ne 3
+          ) {
+            throw 'Windows signing-stage report violates the Authenticode contract'
+          }
+          $preservedPaths = @($report.preservedUpstreamFiles | ForEach-Object { $_.path })
+          foreach ($path in @(
+            'node_modules/node-pty/build/Release/conpty/OpenConsole.exe',
+            'node_modules/node-pty/build/Release/conpty/conpty.dll'
+          )) {
+            if ($path -notin $preservedPaths) { throw "Required upstream signature was not preserved: $path" }
+          }
+          if (@(Get-ChildItem -LiteralPath $signingStage -Recurse -File).Count -ne 3) {
+            throw 'Windows signing stage must contain exactly three unsigned PE files'
+          }
+          if (Test-Path -LiteralPath (Join-Path $signingStage 'bin/node.exe')) {
+            throw 'Official Node must never enter the Windows signing stage'
+          }
+          [System.IO.File]::WriteAllText(
+            $signingReport,
+            "$reportJson`n",
+            [System.Text.UTF8Encoding]::new($false)
+          )
+          $reportJson
+          Remove-Item -LiteralPath $signingStage -Recurse -Force
           $evidence = Join-Path $env:GITHUB_WORKSPACE 'runtime-evidence/${{ matrix.tuple }}'
           New-Item -ItemType Directory -Path $evidence -Force | Out-Null
           $firstArchive = Get-ChildItem -LiteralPath $firstOutput -Filter '*.zip' -File | Select-Object -First 1
@@ -531,6 +623,7 @@ jobs:
           Get-ChildItem -LiteralPath $firstOutput -File |
             Where-Object { $_.Name -match '\.(?:spdx|provenance|identity)\.json$' } |
             Copy-Item -Destination $evidence
+          Copy-Item -LiteralPath $signingReport -Destination $evidence
 
       - name: Upload unpublished artifact evidence
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7

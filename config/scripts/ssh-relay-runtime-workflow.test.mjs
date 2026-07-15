@@ -85,6 +85,10 @@ describe('SSH relay runtime artifact workflow', () => {
     expect(source.match(/ssh-relay-runtime-native-signing-selection\.test\.mjs/g)).toHaveLength(4)
     expect(source.match(/ssh-relay-runtime-native-signing-payload\.test\.mjs/g)).toHaveLength(4)
     expect(
+      source.match(/ssh-relay-runtime-windows-authenticode-assessment\.test\.mjs/g)
+    ).toHaveLength(4)
+    expect(source.match(/ssh-relay-runtime-native-signing-stage\.test\.mjs/g)).toHaveLength(4)
+    expect(
       source.match(/node --check config\/scripts\/ssh-relay-runtime-native-signing-plan\.mjs/g)
     ).toHaveLength(2)
     expect(
@@ -92,6 +96,14 @@ describe('SSH relay runtime artifact workflow', () => {
     ).toHaveLength(2)
     expect(
       source.match(/node --check config\/scripts\/ssh-relay-runtime-native-signing-payload\.mjs/g)
+    ).toHaveLength(2)
+    expect(
+      source.match(
+        /node --check config\/scripts\/ssh-relay-runtime-windows-authenticode-assessment\.mjs/g
+      )
+    ).toHaveLength(2)
+    expect(
+      source.match(/node --check config\/scripts\/ssh-relay-runtime-native-signing-stage\.mjs/g)
     ).toHaveLength(2)
     expect(
       source.match(/node --check config\/scripts\/ssh-relay-runtime-closure\.mjs/g)
@@ -156,6 +168,39 @@ describe('SSH relay runtime artifact workflow', () => {
     )
     expect(steps[uploadIndex].with.path).toBe('runtime-evidence/${{ matrix.tuple }}/')
     expect(source).not.toMatch(/releases\/|gh release|contents:\s*write/i)
+  })
+
+  it('assesses and stages real first-build candidates without signing authority', async () => {
+    const source = await readFile(workflowUrl, 'utf8')
+    const workflow = parse(source)
+    const posixRun = workflow.jobs['build-posix-runtime'].steps.find(
+      (step) => step.name === 'Build twice, inspect, smoke, and compare exact runtime'
+    ).run
+    const windowsRun = workflow.jobs['build-windows-runtime'].steps.find(
+      (step) => step.name === 'Build twice, inspect, smoke, and compare exact runtime'
+    ).run
+
+    expect(posixRun.match(/ssh-relay-runtime-native-signing-stage\.mjs/g)).toHaveLength(2)
+    expect(windowsRun.match(/ssh-relay-runtime-native-signing-stage\.mjs/g)).toHaveLength(1)
+    expect(posixRun.indexOf('ssh-relay-runtime-native-signing-stage.mjs')).toBeGreaterThan(
+      posixRun.indexOf('ssh-relay-runtime-linux-build-evidence.mjs')
+    )
+    expect(posixRun.lastIndexOf('ssh-relay-runtime-native-signing-stage.mjs')).toBeGreaterThan(
+      posixRun.indexOf('ssh-relay-runtime-reproducibility.mjs')
+    )
+    expect(windowsRun.indexOf('ssh-relay-runtime-native-signing-stage.mjs')).toBeGreaterThan(
+      windowsRun.indexOf('ssh-relay-runtime-reproducibility.mjs')
+    )
+    expect(posixRun).toContain('Linux signing-stage report violates the hash-only contract')
+    expect(posixRun).toContain('macOS signing-stage report violates the Developer ID contract')
+    expect(posixRun).toContain('test ! -e "$signing_stage/bin/node"')
+    expect(windowsRun).toContain('Windows signing-stage report violates the Authenticode contract')
+    expect(windowsRun).toContain('@($report.signingFiles).Count -ne 3')
+    expect(windowsRun).toContain('@($report.preservedUpstreamFiles).Count -ne 2')
+    expect(windowsRun).toContain('Required upstream signature was not preserved')
+    expect(windowsRun).toContain("Join-Path $signingStage 'bin/node.exe'")
+    expect(source.match(/\.signing-stage\.json/g)).toHaveLength(3)
+    expect(source).not.toMatch(/SIGNPATH_|APPLE_(?:ID|KEY)|Developer ID Application/)
   })
 
   it('builds Linux native modules in the pinned oldest userland with an offline build phase', async () => {
