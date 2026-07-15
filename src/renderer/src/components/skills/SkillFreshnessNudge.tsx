@@ -35,7 +35,18 @@ export function SkillFreshnessNudge(): null {
 
   useEffect(() => {
     const inventory = state.inventory
-    if (!settingsLoaded || !inventory) {
+    if (!settingsLoaded) {
+      return
+    }
+    if (!inventory) {
+      const active = activeNudgeRef.current
+      if (state.error && active) {
+        // Why: a failed re-check cannot keep advertising authority derived from
+        // old bytes; retract without turning the scan failure into a dismissal.
+        active.persistDismissal = false
+        activeNudgeRef.current = null
+        toast.dismiss(active.id)
+      }
       return
     }
     const eligibleNames = new Set(inventory.eligibleUpdateNames)
@@ -152,7 +163,7 @@ export function SkillFreshnessNudge(): null {
       }
     )
     activeNudgeRef.current = nextActive
-  }, [dismissed, settingsLoaded, state.inventory, updateSettings])
+  }, [dismissed, settingsLoaded, state.error, state.inventory, updateSettings])
 
   return null
 }

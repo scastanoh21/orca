@@ -16,7 +16,8 @@ const mocks = vi.hoisted(() => ({
   toastDismiss: vi.fn(),
   requestDialog: vi.fn(),
   settingsLoaded: true,
-  inventory: null as SkillFreshnessInventory | null
+  inventory: null as SkillFreshnessInventory | null,
+  error: null as string | null
 }))
 
 function placement(
@@ -58,7 +59,7 @@ vi.mock('@/hooks/useSkillFreshness', () => ({
   useSkillFreshness: () => ({
     inventory: mocks.inventory,
     loading: false,
-    error: null,
+    error: mocks.error,
     refresh: vi.fn()
   })
 }))
@@ -106,6 +107,7 @@ describe('SkillFreshnessNudge', () => {
     mocks.dismissed = []
     mocks.settingsLoaded = true
     mocks.inventory = eligibleInventory()
+    mocks.error = null
     mocks.updateSettings.mockReset()
     mocks.updateSettings.mockResolvedValue(undefined)
     mocks.toastInfo.mockReset()
@@ -156,6 +158,19 @@ describe('SkillFreshnessNudge', () => {
     }
     await rerenderNudge()
     // Sonner invokes onDismiss for programmatic dismissals on its next render.
+    options.onDismiss()
+
+    expect(mocks.toastDismiss).toHaveBeenCalledWith('freshness-toast')
+    expect(mocks.updateSettings).not.toHaveBeenCalled()
+  })
+
+  it('retracts a stale nudge when re-inventory fails', async () => {
+    await renderNudge()
+    const options = mocks.toastInfo.mock.calls[0]?.[1]
+
+    mocks.inventory = null
+    mocks.error = 'scan failed'
+    await rerenderNudge()
     options.onDismiss()
 
     expect(mocks.toastDismiss).toHaveBeenCalledWith('freshness-toast')

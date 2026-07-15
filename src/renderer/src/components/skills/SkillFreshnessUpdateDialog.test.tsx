@@ -16,6 +16,7 @@ import {
 const mocks = vi.hoisted(() => ({
   inventory: null as SkillFreshnessInventory | null,
   loading: false,
+  error: null as string | null,
   refresh: vi.fn(),
   terminalProps: [] as {
     command: string
@@ -30,7 +31,7 @@ vi.mock('@/hooks/useSkillFreshness', () => ({
   useSkillFreshness: () => ({
     inventory: mocks.inventory,
     loading: mocks.loading,
-    error: null,
+    error: mocks.error,
     refresh: mocks.refresh
   })
 }))
@@ -139,6 +140,7 @@ describe('SkillFreshnessUpdateDialog', () => {
     consumeSkillFreshnessUpdateDialogRequest()
     mocks.inventory = eligibleInventory()
     mocks.loading = false
+    mocks.error = null
     mocks.refresh.mockReset()
     mocks.notifyChanged.mockReset()
     mocks.terminalProps.length = 0
@@ -210,6 +212,14 @@ describe('SkillFreshnessUpdateDialog', () => {
     await act(async () => {
       mocks.terminalProps.at(-1)?.onInteracted?.('keyboard', { key: 'Enter' })
     })
+    mocks.inventory = null
+    mocks.loading = true
+    await rerender()
+
+    expect(container?.querySelector('[data-testid="update-terminal"]')?.textContent).toBe(
+      'npx skills update orca-cli --global'
+    )
+
     mocks.inventory = {
       schemaVersion: 1,
       installations: [
@@ -218,12 +228,37 @@ describe('SkillFreshnessUpdateDialog', () => {
       eligibleUpdateNames: [],
       scannedAt: 2
     }
+    mocks.loading = false
     await rerender()
 
     expect(container?.textContent).toContain('All installed Orca skills are up to date.')
     expect(container?.querySelector('[data-testid="update-terminal"]')?.textContent).toBe(
       'npx skills update orca-cli --global'
     )
+  })
+
+  it('removes an unsubmitted draft as soon as its inventory is invalidated', async () => {
+    await renderDialog()
+    await openViaRequest()
+    expect(container?.querySelector('[data-testid="update-terminal"]')).not.toBeNull()
+
+    mocks.inventory = null
+    mocks.loading = true
+    await rerender()
+
+    expect(container?.textContent).toContain('Checking installed Orca skills')
+    expect(container?.querySelector('[data-testid="update-terminal"]')).toBeNull()
+  })
+
+  it('shows a failed scan as an error instead of indefinite progress', async () => {
+    mocks.inventory = null
+    mocks.error = 'Could not inspect installed skills.'
+    await renderDialog()
+    await openViaRequest()
+
+    expect(container?.textContent).toContain('Could not inspect installed skills.')
+    expect(container?.textContent).not.toContain('Checking installed Orca skills')
+    expect(container?.querySelector('[data-testid="update-terminal"]')).toBeNull()
   })
 
   it('creates a fresh draft after a terminal exits and the rescan still finds an update', async () => {

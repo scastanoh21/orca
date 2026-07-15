@@ -4,6 +4,7 @@ import { constants } from 'node:fs'
 import { access, lstat, mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import process from 'node:process'
+import { isDeepStrictEqual } from 'node:util'
 
 const SCHEMA_VERSION = 1
 const SCRIPT_DIR = import.meta.dirname
@@ -424,15 +425,17 @@ function assertReleasedHistoryPreserved(committedRegistry, artifacts) {
   for (const [name, committedSnapshots] of Object.entries(committedRegistry.skills ?? {})) {
     const releasedCount = artifacts.releasedSnapshotCounts[name] ?? 0
     const regenerated = artifacts.snapshotRegistry.skills[name] ?? []
+    if (releasedCount < Math.max(0, committedSnapshots.length - 1)) {
+      throw new Error(
+        `Released snapshot history is incomplete for ${name}. ` +
+          'Fetch all release tags before regenerating skill artifacts.'
+      )
+    }
     const protectedCount = Math.min(committedSnapshots.length, releasedCount)
     for (let index = 0; index < protectedCount; index += 1) {
       const committed = committedSnapshots[index]
       const rebuilt = regenerated[index]
-      if (
-        !rebuilt ||
-        rebuilt.releaseRevision !== committed.releaseRevision ||
-        rebuilt.packageDigest !== committed.packageDigest
-      ) {
+      if (!rebuilt || !isDeepStrictEqual(rebuilt, committed)) {
         throw new Error(
           `Released snapshot history changed for ${name} at revision ${committed.releaseRevision}. ` +
             'Released snapshots are append-only; a deliberate identity migration must update this check.'

@@ -1,7 +1,6 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useEffect, useSyncExternalStore } from 'react'
 import type { SkillFreshnessInventory } from '../../../shared/skill-freshness'
 import { INSTALLED_AGENT_SKILLS_CHANGED_EVENT } from './installed-agent-skills-change-event'
-import { useMountedRef } from './useMountedRef'
 
 // Why: window focus fires on every alt-tab, and each scan re-reads and re-hashes
 // every installed package; a just-completed scan stays authoritative briefly.
@@ -11,7 +10,34 @@ let pendingInventory: Promise<SkillFreshnessInventory> | null = null
 let invalidationRevision = 0
 let completedRevision = -1
 let lastCompletedScanAt = 0
-let sharedInvalidationPending = false
+let refreshSequence = 0
+
+type SkillFreshnessSnapshot = {
+  inventory: SkillFreshnessInventory | null
+  loading: boolean
+  error: string | null
+}
+
+let snapshot: SkillFreshnessSnapshot = {
+  inventory: null,
+  loading: false,
+  error: null
+}
+const subscribers = new Set<() => void>()
+
+function publishSnapshot(next: SkillFreshnessSnapshot): void {
+  if (
+    snapshot.inventory === next.inventory &&
+    snapshot.loading === next.loading &&
+    snapshot.error === next.error
+  ) {
+    return
+  }
+  snapshot = next
+  for (const subscriber of subscribers) {
+    subscriber()
+  }
+}
 
 async function loadInventory(force: boolean): Promise<SkillFreshnessInventory> {
   if (force) {
@@ -43,71 +69,77 @@ async function loadInventory(force: boolean): Promise<SkillFreshnessInventory> {
   }
 }
 
-export type SkillFreshnessState = {
-  inventory: SkillFreshnessInventory | null
-  loading: boolean
-  error: string | null
+async function refreshSkillFreshness(force = true): Promise<void> {
+  const sequence = ++refreshSequence
+  // Why: eligibility is write authority for the draft command. Once invalidated,
+  // stale bytes must stop authorizing UI even if the replacement scan fails.
+  publishSnapshot({ inventory: null, loading: true, error: null })
+  try {
+    const inventory = await loadInventory(force)
+    if (sequence === refreshSequence) {
+      publishSnapshot({ inventory, loading: false, error: null })
+    }
+  } catch (cause) {
+    if (sequence === refreshSequence) {
+      publishSnapshot({
+        inventory: null,
+        loading: false,
+        error: cause instanceof Error ? cause.message : 'Could not inspect Orca skills.'
+      })
+    }
+  }
+}
+
+function onWindowFocus(): void {
+  if (Date.now() - lastCompletedScanAt < FOCUS_RESCAN_COOLDOWN_MS) {
+    return
+  }
+  void refreshSkillFreshness(true)
+}
+
+function onInstalledSkillsChanged(): void {
+  void refreshSkillFreshness(true)
+}
+
+function subscribe(subscriber: () => void): () => void {
+  subscribers.add(subscriber)
+  if (subscribers.size === 1) {
+    // Why: every consumer reads one external snapshot, so focus/install events
+    // install one listener and trigger one shared IPC scan regardless of UI count.
+    window.addEventListener('focus', onWindowFocus)
+    window.addEventListener(INSTALLED_AGENT_SKILLS_CHANGED_EVENT, onInstalledSkillsChanged)
+  }
+  return () => {
+    subscribers.delete(subscriber)
+    if (subscribers.size === 0) {
+      window.removeEventListener('focus', onWindowFocus)
+      window.removeEventListener(INSTALLED_AGENT_SKILLS_CHANGED_EVENT, onInstalledSkillsChanged)
+    }
+  }
+}
+
+function getSnapshot(): SkillFreshnessSnapshot {
+  return snapshot
+}
+
+function ensureInventoryLoaded(): void {
+  if (!snapshot.inventory && !snapshot.loading) {
+    void refreshSkillFreshness(false)
+  }
+}
+
+export type SkillFreshnessState = SkillFreshnessSnapshot & {
   refresh: () => Promise<void>
 }
 
 export function useSkillFreshness(): SkillFreshnessState {
-  const [inventory, setInventory] = useState<SkillFreshnessInventory | null>(cachedInventory)
-  const [loading, setLoading] = useState(cachedInventory === null)
-  const [error, setError] = useState<string | null>(null)
-  const mountedRef = useMountedRef()
-
-  const refresh = useCallback(
-    async (force = true): Promise<void> => {
-      setLoading(true)
-      try {
-        const next = await loadInventory(force)
-        if (mountedRef.current) {
-          setInventory(next)
-          setError(null)
-        }
-      } catch (cause) {
-        if (mountedRef.current) {
-          setError(cause instanceof Error ? cause.message : 'Could not inspect Orca skills.')
-        }
-      } finally {
-        if (mountedRef.current) {
-          setLoading(false)
-        }
-      }
-    },
-    [mountedRef]
-  )
+  const current = useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
 
   useEffect(() => {
-    void refresh(false)
-  }, [refresh])
+    ensureInventoryLoaded()
+  }, [])
 
-  useEffect(() => {
-    const invalidate = (respectCooldown: boolean): void => {
-      if (respectCooldown && Date.now() - lastCompletedScanAt < FOCUS_RESCAN_COOLDOWN_MS) {
-        return
-      }
-      // Why: the nudge and the panel both listen for the same events; one forced
-      // rescan per event refreshes every consumer through the shared request.
-      const alreadyInvalidated = sharedInvalidationPending
-      sharedInvalidationPending = true
-      queueMicrotask(() => {
-        sharedInvalidationPending = false
-      })
-      cachedInventory = null
-      void refresh(!alreadyInvalidated)
-    }
-    const onFocus = (): void => invalidate(true)
-    const onInstalledSkillsChanged = (): void => invalidate(false)
-    window.addEventListener('focus', onFocus)
-    window.addEventListener(INSTALLED_AGENT_SKILLS_CHANGED_EVENT, onInstalledSkillsChanged)
-    return () => {
-      window.removeEventListener('focus', onFocus)
-      window.removeEventListener(INSTALLED_AGENT_SKILLS_CHANGED_EVENT, onInstalledSkillsChanged)
-    }
-  }, [refresh])
-
-  return { inventory, loading, error, refresh: () => refresh(true) }
+  return { ...current, refresh: refreshSkillFreshness }
 }
 
 export const _skillFreshnessCacheForTests = {
@@ -117,6 +149,7 @@ export const _skillFreshnessCacheForTests = {
     invalidationRevision = 0
     completedRevision = -1
     lastCompletedScanAt = 0
-    sharedInvalidationPending = false
+    refreshSequence = 0
+    snapshot = { inventory: null, loading: false, error: null }
   }
 }

@@ -111,6 +111,28 @@ describe('skill bundle manifest generator', () => {
         artifacts
       )
     ).toThrow('Released snapshot history changed for orca-cli at revision 2')
+    expect(() =>
+      assertReleasedHistoryPreserved(
+        {
+          schemaVersion: 1,
+          skills: {
+            'orca-cli': [snapshot(1, 'aaa'), { ...snapshot(2, 'bbb'), gitTreeSha: 'rewritten' }]
+          }
+        },
+        artifacts
+      )
+    ).toThrow('Released snapshot history changed for orca-cli at revision 2')
+    expect(() =>
+      assertReleasedHistoryPreserved(
+        {
+          schemaVersion: 1,
+          skills: {
+            'orca-cli': [snapshot(1, 'aaa'), snapshot(2, 'bbb'), snapshot(3, 'stale')]
+          }
+        },
+        { ...artifacts, releasedSnapshotCounts: { 'orca-cli': 1 } }
+      )
+    ).toThrow('Released snapshot history is incomplete for orca-cli')
     expect(() => assertReleasedHistoryPreserved(null, artifacts)).not.toThrow()
   })
 

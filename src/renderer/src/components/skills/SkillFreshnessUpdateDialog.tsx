@@ -149,7 +149,15 @@ export function SkillFreshnessUpdateDialog(): React.JSX.Element {
   }, [])
 
   useEffect(() => {
-    if (!open || state.loading || state.error) {
+    if (!open) {
+      return
+    }
+    if (state.loading || state.error || !inventory) {
+      // Why: a scan invalidates the authorization behind an unsubmitted draft.
+      // A running command keeps its PTY until exit, but stale drafts fail closed.
+      if (!terminalSubmittedRef.current && terminalCommand !== null) {
+        setTerminalCommand(null)
+      }
       return
     }
     if (awaitingExitRefresh) {
@@ -226,9 +234,11 @@ export function SkillFreshnessUpdateDialog(): React.JSX.Element {
           </DialogDescription>
         </DialogHeader>
 
-        {state.error ? <p className="text-xs text-destructive">{state.error}</p> : null}
-
-        <SummaryHeadline kind={summaryKind} eligibleCount={eligibleNames.length} />
+        {state.error ? (
+          <p className="text-xs text-destructive">{state.error}</p>
+        ) : (
+          <SummaryHeadline kind={summaryKind} eligibleCount={eligibleNames.length} />
+        )}
 
         {terminalCommand ? (
           <OnboardingInlineCommandTerminal
