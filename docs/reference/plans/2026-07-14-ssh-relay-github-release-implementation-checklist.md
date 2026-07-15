@@ -8,8 +8,8 @@ work; keep exact commands, runner identities, hashes, metrics, and residual gaps
 
 Date created: 2026-07-14<br>
 Last updated: 2026-07-15<br>
-Current phase: Milestone 4 / Work Package 3 credential-free canonical manifest/signing handoff — **In progress — 2026-07-15, Codex implementation owner**. The disconnected release-DAG, aggregate/read-back byte boundaries, and Windows artifact/manifest parity prerequisite are closed locally and on all six native build jobs under E-M4-RELEASE-DAG-LOCAL-001, E-M4-RELEASE-DAG-CI-001, E-M4-AGGREGATE-READBACK-LOCAL-001, E-M4-AGGREGATE-READBACK-CI-001, E-M4-WINDOWS-MANIFEST-PARITY-LOCAL-001, and E-M4-WINDOWS-MANIFEST-PARITY-CI-001. The active package is limited to canonical unsigned-manifest bytes, a bounded signing request, and returned-signature verification; it may not choose final detached-signature asset encoding, publish, connect desktop consumers, use production signing credentials, or enable a tuple. Production/default behavior is unchanged, no bundled-runtime path is enabled, and no artifact is published.<br>
-Session checkpoint: **In progress — 2026-07-15, Codex implementation owner** — exact-head artifact run [29393022768](https://github.com/stablyai/orca/actions/runs/29393022768) at `c68a99039e4633d41e21fb30afdfeaa06f776369` executes the corrected compatibility/schema/workflow contracts under Node 24.18.0 and rebuilds, verifies, smokes, compares, and uploads all six unpublished target-native artifacts. Both regenerated Windows identities use compatibility `kind: "windows"`; x64 content ID is `sha256:4224aee6de820a94263f05ebfc58edd421921431e8cbdf1d5ec6ddcf783afc26` and arm64 content ID is `sha256:02edf462be83c2864a89546d5344d348f9e07ce10964660342608a8c614e47db`. Both Linux supplemental userland jobs and the Windows x64 floor job pass. The workflow remains red only because Windows arm64 runner build 26200 is not the required build 26100, after complete runtime smoke settles in 8,382.8952 ms with 49,811,456-byte RSS. Golden E2E [29393022784](https://github.com/stablyai/orca/actions/runs/29393022784) and PR Checks [29393022761](https://github.com/stablyai/orca/actions/runs/29393022761) are green. The parity prerequisite is closed under E-M4-WINDOWS-MANIFEST-PARITY-CI-001. Disconnected canonical assembly and signing-handoff modules are now implemented; focused and broad local gates pass under E-M4-MANIFEST-HANDOFF-LOCAL-001 and E-M4-MANIFEST-HANDOFF-LOCAL-002, including 38 release-side files / 214 tests, 3 desktop files / 47 tests, syntax, typecheck, full lint, formatting, max-lines, and diff checks. Exact-head native CI remains pending. Real Apple/SignPath signing, returned production signatures, Gatekeeper/notarization, Defender/WDAC, missing exact-floor snapshots, protected manifest signing, and native trust remain separately gated. Nothing is published or enabled, and legacy remains the production default.<br>
+Current phase: Milestone 4 / Work Package 3 credential-free fail-closed aggregate boundary — **In progress — 2026-07-15, Codex implementation owner**. The disconnected release-DAG, aggregate/read-back byte boundaries, Windows artifact/manifest parity, and canonical manifest/signing handoff are closed locally and on all six native build jobs under E-M4-RELEASE-DAG-LOCAL-001, E-M4-RELEASE-DAG-CI-001, E-M4-AGGREGATE-READBACK-LOCAL-001, E-M4-AGGREGATE-READBACK-CI-001, E-M4-WINDOWS-MANIFEST-PARITY-LOCAL-001, E-M4-WINDOWS-MANIFEST-PARITY-CI-001, E-M4-MANIFEST-HANDOFF-LOCAL-001, E-M4-MANIFEST-HANDOFF-LOCAL-002, and E-M4-MANIFEST-HANDOFF-CI-001. The active package is limited to connecting exact verified aggregate inputs to canonical signing request and verified immutable final-manifest bytes under credential-free tests; it may not publish, connect desktop consumers, use production native/manifest signing credentials, or enable a tuple. Production/default behavior is unchanged, no bundled-runtime path is enabled, and no artifact is published.<br>
+Session checkpoint: **In progress — 2026-07-15, Codex implementation owner** — commit `14355dfe0583f634a6e86ada9e1afcf7abe7a8fb` adds disconnected release-side validation, canonical assembly, bounded request, accepted-key/signature verification, deterministic final manifest emission, and all-six workflow wiring. Exact-head artifact run [29395319239](https://github.com/stablyai/orca/actions/runs/29395319239) executes both new suites under Node 24.18.0 on all six native jobs; every build, smoke, equality, upload, both Linux supplemental userland jobs, and the Windows x64 floor job pass. The overall artifact run remains red only because the Windows arm64 floor job observes build 26200 rather than required build 26100 after successful 5,818.68 ms runtime smoke with 49,385,472-byte RSS. Golden E2E [29395319242](https://github.com/stablyai/orca/actions/runs/29395319242) and PR Checks [29395319119](https://github.com/stablyai/orca/actions/runs/29395319119) are green. The handoff package is closed under E-M4-MANIFEST-HANDOFF-CI-001. Real Apple/SignPath signing, returned production signatures, Gatekeeper/notarization, Defender/WDAC, missing exact-floor snapshots, protected manifest signing, aggregate publication wiring, desktop embedding, and native trust remain separately gated. Nothing is published or enabled, and legacy remains the production default.<br>
 Primary design: [SSH relay GitHub Release plan](./2026-07-14-ssh-relay-github-release-plan.html)<br>
 Motivating issues: [#8450](https://github.com/stablyai/orca/issues/8450), [#1693](https://github.com/stablyai/orca/issues/1693)
 
@@ -69,13 +69,15 @@ same change as the work it records.
   verification binds each input and returned byte to exact name, size, SHA-256, tuple, content
   identity, source draft, approved HTTPS asset origin, and exact HTTP 200 under
   E-M4-AGGREGATE-READBACK-LOCAL-001 and E-M4-AGGREGATE-READBACK-CI-001.
-- Active package: Work Package 3 disconnected canonical unsigned-manifest/signing handoff. Assemble
-  canonical bytes only from fully validated inputs, create a bounded credential-free signing request,
-  and reconstruct and verify the returned Ed25519 signature before emitting a final manifest. Final
-  detached-signature asset encoding, production credentials, publication, desktop consumers, and
-  tuple enablement remain outside this slice. Focused and broad local gates are green under
-  E-M4-MANIFEST-HANDOFF-LOCAL-001 and E-M4-MANIFEST-HANDOFF-LOCAL-002; exact-head native CI remains
-  pending. No broader Milestone 4 box is checked until its evidence exists.
+- Completed Work Package 3 gate: disconnected canonical assembly, bounded credential-free signing
+  request, accepted-key/signature verification, deterministic final bytes, and all-six Node 24
+  workflow parity are green under E-M4-MANIFEST-HANDOFF-LOCAL-001,
+  E-M4-MANIFEST-HANDOFF-LOCAL-002, and E-M4-MANIFEST-HANDOFF-CI-001.
+- Active package: Work Package 3 disconnected fail-closed aggregate boundary. Connect exact verified
+  runtime inputs to canonical unsigned bytes, a bounded signing request, verified signer return, and
+  immutable final-manifest output under credential-free tests. Production native/manifest signing
+  credentials, publication, desktop consumers, and tuple enablement remain outside this slice. No
+  broader Milestone 4 box is checked until its evidence exists.
 - Completed Work Package 2 gate: target-native Windows source-signature reports from exact-head
   artifact jobs 87267322867 and 87267322870 were independently downloaded and matched to their
   identities and signing-stage reports under E-M3-WINDOWS-SOURCE-SIGNATURE-CI-001. PR Checks
@@ -193,11 +195,11 @@ same change as the work it records.
   per-target opt-in selects bundled-preferred behavior, and implementing the setting does not
   authorize default-on rollout or legacy removal (E-M1-ROLLOUT-DECISION-001).
 - Legacy fallback removal: not authorized.
-- Next required action: commit and push the locally verified disconnected handoff, then prove the exact
-  head on all six native artifact jobs plus PR Checks and Golden E2E before recording this package
-  complete. Keep final detached-signature asset encoding, real native/manifest signing credentials,
-  endpoint trust, missing exact-floor snapshots, production workflow wiring, publication, desktop
-  consumers, and every tuple's enabled state outside this slice.
+- Next required action: add RED tests for the disconnected credential-free aggregate boundary, then
+  connect exact verified runtime inputs through canonical request and verified immutable
+  final-manifest bytes. Keep real native/manifest signing credentials, endpoint trust, missing
+  exact-floor snapshots, production publication, desktop consumers, and every tuple's enabled state
+  outside this slice.
 
 ## Non-Negotiable Invariants
 
@@ -9326,6 +9328,56 @@ diff --check`.
 - Follow-up: commit and push the exact locally verified package, then record the all-six native jobs,
   PR Checks, and Golden E2E at that exact head.
 
+### E-M4-MANIFEST-HANDOFF-CI-001 — Canonical handoff passes all six Node 24 native jobs
+
+- Date: 2026-07-15
+- Owner: Codex implementation owner
+- Source: exact commit `14355dfe0583f634a6e86ada9e1afcf7abe7a8fb`; draft PR
+  [#8741](https://github.com/stablyai/orca/pull/8741).
+- Runs:
+  - SSH Relay Runtime Artifacts
+    [29395319239](https://github.com/stablyai/orca/actions/runs/29395319239) — overall expected RED
+    only for the separately declared Windows arm64 build-floor mismatch.
+  - PR Checks [29395319119](https://github.com/stablyai/orca/actions/runs/29395319119) — GREEN in
+    14 minutes 22 seconds, including lint, reliability/max-lines, typecheck, Git 2.25 matrix, full
+    tests, unpacked app build, and packaged CLI smoke.
+  - Golden E2E [29395319242](https://github.com/stablyai/orca/actions/runs/29395319242) — GREEN on
+    macOS and Linux.
+- Native build/test cells, all GitHub-hosted at the exact source commit with Node v24.18.0:
+
+  | Tuple             | Requested / resolved image                            | Arch  | Contract suite                                     | Build job / duration |
+  | ----------------- | ----------------------------------------------------- | ----- | -------------------------------------------------- | -------------------- |
+  | linux-x64-glibc   | `ubuntu-24.04` / `ubuntu24` `20260705.232.1`          | X64   | 37 files / 210 tests, 4.18 s                       | 87287406149 / 3m50s  |
+  | linux-arm64-glibc | `ubuntu-24.04-arm` / `ubuntu24-arm64` `20260706.52.2` | ARM64 | 37 files / 210 tests, 3.80 s                       | 87287406182 / 5m03s  |
+  | darwin-x64        | `macos-15-intel` / `macos15` `20260629.0276.1`        | X64   | 37 files / 210 tests, 16.01 s                      | 87287406168 / 5m20s  |
+  | darwin-arm64      | `macos-15` / `macos15` `20260706.0213.1`              | ARM64 | 37 files / 210 tests, 4.65 s                       | 87287406210 / 2m31s  |
+  | win32-x64         | `windows-2022` / `win22` `20260706.237.1`             | X64   | 38 files / 206 passed + 8 platform-skipped, 9.07 s | 87287406172 / 5m23s  |
+  | win32-arm64       | `windows-11-arm` / `win11-arm64` `20260706.102.1`     | ARM64 | 38 files / 206 passed + 8 platform-skipped, 8.78 s | 87287406175 / 8m48s  |
+
+- Direct new-suite oracle: every native job syntax-checks both new test modules and passes manifest
+  assembly 5/5 plus signing handoff 6/6. Per-job combined new-suite test times are Linux x64
+  136/254 ms, Linux arm64 91/193 ms, macOS x64 262/523 ms, macOS arm64 43/90 ms, Windows x64
+  148/295 ms, and Windows arm64 96/179 ms.
+- Supplemental/result details:
+  - Linux x64 and arm64 digest-pinned Rocky 8 userland jobs pass exact downloaded-byte verification,
+    runtime smoke, glibc 2.28, libstdc++ 6.0.25, and GLIBCXX 3.4.25; kernel 4.18 remains open because
+    the container shares the hosted kernel.
+  - Windows Server 2022 x64 build 20348 passes its declared floor and full runtime execution.
+  - Windows arm64 verifies 60 archive entries / 42 files / 85,213,511 expanded bytes and content ID
+    `sha256:02edf462be83c2864a89546d5344d348f9e07ce10964660342608a8c614e47db`, then completes Node,
+    ConPTY, watcher, and resource-settlement smoke in 5,818.68 ms with 49,385,472-byte RSS and
+    7,741.5065 ms total verification. Its floor job then fails exactly because observed Windows build
+    26200 does not equal required build 26100; platform and ARM64 checks pass.
+- Oracle proved: the release-side validator, canonical byte projection, bounded request, signer-return
+  verification, deterministic final manifest, and workflow wiring execute under the repository's
+  exact Node version on Linux, macOS, and Windows x64/arm64 without regressing target-native build,
+  smoke, equality, artifact upload, PR, or Golden E2E behavior.
+- Does not prove: the missing Windows arm64 26100 snapshot, kernel 4.18, macOS 13.5, real Apple or
+  SignPath returns, protected manifest credentials/approval, final aggregate publication, desktop
+  embedding, SSH transfer/install, or an enabled tuple.
+- Follow-up: begin RED tests for the credential-free fail-closed aggregate boundary; retain all
+  production/default and credential gates.
+
 ## Accepted Gaps
 
 No product gap is accepted merely because it appears in this list. Each entry requires explicit
@@ -9383,12 +9435,12 @@ The project is not complete until every applicable item below is checked with ev
 
 ## Next Required Action
 
-Commit and push the locally verified credential-free manifest handoff, then prove that exact head on
-all six native artifact jobs plus PR Checks and Golden E2E. Do not choose final detached-signature
-asset encoding, connect release publication, use production signing credentials, or add a desktop
-consumer in this slice. In parallel, provision qualifying exact-floor execution for Linux kernel
-4.18, macOS 13.5, and Windows arm64 build 26100 and real macOS/Windows signing and trust. Keep every
-tuple disabled until the applicable baseline and trust cells pass.
+Add RED tests for the disconnected credential-free fail-closed aggregate boundary, then connect exact
+verified runtime inputs through canonical request and verified immutable final-manifest bytes. Do not
+connect release publication, use production signing credentials, or add a desktop consumer in this
+slice. In parallel, provision qualifying exact-floor execution for Linux kernel 4.18, macOS 13.5,
+and Windows arm64 build 26100 and real macOS/Windows signing and trust. Keep every tuple disabled until
+the applicable baseline and trust cells pass.
 
 Cross-family Layer B targets, the protected manifest-signing environment, oldest-baseline/native-
 trust cells, and the paired legacy performance baseline remain release/default-path blockers. No

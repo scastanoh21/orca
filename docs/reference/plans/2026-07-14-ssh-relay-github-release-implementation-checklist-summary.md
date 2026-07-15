@@ -60,15 +60,18 @@ complete a box.
     remain separately gated.
   - Next external proof: kernel 4.18, macOS 13.5, Windows arm64 build 26100, and native signing/trust.
   - No tuple is enabled; every SSH transfer/runtime and rollout cell remains open.
-- [ ] **WP3 active implementation — Build the credential-free canonical manifest/signing handoff.**
+- [ ] **WP3 active implementation — Build the credential-free fail-closed aggregate boundary.**
       Windows compatibility-kind parity is closed locally and on all six target-native jobs in
       exact-head run
       [29393022768](https://github.com/stablyai/orca/actions/runs/29393022768) under
       `E-M4-WINDOWS-MANIFEST-PARITY-LOCAL-001` and `E-M4-WINDOWS-MANIFEST-PARITY-CI-001`.
-      Disconnected canonical assembly and signing-handoff modules are implemented locally. Focused
-      and broad local gates pass under `E-M4-MANIFEST-HANDOFF-LOCAL-001` and
-      `E-M4-MANIFEST-HANDOFF-LOCAL-002`; exact-head native CI remains pending. No production
-      workflow, publication, desktop consumer, signing credential, or tuple is connected.
+      Disconnected canonical assembly and signing-handoff modules are closed locally and on all six
+      Node 24 native jobs in exact-head run
+      [29395319239](https://github.com/stablyai/orca/actions/runs/29395319239) under
+      `E-M4-MANIFEST-HANDOFF-CI-001`. Next, connect only the credential-free verified aggregate
+      inputs, canonical signing request, verified signer return, and immutable final-manifest output
+      behind fail-closed tests. No production workflow, publication, desktop consumer, signing
+      credential, or tuple is connected.
 
 ## Work packages, in required order
 
@@ -111,13 +114,18 @@ complete a box.
 - [x] Correct the Windows compatibility discriminator and `bin/node.exe` manifest parity; prove both
       regenerated Windows identities and all-six native regressions
       (`E-M4-WINDOWS-MANIFEST-PARITY-LOCAL-001`, `E-M4-WINDOWS-MANIFEST-PARITY-CI-001`).
-- [ ] **In progress — 2026-07-15, Codex implementation owner:** add disconnected canonical unsigned
+- [x] Add disconnected canonical unsigned
       manifest assembly, a bounded signing request, and returned-signature verification. Keep final
       detached-signature asset encoding, production credentials, publication, desktop consumers, and
       every tuple outside this slice until their contracts and gates are explicit. Purpose-named RED
       and GREEN suites plus broad local regressions are recorded under
       `E-M4-MANIFEST-HANDOFF-LOCAL-RED-001`, `E-M4-MANIFEST-HANDOFF-LOCAL-001`, and
-      `E-M4-MANIFEST-HANDOFF-LOCAL-002`; exact-head native CI is next.
+      `E-M4-MANIFEST-HANDOFF-LOCAL-002`; all-six Node 24 proof is recorded under
+      `E-M4-MANIFEST-HANDOFF-CI-001`.
+- [ ] **In progress — 2026-07-15, Codex implementation owner:** add the disconnected, credential-free
+      fail-closed aggregate boundary from exact verified runtime inputs through canonical request and
+      verified final-manifest bytes. Keep native/manifest credentials, publication, desktop
+      consumers, and every tuple outside this slice.
 - [ ] Add target-native runtime jobs as desktop release prerequisites.
 - [ ] Add native signing jobs; hash only the returned signed bytes.
 - [ ] Add a fail-closed aggregate and immutable manifest-signing job.
