@@ -1107,6 +1107,110 @@ describe('ClaudeAccountService credential capture', () => {
     }
   })
 
+  it('forwards raw stdout/stderr chunks to onOutput during a command', async () => {
+    vi.resetModules()
+    const child = new EventEmitter() as EventEmitter & {
+      stdin: PassThrough
+      stdout: PassThrough
+      stderr: PassThrough
+      kill: () => void
+    }
+    child.stdin = new PassThrough()
+    child.stdout = new PassThrough()
+    child.stderr = new PassThrough()
+    child.kill = vi.fn()
+    const spawnMock = vi.fn(() => child)
+    vi.doMock('node:child_process', () => ({ spawn: spawnMock }))
+
+    try {
+      const { ClaudeAccountService } = await import('./service')
+      const service = new ClaudeAccountService(
+        createService() as never,
+        createService() as never,
+        createService() as never
+      )
+      const onOutput = vi.fn()
+      const commandPromise = (
+        service as unknown as {
+          runClaudeCommand(
+            args: string[],
+            configDir: { windowsPath: string; linuxPath: string | null; wslDistro: string | null },
+            timeoutMs: number,
+            options?: { keepStdinOpen?: boolean; onOutput?: (chunk: string) => void }
+          ): Promise<string>
+        }
+      ).runClaudeCommand(
+        ['auth', 'login', '--claudeai'],
+        { windowsPath: '/tmp/claude-auth', linuxPath: null, wslDistro: null },
+        1000,
+        { keepStdinOpen: true, onOutput }
+      )
+
+      child.stdout.write('open this URL to sign in\n')
+      child.stderr.write('warning: something\n')
+      queueMicrotask(() => child.emit('close', 0))
+      await commandPromise
+
+      expect(onOutput).toHaveBeenCalledWith('open this URL to sign in\n')
+      expect(onOutput).toHaveBeenCalledWith('warning: something\n')
+    } finally {
+      vi.doUnmock('node:child_process')
+    }
+  })
+
+  it('still enforces the command timeout when onOutput is provided', async () => {
+    vi.resetModules()
+    vi.useFakeTimers()
+    const child = new EventEmitter() as EventEmitter & {
+      stdin: PassThrough
+      stdout: PassThrough
+      stderr: PassThrough
+      kill: () => void
+    }
+    child.stdin = new PassThrough()
+    child.stdout = new PassThrough()
+    child.stderr = new PassThrough()
+    child.kill = vi.fn()
+    const spawnMock = vi.fn(() => child)
+    vi.doMock('node:child_process', () => ({ spawn: spawnMock }))
+
+    try {
+      const { ClaudeAccountService } = await import('./service')
+      const service = new ClaudeAccountService(
+        createService() as never,
+        createService() as never,
+        createService() as never
+      )
+      const onOutput = vi.fn()
+      const commandPromise = (
+        service as unknown as {
+          runClaudeCommand(
+            args: string[],
+            configDir: { windowsPath: string; linuxPath: string | null; wslDistro: string | null },
+            timeoutMs: number,
+            options?: { keepStdinOpen?: boolean; onOutput?: (chunk: string) => void }
+          ): Promise<string>
+        }
+      ).runClaudeCommand(
+        ['login'],
+        { windowsPath: '/tmp/claude-auth', linuxPath: null, wslDistro: null },
+        1000,
+        { keepStdinOpen: true, onOutput }
+      )
+      const rejection = expect(commandPromise).rejects.toThrow(
+        'Claude sign-in took too long to finish.'
+      )
+
+      await vi.advanceTimersByTimeAsync(1000)
+
+      await rejection
+      expect(child.kill).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+      vi.doUnmock('node:child_process')
+    }
+  })
+
   it('pipes stdin only for the explicit Claude account login command', async () => {
     setPlatform('linux')
     vi.resetModules()

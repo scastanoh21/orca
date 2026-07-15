@@ -99,8 +99,11 @@ export class ClaudeAccountService {
     return this.getSnapshot()
   }
 
-  async addAccount(target?: ClaudeAccountAddTarget): Promise<ClaudeRateLimitAccountsState> {
-    return this.serializeMutation(() => this.doAddAccount(target))
+  async addAccount(
+    target?: ClaudeAccountAddTarget,
+    onOutput?: (chunk: string) => void
+  ): Promise<ClaudeRateLimitAccountsState> {
+    return this.serializeMutation(() => this.doAddAccount(target, onOutput))
   }
 
   async reauthenticateAccount(accountId: string): Promise<ClaudeRateLimitAccountsState> {
@@ -133,7 +136,8 @@ export class ClaudeAccountService {
   }
 
   private async doAddAccount(
-    target?: ClaudeAccountAddTarget
+    target?: ClaudeAccountAddTarget,
+    onOutput?: (chunk: string) => void
   ): Promise<ClaudeRateLimitAccountsState> {
     const accountId = randomUUID()
     const managedAuth = this.createManagedAuthDir(accountId, target)
@@ -141,7 +145,7 @@ export class ClaudeAccountService {
     const previousSettings = this.store.getSettings()
 
     try {
-      const captured = await this.runClaudeLoginAndCapture(managedAuth)
+      const captured = await this.runClaudeLoginAndCapture(managedAuth, onOutput)
       if (!captured.identity.email) {
         throw new Error('Claude login completed, but Orca could not resolve the account email.')
       }
@@ -429,7 +433,8 @@ export class ClaudeAccountService {
       managedAuthRuntime: 'host',
       wslDistro: null,
       wslLinuxAuthPath: null
-    }
+    },
+    onOutput?: (chunk: string) => void
   ): Promise<CapturedClaudeAuth> {
     const tempConfig = this.createTemporaryClaudeConfigDir(location)
     const loginAbortController = new AbortController()
@@ -450,7 +455,8 @@ export class ClaudeAccountService {
       }
       await this.runClaudeCommand(['auth', 'login', '--claudeai'], tempConfig, LOGIN_TIMEOUT_MS, {
         signal: loginAbortController.signal,
-        keepStdinOpen: true
+        keepStdinOpen: true,
+        onOutput
       })
       this.cancelPendingClaudeLogin = null
       const status = await this.runClaudeCommand(
@@ -886,7 +892,12 @@ export class ClaudeAccountService {
     args: string[],
     configDir: { windowsPath: string; linuxPath: string | null; wslDistro: string | null },
     timeoutMs: number,
-    options?: { allowFailure?: boolean; signal?: AbortSignal; keepStdinOpen?: boolean }
+    options?: {
+      allowFailure?: boolean
+      signal?: AbortSignal
+      keepStdinOpen?: boolean
+      onOutput?: (chunk: string) => void
+    }
   ): Promise<string> {
     return new Promise((resolvePromise, rejectPromise) => {
       const spawnConfig =
@@ -938,10 +949,14 @@ export class ClaudeAccountService {
       let settled = false
       let output = ''
       const appendOutput = (chunk: Buffer): void => {
-        output = `${output}${chunk.toString()}`
+        const text = chunk.toString()
+        output = `${output}${text}`
         if (output.length > MAX_COMMAND_OUTPUT_CHARS) {
           output = output.slice(-MAX_COMMAND_OUTPUT_CHARS)
         }
+        // Why: forwarding runs before the denial scan so callers still see the
+        // chunk that triggered the kill, matching Codex's additive semantics.
+        options?.onOutput?.(text)
         if (CLAUDE_AUTH_DENIED_PATTERN.test(output)) {
           // Use killChild (not child.kill) so the whole login/browser tree is torn down on
           // Windows (taskkill /t) and the detached POSIX group, matching the timeout/abort paths.

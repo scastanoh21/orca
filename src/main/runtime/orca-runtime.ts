@@ -753,10 +753,14 @@ import { getSshGitProvider, requireSshGitProvider } from '../providers/ssh-git-d
 import { detectRepoIconAndUpstream } from '../repo-icon-autodetect'
 import { enrichMissingRepoGitRemoteIdentities } from '../repo-git-remote-identity-enrichment'
 import { githubAvatarIcon } from '../../shared/repo-icon'
-import type { ClaudeAccountService } from '../claude-accounts/service'
-import type { CodexAccountService } from '../codex-accounts/service'
+import type { ClaudeAccountAddTarget, ClaudeAccountService } from '../claude-accounts/service'
+import type { CodexAccountAddTarget, CodexAccountService } from '../codex-accounts/service'
 import type { RateLimitService } from '../rate-limits/service'
 import type { ClaudeRateLimitAccountsState, CodexRateLimitAccountsState } from '../../shared/types'
+import {
+  PendingAccountLoginRegistry,
+  type PendingAccountLoginSnapshot
+} from '../accounts/pending-account-login-registry'
 import { applyPRBotAuthorOverride } from '../../shared/pr-bot-author-overrides'
 import type { RateLimitState } from '../../shared/rate-limit-types'
 import type { VoiceSettings } from '../../shared/speech-types'
@@ -777,6 +781,10 @@ import { createNestedRepoImportTargetResolver } from '../project-groups/nested-r
 function sanitizeNestedRepoRuntimeImportError(context: string, error: unknown): string {
   console.warn(`[project-groups] ${context}`, error)
   return 'Repository could not be imported'
+}
+
+function describeAccountLoginError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
 }
 
 type RuntimeAccountServices = {
@@ -2539,6 +2547,9 @@ export class OrcaRuntimeService {
   private readonly buildAgentHookPtyEnv: (() => Record<string, string>) | null
   private readonly getDesktopWindowStatusFn: () => RuntimeDesktopWindowStatus
   private accountServices: RuntimeAccountServices | null = null
+  private readonly pendingAccountLogins = new PendingAccountLoginRegistry<
+    CodexRateLimitAccountsState | ClaudeRateLimitAccountsState
+  >()
   private commitMessageAgentEnv: CommitMessageAgentEnvironmentResolvers | null = null
   private automationService: AutomationService | null = null
   private readonly claudeAgentTeams = new ClaudeAgentTeamsService()
@@ -8099,6 +8110,61 @@ export class OrcaRuntimeService {
 
   removeCodexAccount(accountId: string): Promise<CodexRateLimitAccountsState> {
     return this.requireAccountServices().codexAccounts.removeAccount(accountId)
+  }
+
+  // Why: `codex login`/`claude auth login` spawn a real OAuth flow with no
+  // synchronous result, so headless callers (the CLI over a one-shot socket)
+  // get a loginId back immediately and poll pollAddAccount for progress
+  // instead of holding one RPC call open for the whole login.
+  addCodexAccount(target?: CodexAccountAddTarget): { loginId: string } {
+    const { codexAccounts } = this.requireAccountServices()
+    const loginId = randomUUID()
+    this.pendingAccountLogins.begin(loginId, 'codex')
+    void codexAccounts
+      .addAccount(target, (chunk) => this.pendingAccountLogins.appendOutput(loginId, chunk))
+      .then(
+        (state) => this.pendingAccountLogins.complete(loginId, state),
+        (error) => this.pendingAccountLogins.fail(loginId, describeAccountLoginError(error))
+      )
+    return { loginId }
+  }
+
+  addClaudeAccount(target?: ClaudeAccountAddTarget): { loginId: string } {
+    const { claudeAccounts } = this.requireAccountServices()
+    const loginId = randomUUID()
+    this.pendingAccountLogins.begin(loginId, 'claude')
+    void claudeAccounts
+      .addAccount(target, (chunk) => this.pendingAccountLogins.appendOutput(loginId, chunk))
+      .then(
+        (state) => this.pendingAccountLogins.complete(loginId, state),
+        (error) => this.pendingAccountLogins.fail(loginId, describeAccountLoginError(error))
+      )
+    return { loginId }
+  }
+
+  // Why: long-poll counterpart to terminal.wait/orchestration.check — blocks
+  // until the login's state changes or timeoutMs elapses, then always
+  // resolves (never rejects on a still-in-progress login) so the CLI's poll
+  // loop gets one response per call.
+  async pollAddAccount(
+    loginId: string,
+    options?: { timeoutMs?: number; signal?: AbortSignal }
+  ): Promise<
+    PendingAccountLoginSnapshot<CodexRateLimitAccountsState | ClaudeRateLimitAccountsState>
+  > {
+    this.requireAccountServices()
+    const existing = this.pendingAccountLogins.get(loginId)
+    if (!existing) {
+      throw new Error('That account login no longer exists.')
+    }
+    if (existing.status === 'in_progress') {
+      await this.pendingAccountLogins.waitForUpdate(
+        loginId,
+        options?.timeoutMs ?? ACCOUNT_LOGIN_POLL_DEFAULT_TIMEOUT_MS,
+        options?.signal
+      )
+    }
+    return this.pendingAccountLogins.get(loginId) ?? existing
   }
 
   // Why: rate-limit polling fires every 5 minutes and on account switch.
@@ -26637,6 +26703,7 @@ const TUI_IDLE_DEFAULT_TIMEOUT_MS = 5 * 60 * 1000
 const TUI_IDLE_POLL_INTERVAL_MS = 2000
 const TUI_IDLE_QUIESCENCE_MS = 3000
 const MESSAGE_WAIT_DEFAULT_TIMEOUT_MS = 2 * 60 * 1000
+const ACCOUNT_LOGIN_POLL_DEFAULT_TIMEOUT_MS = 20 * 1000
 const EXPLICIT_IDLE_TITLE_RE = /(^|\s)(ready|idle|done)(\s|$|[.!?])/i
 const CLAUDE_IDLE_PREFIX = '\u2733'
 const GEMINI_IDLE_PREFIX = '\u25c7'

@@ -101,8 +101,11 @@ export class CodexAccountService {
     return this.getSnapshot()
   }
 
-  async addAccount(target?: CodexAccountAddTarget): Promise<CodexRateLimitAccountsState> {
-    return this.serializeMutation(() => this.doAddAccount(target))
+  async addAccount(
+    target?: CodexAccountAddTarget,
+    onOutput?: (chunk: string) => void
+  ): Promise<CodexRateLimitAccountsState> {
+    return this.serializeMutation(() => this.doAddAccount(target, onOutput))
   }
 
   async reauthenticateAccount(accountId: string): Promise<CodexRateLimitAccountsState> {
@@ -124,14 +127,17 @@ export class CodexAccountService {
     return this.serializeMutation(() => this.doSelectAccount(accountId, target))
   }
 
-  private async doAddAccount(target?: CodexAccountAddTarget): Promise<CodexRateLimitAccountsState> {
+  private async doAddAccount(
+    target?: CodexAccountAddTarget,
+    onOutput?: (chunk: string) => void
+  ): Promise<CodexRateLimitAccountsState> {
     const accountId = randomUUID()
     const managedHome = this.createManagedHome(accountId, target)
     const { managedHomePath } = managedHome
 
     try {
       this.safeSyncCanonicalConfigIntoManagedHome(managedHomePath)
-      await this.runCodexLogin(managedHomePath)
+      await this.runCodexLogin(managedHomePath, onOutput)
       const identity = this.readIdentityFromHome(managedHomePath)
       if (!identity.email) {
         throw new Error('Codex login completed, but Orca could not resolve the account email.')
@@ -800,7 +806,10 @@ export class CodexAccountService {
     }
   }
 
-  private async runCodexLogin(managedHomePath: string): Promise<void> {
+  private async runCodexLogin(
+    managedHomePath: string,
+    onOutput?: (chunk: string) => void
+  ): Promise<void> {
     const wslInfo = parseWslUncPath(managedHomePath)
     if (wslInfo) {
       this.assertWslCodexCliAvailable(wslInfo)
@@ -843,10 +852,14 @@ export class CodexAccountService {
       let settled = false
       let output = ''
       const appendOutput = (chunk: Buffer): void => {
-        output = `${output}${chunk.toString()}`
+        const text = chunk.toString()
+        output = `${output}${text}`
         if (output.length > MAX_LOGIN_OUTPUT_CHARS) {
           output = output.slice(-MAX_LOGIN_OUTPUT_CHARS)
         }
+        // Why: forwarding is additive to the truncated error-message buffer
+        // above and must not affect the timeout/kill/reject flow below.
+        onOutput?.(text)
       }
 
       let timeout: ReturnType<typeof setTimeout> | null = null
