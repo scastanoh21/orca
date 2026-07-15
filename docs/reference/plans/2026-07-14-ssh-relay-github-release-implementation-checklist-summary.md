@@ -60,13 +60,11 @@ complete a box.
     remain separately gated.
   - Next external proof: kernel 4.18, macOS 13.5, Windows arm64 build 26100, and native signing/trust.
   - No tuple is enabled; every SSH transfer/runtime and rollout cell remains open.
-- [ ] **WP3 active implementation — Add disconnected aggregate-input and authenticated draft
-      read-back verification.** Release-DAG contracts pass locally and on all six native build jobs in
-      exact-head run [29390079639](https://github.com/stablyai/orca/actions/runs/29390079639) under
-      `E-M4-RELEASE-DAG-CI-001`. Aggregate/read-back RED/GREEN, workflow, full SSH-relay, and static
-      gates pass locally at implementation commit `e99518654` under
-      `E-M4-AGGREGATE-READBACK-LOCAL-001`; exact-head CI is next. No production workflow,
-      publication, desktop consumer, signing credential, or tuple is connected.
+- [ ] **WP3 active implementation — Add credential-free canonical manifest assembly and signature
+      handoff.** Release-DAG and aggregate/read-back contracts pass locally and on all six native
+      build jobs under `E-M4-RELEASE-DAG-CI-001` and `E-M4-AGGREGATE-READBACK-CI-001`. Exact-head PR
+      Checks and Golden E2E are green. No production workflow, publication, desktop consumer, signing
+      credential, or tuple is connected.
 
 ## Work packages, in required order
 
@@ -103,11 +101,12 @@ complete a box.
 
 - [x] Release/signing DAG contracts pass locally and on all six native build jobs under
       `E-M4-RELEASE-DAG-LOCAL-001` and `E-M4-RELEASE-DAG-CI-001`.
-- [ ] **In progress — 2026-07-15, Codex implementation owner:** implement disconnected
-      aggregate-input and authenticated draft read-back verification before any production workflow,
-      publication, desktop consumer, or signing credential is connected. Local implementation and
-      verification pass at `e99518654` under `E-M4-AGGREGATE-READBACK-LOCAL-001`; exact-head CI is
-      next.
+- [x] Aggregate-input and authenticated draft read-back verification pass locally and on all six
+      native build jobs under `E-M4-AGGREGATE-READBACK-LOCAL-001` and
+      `E-M4-AGGREGATE-READBACK-CI-001`.
+- [ ] **In progress — 2026-07-15, Codex implementation owner:** add disconnected canonical manifest
+      assembly and credential-free signing-request/returned-signature verification without production
+      workflow wiring, publication, signing credentials, desktop consumers, or tuple enablement.
 - [ ] Add target-native runtime jobs as desktop release prerequisites.
 - [ ] Add native signing jobs; hash only the returned signed bytes.
 - [ ] Add a fail-closed aggregate and immutable manifest-signing job.

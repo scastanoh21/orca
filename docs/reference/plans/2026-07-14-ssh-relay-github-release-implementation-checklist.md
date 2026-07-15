@@ -8,8 +8,8 @@ work; keep exact commands, runner identities, hashes, metrics, and residual gaps
 
 Date created: 2026-07-14<br>
 Last updated: 2026-07-15<br>
-Current phase: Milestone 4 / Work Package 3 credential-free aggregate-input and draft read-back verification — **In progress — 2026-07-15, Codex implementation owner**. The disconnected release/signing DAG failure contracts are closed locally and on all six native build jobs under E-M4-RELEASE-DAG-LOCAL-001 and E-M4-RELEASE-DAG-CI-001. Exact-floor gaps and real native signing/trust remain open external gates, so the active package may validate only immutable aggregate inputs and authenticated draft bytes; it may not publish, connect desktop consumers, use signing credentials, or enable a tuple. Production/default behavior is unchanged, no bundled-runtime path is enabled, and no artifact is published.<br>
-Session checkpoint: **In progress — 2026-07-15, Codex implementation owner** — exact-head artifact run [29390079639](https://github.com/stablyai/orca/actions/runs/29390079639) executes the two release-DAG suites under Node 24 on all six target-native build jobs at `97164470c`; every build and supplemental userland job passes. The run remains red only because Windows arm64 runner build 26200 is not the required build 26100, after archive/tree/runtime smoke passes in 7,721.7682 ms with 48,504,832-byte RSS. Golden E2E [29390079632](https://github.com/stablyai/orca/actions/runs/29390079632) is green. PR Checks [29390079665](https://github.com/stablyai/orca/actions/runs/29390079665) attempt 1 passed lint, typecheck, Git compatibility, and tests, then hit a TCP reset downloading Electron; authorized attempt 2 job 87272898091 passes the complete verify/package/CLI-smoke job. The disconnected aggregate-input and authenticated draft read-back implementation is committed at `e995186545d4b584840cb7ec8cd1403fbd045a7b` and passes local RED/GREEN, workflow-wiring, full SSH-relay, type, lint, line-budget, formatting, and diff gates under E-M4-AGGREGATE-READBACK-LOCAL-RED-001 and E-M4-AGGREGATE-READBACK-LOCAL-001; push and exact-head native CI are next. Real Apple/SignPath signing, returned production signatures, Gatekeeper/notarization, Defender/WDAC, missing exact-floor snapshots, and native trust remain separately gated. Nothing is published or enabled, and legacy remains the production default.<br>
+Current phase: Milestone 4 / Work Package 3 credential-free canonical manifest assembly and signature handoff — **In progress — 2026-07-15, Codex implementation owner**. The disconnected release-DAG and aggregate/read-back byte boundaries are closed locally and on all six native build jobs under E-M4-RELEASE-DAG-LOCAL-001, E-M4-RELEASE-DAG-CI-001, E-M4-AGGREGATE-READBACK-LOCAL-001, and E-M4-AGGREGATE-READBACK-CI-001. Exact-floor gaps and real native signing/trust remain open external gates, so the active package may add only canonical unsigned-manifest assembly plus credential-free signing-request and returned-signature verification; it may not publish, connect desktop consumers, use signing credentials, or enable a tuple. Production/default behavior is unchanged, no bundled-runtime path is enabled, and no artifact is published.<br>
+Session checkpoint: **In progress — 2026-07-15, Codex implementation owner** — exact-head artifact run [29391666358](https://github.com/stablyai/orca/actions/runs/29391666358) executes aggregate-input and authenticated draft read-back suites under Node 24 on all six target-native build jobs at `87a8e4dc3`; every native build and both Linux supplemental userland jobs pass under E-M4-AGGREGATE-READBACK-CI-001. The run remains red only because Windows arm64 runner build 26200 is not the required build 26100, after archive/tree/Node/PTY/watcher smoke settles in 8,032.7284 ms with 49,922,048-byte RSS. Golden E2E [29391666362](https://github.com/stablyai/orca/actions/runs/29391666362) and PR Checks [29391666360](https://github.com/stablyai/orca/actions/runs/29391666360) are green. The next disconnected package is canonical unsigned-manifest assembly plus credential-free signing-request/returned-signature verification. Real Apple/SignPath signing, returned production signatures, Gatekeeper/notarization, Defender/WDAC, missing exact-floor snapshots, protected manifest signing, and native trust remain separately gated. Nothing is published or enabled, and legacy remains the production default.<br>
 Primary design: [SSH relay GitHub Release plan](./2026-07-14-ssh-relay-github-release-plan.html)<br>
 Motivating issues: [#8450](https://github.com/stablyai/orca/issues/8450), [#1693](https://github.com/stablyai/orca/issues/1693)
 
@@ -65,11 +65,15 @@ same change as the work it records.
   [#8728](https://github.com/stablyai/orca/pull/8728), which is CI-green at current PR head
   `0c299fe18`; implementation evidence remains anchored at `b9d80a4cb`. No deploy/resolver call site
   is connected and no tuple is enabled.
-- Active package: Work Package 3 credential-free aggregate-input and authenticated draft read-back
-  verification. It must bind every input and returned byte to exact name, size, SHA-256, tuple,
-  content identity, and source release without credentials, publication, production workflow wiring,
-  desktop consumers, or tuple enablement. No Milestone 4 box is checked until the corresponding
-  implementation and exact tests exist.
+- Completed Work Package 3 gate: credential-free aggregate-input and authenticated draft read-back
+  verification binds each input and returned byte to exact name, size, SHA-256, tuple, content
+  identity, source draft, approved HTTPS asset origin, and exact HTTP 200 under
+  E-M4-AGGREGATE-READBACK-LOCAL-001 and E-M4-AGGREGATE-READBACK-CI-001.
+- Active package: Work Package 3 credential-free canonical unsigned-manifest assembly and signing
+  handoff. It may build and validate canonical bytes, construct a bounded signing request, and verify
+  injected returned signatures without credentials, protected-environment access, publication,
+  production workflow wiring, desktop consumers, or tuple enablement. No broader Milestone 4 box is
+  checked until the corresponding implementation and exact tests exist.
 - Completed Work Package 2 gate: target-native Windows source-signature reports from exact-head
   artifact jobs 87267322867 and 87267322870 were independently downloaded and matched to their
   identities and signing-stage reports under E-M3-WINDOWS-SOURCE-SIGNATURE-CI-001. PR Checks
@@ -1460,7 +1464,7 @@ Update status and evidence as work begins. Do not combine these into one large b
 | 0. #8450 legacy fix       | Coherent Node/npm selection and live repro                                                 | Fixes legacy selection only | Complete and CI-green in draft PR #8724                                     | E-M0-UNIT-002, E-M0-LIVE-002, E-M0-STATIC-002, E-M0-PR-001, E-M0-CI-001 |
 | 1. Contract and selectors | Manifest schema, identity, platform/libc selection, hostile inputs                         | None                        | Complete and CI-green in draft PR #8728                                     | `b9d80a4cb`; E-M2-RED-001, E-M2-CONTRACT-001, E-M2-CI-001               |
 | 2. Runtime builds         | Per-tuple assembly, native smoke, SBOM/provenance/signing                                  | None                        | Draft PR #8741; native build/source trust green; real signing/trust pending | `be32653a7`; E-M3-METADATA-CI-001, E-M3-WINDOWS-SOURCE-SIGNATURE-CI-001 |
-| 3. Release publication    | Prerequisite DAG, embedded manifest, draft upload/read-back gates                          | Asset-only                  | **In progress — 2026-07-15, Codex implementation owner**                    | E-M4-RELEASE-DAG-LOCAL-001; E-M4-RELEASE-DAG-CI-001                     |
+| 3. Release publication    | Prerequisite DAG, embedded manifest, draft upload/read-back gates                          | Asset-only                  | **In progress — 2026-07-15, Codex implementation owner**                    | E-M4-RELEASE-DAG-CI-001; E-M4-AGGREGATE-READBACK-CI-001                 |
 | 4. Desktop resolver/cache | Verified download, extraction, cache, offline behavior                                     | None/forced mode only       | Not started                                                                 | —                                                                       |
 | 5. Transfer/install       | Bounded transports, structured sentinel, bundled launch behind per-target Beta/forced mode | Per-target opt-in only      | Not started                                                                 | —                                                                       |
 | 6. Fallback/diagnostics   | Abort-and-join state machine, mode isolation, reason codes, target-mode configuration/UI   | Per-target Beta only        | Not started                                                                 | —                                                                       |
@@ -8989,9 +8993,67 @@ diff --check`.
   prerequisites/embedding, SSH transfer/install, fallback, performance, or an enabled tuple. The
   local symlink fixture is skipped on Windows, although the shared implementation rejects all
   non-regular directory entries and exact-head Windows execution remains required.
-- Follow-up: execute both suites on all six native jobs at the exact implementation head, then add
+- Follow-up: exact-head native execution is closed by E-M4-AGGREGATE-READBACK-CI-001. Add
   credential-free canonical manifest assembly/signature handoff without production credentials,
   publication, or a desktop consumer.
+
+### E-M4-AGGREGATE-READBACK-CI-001 — Aggregate and draft byte verifiers pass all six native jobs
+
+- Date: 2026-07-15
+- Owner: Codex implementation owner
+- Source: exact PR head `87a8e4dc3461ee1c118c223918f36c672749a60b`; implementation commit
+  `e995186545d4b584840cb7ec8cd1403fbd045a7b`; draft PR
+  [#8741](https://github.com/stablyai/orca/pull/8741).
+- Runner/network: GitHub-hosted native runners with normal artifact-build egress. The aggregate tests
+  use runner-local exclusive temporary directories. Draft read-back tests inject WHATWG `Response`
+  objects and make no GitHub API, CDN, release, signing-service, SSH, publication, or production call.
+  Exact jobs, resolved images, and full contract-suite durations:
+  - linux-x64-glibc job 87276316322: `ubuntu-24.04`, `ubuntu24` image `20260705.232.1`, X64,
+    Node v24.18.0; 34 files/197 tests in 3.64 s; job 05:31:27Z–05:35:54Z.
+  - linux-arm64-glibc job 87276316371: `ubuntu-24.04-arm`, `ubuntu24-arm64` image
+    `20260706.52.2`, ARM64, Node v24.18.0; 34 files/197 tests in 3.67 s; job
+    05:31:30Z–05:43:37Z. The digest-pinned builder-image pull took 8m20s; the subsequent two-build
+    runtime step passed in 2m33s.
+  - darwin-x64 job 87276316387: `macos-15-intel`, `macos15` image `20260629.0276.1`, X64,
+    Node v24.18.0; 34 files/197 tests in 17.99 s; job 05:31:28Z–05:37:13Z.
+  - darwin-arm64 job 87276316336: `macos-15`, `macos15` image `20260706.0213.1`, ARM64,
+    Node v24.18.0; 34 files/197 tests in 5.08 s; job 05:31:27Z–05:34:29Z.
+  - win32-x64 job 87276316353: `windows-2022`, `win22` image `20260706.237.1`, X64,
+    Node v24.18.0; 35 files/193 passing and 8 skipped tests in 9.35 s; job
+    05:31:27Z–05:36:57Z.
+  - win32-arm64 job 87276316340: `windows-11-arm`, `win11-arm64` image `20260706.102.1`,
+    ARM64, Node v24.18.0; 35 files/193 passing and 8 skipped tests in 10.03 s; job
+    05:31:27Z–05:39:57Z.
+- Commands: the workflow syntax-checks both modules and tests, then includes
+  `ssh-relay-runtime-aggregate-input.test.mjs` and
+  `ssh-relay-runtime-draft-readback.test.mjs` in `Run runtime artifact contract tests`. Evidence
+  inspection used `gh run view 29391666358 --repo stablyai/orca --log`, purpose-named `rg` filters,
+  and `gh run view 29391666358 --repo stablyai/orca --job <job-id> --log`.
+- Result: PASS on all six target-native build jobs. Draft read-back passes 10 tests on each runner;
+  aggregate input passes 7 on each POSIX runner and 6 with the one POSIX-symlink fixture skipped on
+  each Windows runner. Purpose-suite timings were draft/aggregate: linux x64 66/36 ms, Linux arm64
+  52/37 ms, macOS x64 258/54 ms, macOS arm64 46/22 ms, Windows x64 70/62 ms, and Windows arm64
+  86/49 ms. Shared implementation still rejects non-regular entries on Windows.
+- Concurrent regression: both Linux oldest-userland jobs 87277915889 and 87277915838 pass. Windows
+  x64 oldest-floor job 87277415457 passes. Overall artifact run conclusion is the expected `failure`
+  only because Windows arm64 oldest-floor job 87277415503 observes build 26200 instead of the exact
+  required build 26100; before that gate, archive/tree/Node/PTY/watcher smoke settles in 8,032.7284
+  ms with 49,922,048-byte RSS. PR Checks run
+  [29391666360](https://github.com/stablyai/orca/actions/runs/29391666360) job 87276316191 passes the
+  complete verify/package/CLI-smoke job from 05:31:28Z to 05:46:00Z. Golden E2E run
+  [29391666362](https://github.com/stablyai/orca/actions/runs/29391666362) passes Linux job
+  87276316058 and macOS job 87276316073.
+- Oracle proved: exact immutable archive declarations are bound to stable runner-local bytes on all
+  six native families; draft metadata, authenticated redirect handling, exact HTTP 200, bounded
+  streaming, cancellation, size, and SHA-256 policies execute consistently under Node 24. The
+  workflow remains read-only and cannot publish, access a signing environment, or connect a desktop
+  consumer.
+- Does not prove: real GitHub API/CDN behavior, a real/full-size draft asset, canonical manifest
+  generation, Ed25519 signing, native signing/trust, upload/recovery execution, desktop
+  prerequisites/embedding, SSH transfer/install, fallback, performance, or an enabled tuple.
+- Follow-up: implement credential-free canonical unsigned-manifest assembly plus bounded signing
+  request and returned-signature verification. Do not connect production credentials, publication,
+  desktop consumers, or tuple enablement.
 
 ## Accepted Gaps
 
