@@ -97,7 +97,10 @@ export function formatAccountAddStarted(provider: RuntimeAccountProvider, loginI
   return `Starting ${provider} login (loginId ${loginId})...`
 }
 
-export function formatAccountAddResult(result: RuntimeAccountPollAddResult): string {
+export function formatAccountAddResult(
+  result: RuntimeAccountPollAddResult,
+  options: { omitLoginUrl?: boolean } = {}
+): string {
   if (result.status === 'in_progress') {
     return `${result.provider} login is still in progress (loginId ${result.loginId}).`
   }
@@ -108,7 +111,9 @@ export function formatAccountAddResult(result: RuntimeAccountPollAddResult): str
   const accountLine = account
     ? `Added ${result.provider} account: ${account.email} (${account.id})`
     : `${result.provider} login completed.`
-  return result.loginUrl ? `${accountLine}\nLogin URL: ${result.loginUrl}` : accountLine
+  return result.loginUrl && !options.omitLoginUrl
+    ? `${accountLine}\nLogin URL: ${result.loginUrl}`
+    : accountLine
 }
 
 function findAddedAccount(

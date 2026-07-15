@@ -18,12 +18,16 @@ import { getRequiredStringFlag } from '../flags'
 import { RuntimeClientError } from '../runtime-client'
 import type { RuntimeClient, RuntimeRpcSuccess } from '../runtime-client'
 
-// Why: mirrors the main-process login timeouts (CodexAccountService /
-// ClaudeAccountService LOGIN_TIMEOUT_MS) plus grace for the pollAdd
-// long-poll round trip, so the CLI doesn't give up before the server does.
+// Why: must stay >= the main process's worst-case login duration + a grace
+// margin, or the CLI gives up before the server does. codex only runs
+// CodexAccountService's LOGIN_TIMEOUT_MS (120_000); 130_000 = 120s + 10s
+// grace. claude runs ClaudeAccountService's LOGIN_TIMEOUT_MS (180_000) THEN
+// STATUS_TIMEOUT_MS (20_000) sequentially (see src/main/claude-accounts/
+// service.ts), so the worst case is 200_000; 210_000 = 200s + 10s grace.
+// Keep this in sync if either service's timeouts change.
 const ADD_ACCOUNT_TIMEOUT_MS: Record<RuntimeAccountProvider, number> = {
   codex: 130_000,
-  claude: 190_000
+  claude: 210_000
 }
 const POLL_WINDOW_MS = 15_000
 const POLL_CLIENT_GRACE_MS = 5_000
@@ -45,12 +49,19 @@ function extractLoginUrl(outputTail: string): string | undefined {
   return match ? match[0].replace(/[).,\]}'"]+$/, '') : undefined
 }
 
+type PollAccountAddResult = {
+  response: RuntimeRpcSuccess<RuntimeAccountPollAddResult>
+  /** True once the login URL was already printed live during polling, so the
+   *  final human-readable summary can skip repeating it. */
+  announcedLoginUrl: boolean
+}
+
 async function pollAccountAdd(
   client: RuntimeClient,
   provider: RuntimeAccountProvider,
   loginId: string,
   json: boolean
-): Promise<RuntimeRpcSuccess<RuntimeAccountPollAddResult>> {
+): Promise<PollAccountAddResult> {
   const deadline = Date.now() + ADD_ACCOUNT_TIMEOUT_MS[provider]
   let printedChars = 0
   let announcedLoginUrl = false
@@ -86,7 +97,7 @@ async function pollAccountAdd(
     }
 
     if (status !== 'in_progress') {
-      return response
+      return { response, announcedLoginUrl }
     }
   }
 }
@@ -124,13 +135,22 @@ export const ACCOUNTS_HANDLERS: Record<string, CommandHandler> = {
       console.log(formatAccountAddStarted(provider, started.result.loginId))
     }
 
-    const finalResponse = await pollAccountAdd(client, provider, started.result.loginId, json)
+    const { response: finalResponse, announcedLoginUrl } = await pollAccountAdd(
+      client,
+      provider,
+      started.result.loginId,
+      json
+    )
     const loginUrl = extractLoginUrl(finalResponse.result.outputTail)
     const augmentedResponse: RuntimeRpcSuccess<RuntimeAccountPollAddResult> = {
       ...finalResponse,
       result: { ...finalResponse.result, ...(loginUrl ? { loginUrl } : {}) }
     }
-    printResult(augmentedResponse, json, formatAccountAddResult)
+    // Why: JSON output always carries loginUrl; only the human-readable summary
+    // omits it when the live poll already announced it, to avoid printing it twice.
+    printResult(augmentedResponse, json, (result) =>
+      formatAccountAddResult(result, { omitLoginUrl: announcedLoginUrl })
+    )
     if (finalResponse.result.status === 'failed') {
       process.exitCode = 1
     }

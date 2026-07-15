@@ -177,12 +177,42 @@ describe('orca accounts CLI handlers', () => {
     expect(written.join('')).toContain('Signed in.')
 
     const logged = vi.mocked(console.log).mock.calls.map((call) => String(call[0]))
-    expect(logged.some((line) => line.includes('Login URL'))).toBe(true)
+    expect(logged.some((line) => line.includes('Login URL (open on another device'))).toBe(true)
     expect(logged.some((line) => line.includes('auth.example.com/login?code=abc'))).toBe(true)
     expect(
       logged.some((line) => line.includes('Added codex account: codex@example.com (acc-codex-1)'))
     ).toBe(true)
+    // The final summary must not repeat the URL once the live poll already announced it.
+    const finalSummary = logged.at(-1)
+    expect(finalSummary).not.toContain('Login URL:')
     expect(process.exitCode).toBeUndefined()
+  })
+
+  it('omits the login URL from the final summary once it was announced live, but still prints it if only discovered at completion', async () => {
+    queueFixtures(
+      callMock,
+      okFixture('req_add', { loginId: 'login-5' }),
+      okFixture('req_poll_1', {
+        loginId: 'login-5',
+        provider: 'codex',
+        status: 'completed',
+        outputTail: 'Signed in without a printed URL.\n',
+        state: {
+          accounts: [{ id: 'acc-codex-2', email: 'codex2@example.com' }],
+          activeAccountId: 'acc-codex-2'
+        }
+      })
+    )
+
+    await main(['accounts', 'add', '--provider', 'codex'], '/tmp/repo')
+
+    const logged = vi.mocked(console.log).mock.calls.map((call) => String(call[0]))
+    // No URL was ever present in the output tail, so there is nothing to announce
+    // or repeat; the final summary should simply report the added account.
+    expect(logged.some((line) => line.includes('Login URL'))).toBe(false)
+    expect(
+      logged.some((line) => line.includes('Added codex account: codex2@example.com (acc-codex-2)'))
+    ).toBe(true)
   })
 
   it('adds a claude account without live output in --json mode, emitting one final JSON blob', async () => {
@@ -256,6 +286,52 @@ describe('orca accounts CLI handlers', () => {
       expect(vi.mocked(console.error).mock.calls[0][0]).toContain(
         'Timed out waiting for the codex login to finish'
       )
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('tolerates the real-world claude worst case (180s login + 20s status) without timing out client-side', async () => {
+    vi.useFakeTimers()
+    try {
+      queueFixtures(callMock, okFixture('req_add', { loginId: 'login-6' }))
+      let elapsedMs = 0
+      callMock.mockImplementation(async (method: string) => {
+        if (method === 'accounts.pollAdd') {
+          // 195s of polling mirrors the ClaudeAccountService worst case (180s
+          // login + 20s status, minus the last poll window) before completing.
+          if (elapsedMs < 195_000) {
+            elapsedMs += 15_000
+            vi.advanceTimersByTime(15_000)
+            return okFixture('req_poll_in_progress', {
+              loginId: 'login-6',
+              provider: 'claude',
+              status: 'in_progress',
+              outputTail: ''
+            })
+          }
+          return okFixture('req_poll_done', {
+            loginId: 'login-6',
+            provider: 'claude',
+            status: 'completed',
+            outputTail: 'Signed in.\n',
+            state: {
+              accounts: [{ id: 'acc-claude-2', email: 'claude2@example.com' }],
+              activeAccountId: 'acc-claude-2'
+            }
+          })
+        }
+        return okFixture('req_add', { loginId: 'login-6' })
+      })
+
+      await main(['accounts', 'add', '--provider', 'claude'], '/tmp/repo')
+
+      expect(process.exitCode).toBeUndefined()
+      expect(vi.mocked(console.error)).not.toHaveBeenCalled()
+      const logged = vi.mocked(console.log).mock.calls.map((call) => String(call[0]))
+      expect(
+        logged.some((line) => line.includes('Added claude account: claude2@example.com'))
+      ).toBe(true)
     } finally {
       vi.useRealTimers()
     }
