@@ -4,7 +4,7 @@ import { lstat, open, opendir } from 'node:fs/promises'
 import { isAbsolute, join, relative, sep } from 'node:path'
 import type { SkillBundleFileIdentity, SkillKnownSnapshot } from '../../shared/skill-freshness'
 
-type ObservedSkillFile = SkillBundleFileIdentity & { bytes: Buffer }
+type ObservedSkillFile = SkillBundleFileIdentity
 
 export type ObservedSkillPackage = {
   files: ObservedSkillFile[]
@@ -95,8 +95,8 @@ export function describeObservedSkillFile(
     classification,
     exactSha256,
     textNormalizedSha256,
-    identitySha256: normalized && !executable ? sha256(normalized) : exactSha256,
-    bytes
+    identitySha256:
+      textNormalizedSha256 !== null && !executable ? textNormalizedSha256 : exactSha256
   }
 }
 

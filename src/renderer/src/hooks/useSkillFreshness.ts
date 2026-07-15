@@ -11,6 +11,7 @@ let invalidationRevision = 0
 let completedRevision = -1
 let lastCompletedScanAt = 0
 let refreshSequence = 0
+let scheduledFocusRescan: number | null = null
 
 type SkillFreshnessSnapshot = {
   inventory: SkillFreshnessInventory | null
@@ -70,6 +71,10 @@ async function loadInventory(force: boolean): Promise<SkillFreshnessInventory> {
 }
 
 async function refreshSkillFreshness(force = true): Promise<void> {
+  if (scheduledFocusRescan !== null) {
+    window.clearTimeout(scheduledFocusRescan)
+    scheduledFocusRescan = null
+  }
   const sequence = ++refreshSequence
   // Why: eligibility is write authority for the draft command. Once invalidated,
   // stale bytes must stop authorizing UI even if the replacement scan fails.
@@ -91,10 +96,24 @@ async function refreshSkillFreshness(force = true): Promise<void> {
 }
 
 function onWindowFocus(): void {
-  if (Date.now() - lastCompletedScanAt < FOCUS_RESCAN_COOLDOWN_MS) {
+  const cooldownRemaining = FOCUS_RESCAN_COOLDOWN_MS - (Date.now() - lastCompletedScanAt)
+  if (cooldownRemaining <= 0) {
+    void refreshSkillFreshness(true)
     return
   }
-  void refreshSkillFreshness(true)
+  if (!snapshot.inventory?.eligibleUpdateNames.length || scheduledFocusRescan !== null) {
+    return
+  }
+  // Why: a focus event can follow an external edit. Retract stale update
+  // authority immediately, but keep rapid alt-tabs to one trailing disk scan.
+  publishSnapshot({ inventory: null, loading: true, error: null })
+  scheduledFocusRescan = window.setTimeout(
+    () => {
+      scheduledFocusRescan = null
+      void refreshSkillFreshness(true)
+    },
+    Math.min(cooldownRemaining, FOCUS_RESCAN_COOLDOWN_MS)
+  )
 }
 
 function onInstalledSkillsChanged(): void {
@@ -150,6 +169,10 @@ export const _skillFreshnessCacheForTests = {
     completedRevision = -1
     lastCompletedScanAt = 0
     refreshSequence = 0
+    if (scheduledFocusRescan !== null) {
+      window.clearTimeout(scheduledFocusRescan)
+      scheduledFocusRescan = null
+    }
     snapshot = { inventory: null, loading: false, error: null }
   }
 }

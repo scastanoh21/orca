@@ -28,6 +28,9 @@ describe('skill package identity', () => {
     const observed = await observeSkillPackage(root)
     const expected = describeObservedSkillFile('SKILL.md', Buffer.from('first\nsecond\n'), false)
 
+    // Why: scans can observe several package byte budgets concurrently; only
+    // hashes, not raw file buffers, should survive each file's identity pass.
+    expect(observed.files[0]).not.toHaveProperty('bytes')
     expect(
       matchingKnownSnapshot(observed, [
         {

@@ -1,4 +1,11 @@
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type KeyboardEvent
+} from 'react'
 import { AlertTriangle, CheckCircle2, ChevronDown, Loader2, RefreshCw } from 'lucide-react'
 import type { SkillFreshnessInventory } from '../../../../shared/skill-freshness'
 import { buildTargetedSkillUpdateCommand } from '../../../../shared/skill-freshness'
@@ -19,6 +26,7 @@ import { OnboardingInlineCommandTerminal } from '@/components/onboarding/Onboard
 import { FreshnessRow } from './skill-freshness-row'
 import {
   consumeSkillFreshnessUpdateDialogRequest,
+  getSkillFreshnessUpdateDialogRequest,
   subscribeSkillFreshnessUpdateDialog
 } from './skill-freshness-update-dialog'
 
@@ -125,7 +133,11 @@ function SummaryHeadline({
 
 export function SkillFreshnessUpdateDialog(): React.JSX.Element {
   const state = useSkillFreshness()
-  const [open, setOpen] = useState(false)
+  const open = useSyncExternalStore(
+    subscribeSkillFreshnessUpdateDialog,
+    getSkillFreshnessUpdateDialogRequest,
+    getSkillFreshnessUpdateDialogRequest
+  )
   const [terminalCommand, setTerminalCommand] = useState<string | null>(null)
   const [awaitingExitRefresh, setAwaitingExitRefresh] = useState(false)
   const terminalSubmittedRef = useRef(false)
@@ -135,18 +147,6 @@ export function SkillFreshnessUpdateDialog(): React.JSX.Element {
   const eligibleNameSet = useMemo(() => new Set(eligibleNames), [eligibleNames])
   const updateCommand = buildTargetedSkillUpdateCommand(eligibleNames)
   const summaryKind = summarizeInventory(inventory)
-
-  useEffect(() => {
-    const openIfRequested = (): void => {
-      if (consumeSkillFreshnessUpdateDialogRequest()) {
-        setOpen(true)
-      }
-    }
-    // Why: a request can arrive before this effect runs (dialog mounts after the
-    // nudge fires); consume on mount, then subscribe so neither path drops it.
-    openIfRequested()
-    return subscribeSkillFreshnessUpdateDialog(openIfRequested)
-  }, [])
 
   useEffect(() => {
     if (!open) {
@@ -185,10 +185,10 @@ export function SkillFreshnessUpdateDialog(): React.JSX.Element {
   ])
 
   const handleOpenChange = (next: boolean): void => {
-    setOpen(next)
     // Why: closing is the natural point to re-observe bytes so a completed update
     // clears the state and the lingering nudge does not fire again.
     if (!next) {
+      consumeSkillFreshnessUpdateDialogRequest()
       terminalSubmittedRef.current = false
       inventoryAtTerminalExitRef.current = null
       setAwaitingExitRefresh(false)
@@ -265,8 +265,13 @@ export function SkillFreshnessUpdateDialog(): React.JSX.Element {
           />
         ) : null}
 
+        {/* Why: Radix reads defaultOpen only on mount. Remount when a scan
+            becomes blocked so the required diagnostic details actually open. */}
         {hasInstallations ? (
-          <Collapsible defaultOpen={summaryKind === 'attention'}>
+          <Collapsible
+            key={summaryKind === 'attention' ? 'attention' : 'default'}
+            defaultOpen={summaryKind === 'attention'}
+          >
             <CollapsibleTrigger asChild>
               <Button
                 type="button"

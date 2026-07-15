@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-import { act, type ReactNode } from 'react'
+import { act, useState, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type {
@@ -60,7 +60,18 @@ vi.mock('@/components/ui/dialog', () => ({
 }))
 
 vi.mock('@/components/ui/collapsible', () => ({
-  Collapsible: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
+  Collapsible: ({
+    children,
+    defaultOpen = false
+  }: {
+    children?: ReactNode
+    defaultOpen?: boolean
+  }) => {
+    // Model Radix's uncontrolled default: changing defaultOpen only matters
+    // when the keyed disclosure remounts.
+    const [open] = useState(defaultOpen)
+    return <div data-collapsible-open={String(open)}>{children}</div>
+  },
   CollapsibleTrigger: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
   CollapsibleContent: ({ children }: { children?: ReactNode }) => <div>{children}</div>
 }))
@@ -203,6 +214,22 @@ describe('SkillFreshnessUpdateDialog', () => {
 
     expect(container?.textContent).toContain('All installed Orca skills are up to date.')
     expect(container?.querySelector('[data-testid="update-terminal"]')).toBeNull()
+  })
+
+  it('auto-expands Details when a rescan changes the result to blocked', async () => {
+    await renderDialog()
+    await openViaRequest()
+    expect(container?.querySelector('[data-collapsible-open="false"]')).not.toBeNull()
+
+    mocks.inventory = {
+      schemaVersion: 1,
+      installations: [placement('orca-cli', { topology: 'read-only' })],
+      eligibleUpdateNames: [],
+      scannedAt: 2
+    }
+    await rerender()
+
+    expect(container?.querySelector('[data-collapsible-open="true"]')).not.toBeNull()
   })
 
   it('does not replace or tear down a submitted command during a rescan', async () => {

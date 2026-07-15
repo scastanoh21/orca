@@ -24,8 +24,8 @@ function deferred<T>(): {
   return { promise, resolve, reject }
 }
 
-function inventory(scannedAt: number): SkillFreshnessInventory {
-  return { schemaVersion: 1, installations: [], eligibleUpdateNames: [], scannedAt }
+function inventory(scannedAt: number, eligibleUpdateNames: string[] = []): SkillFreshnessInventory {
+  return { schemaVersion: 1, installations: [], eligibleUpdateNames, scannedAt }
 }
 
 let root: Root | null = null
@@ -50,6 +50,7 @@ describe('useSkillFreshness', () => {
   })
 
   afterEach(async () => {
+    vi.useRealTimers()
     if (root) {
       await act(async () => root?.unmount())
     }
@@ -97,6 +98,30 @@ describe('useSkillFreshness', () => {
     await act(async () => window.dispatchEvent(new Event('orca:installed-agent-skills-changed')))
     await act(async () => second.resolve(inventory(2)))
     expect(freshnessInventory).toHaveBeenCalledTimes(2)
+    expect(state?.inventory?.scannedAt).toBe(2)
+  })
+
+  it('retracts stale update authority during the cooldown and runs one trailing focus scan', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-07-15T00:00:00Z'))
+    const second = deferred<SkillFreshnessInventory>()
+    const freshnessInventory = vi
+      .fn()
+      .mockResolvedValueOnce(inventory(1, ['orca-cli']))
+      .mockReturnValueOnce(second.promise)
+    window.api = { skills: { freshnessInventory } } as never
+
+    await act(async () => root?.render(<Probe />))
+    expect(state?.inventory?.eligibleUpdateNames).toEqual(['orca-cli'])
+
+    await act(async () => window.dispatchEvent(new Event('focus')))
+    expect(freshnessInventory).toHaveBeenCalledTimes(1)
+    expect(state?.inventory).toBeNull()
+    expect(state?.loading).toBe(true)
+
+    await act(async () => vi.advanceTimersByTimeAsync(15_000))
+    expect(freshnessInventory).toHaveBeenCalledTimes(2)
+    await act(async () => second.resolve(inventory(2)))
     expect(state?.inventory?.scannedAt).toBe(2)
   })
 
