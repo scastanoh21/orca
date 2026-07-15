@@ -165,6 +165,37 @@ If you later install the desktop CLI from Orca settings, use that CLI for normal
 shell workflows. Keep the AppImage path in systemd so service restarts do not
 depend on an interactive shell profile.
 
+## Managing Agent Accounts
+
+Use the `accounts` commands to manage the Codex and Claude accounts a headless
+server signs agents in with. They work the same way whether you run the
+AppImage directly or a separately installed CLI:
+
+```bash
+/opt/orca/orca-linux.AppImage accounts list --json
+/opt/orca/orca-linux.AppImage accounts add --provider codex
+/opt/orca/orca-linux.AppImage accounts add --provider claude --json
+/opt/orca/orca-linux.AppImage accounts select --provider codex --id <accountId>
+/opt/orca/orca-linux.AppImage accounts rm --provider claude --id <accountId>
+```
+
+`accounts list` shows every managed account per provider, which one is active,
+and its rate-limit usage when the server has already fetched it.
+
+`accounts add` runs the provider's login (`codex login` or `claude auth login
+--claudeai`) on the server and streams its raw output to your terminal live,
+including the OAuth URL the login prints. Since a headless server has no
+browser, copy that URL and open it on another device to finish signing in; the
+command keeps polling until the login completes or its timeout (a little over
+two minutes for Codex, a little over three for Claude) elapses. `--json` mode
+suppresses the live stream and prints one final JSON result once the login
+settles, with the detected login URL included.
+
+`accounts select` and `accounts rm` take `--provider codex|claude` and `--id
+<accountId>` (from `accounts list --json`) to switch the active account or
+remove one. `accounts rm` is destructive — it permanently deletes the managed
+account's stored credentials.
+
 ## Troubleshooting
 
 - `dlopen(): error loading libfuse.so.2`: install `libfuse2`.
