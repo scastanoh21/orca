@@ -65,6 +65,7 @@ function dependencies(client: RpcClient, events: string[]) {
       throw new Error('director unavailable')
     }),
     getNextHostName: vi.fn(async () => 'Blue Whale'),
+    findExistingHost: vi.fn(async (_publicKeyB64: string) => null),
     saveHost: vi.fn(async (_host: HostProfile) => {
       events.push('save-host')
     }),
@@ -134,6 +135,36 @@ describe('pre-profile pairing coordinator', () => {
       lastConnected: now
     })
     expect(events).toEqual(['connect', 'save-host'])
+  })
+
+  it('reuses the existing host id and name when re-pairing the same desktop key (no duplicate)', async () => {
+    // STA-1840: re-pairing a desktop already stored under a different id must
+    // merge into that card, not mint a new host-${now} and duplicate the row.
+    const events: string[] = []
+    const client = fakeClient([success({ version: '1.0.0' })])
+    const deps = dependencies(client, events)
+    deps.findExistingHost = vi.fn(async (publicKeyB64: string) => {
+      expect(publicKeyB64).toBe(directOffer.publicKeyB64)
+      return { id: 'host-existing', name: 'Studio Mac' }
+    })
+
+    const attempt = startPreProfilePairing({
+      offer: directOffer,
+      timeoutMs: 5_000,
+      dependencies: deps
+    })
+
+    await expect(attempt.result).resolves.toEqual({ hostId: 'host-existing' })
+    expect(deps.saveHost).toHaveBeenCalledWith({
+      id: 'host-existing',
+      name: 'Studio Mac',
+      endpoint: directOffer.endpoint,
+      deviceToken: directOffer.deviceToken,
+      publicKeyB64: directOffer.publicKeyB64,
+      lastConnected: now
+    })
+    // Existing host keeps its name — no fresh name minted.
+    expect(deps.getNextHostName).not.toHaveBeenCalled()
   })
 
   it('journals before connecting and publishes only after authoritative direct install', async () => {

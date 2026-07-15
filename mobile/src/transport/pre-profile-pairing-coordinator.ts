@@ -6,7 +6,7 @@ import {
   type MobileRelayEndpoint
 } from '../../../src/shared/mobile-relay-credential-contract'
 import { connect, type ConnectOptions } from './rpc-client'
-import { getNextHostName, saveHost } from './host-store'
+import { findStoredHostByPublicKey, getNextHostName, saveHost } from './host-store'
 import type { HostProfile, PairingOffer, RpcResponse } from './types'
 import {
   createMobileRelayPairingJournal,
@@ -40,6 +40,7 @@ type Dependencies = {
   connectRelay: typeof connectMobileRelayForPairing
   resolveInviteDirector: typeof resolvePairingInviteThroughDirector
   getNextHostName: typeof getNextHostName
+  findExistingHost: typeof findStoredHostByPublicKey
   saveHost: typeof saveHost
   saveJournal: typeof saveMobileRelayPairingJournal
   updateJournal: typeof updateMobileRelayPairingJournal
@@ -54,6 +55,7 @@ const defaultDependencies: Dependencies = {
   connectRelay: connectMobileRelayForPairing,
   resolveInviteDirector: resolvePairingInviteThroughDirector,
   getNextHostName,
+  findExistingHost: findStoredHostByPublicKey,
   saveHost,
   saveJournal: saveMobileRelayPairingJournal,
   updateJournal: updateMobileRelayPairingJournal,
@@ -130,8 +132,16 @@ async function runPairing(
   isDisposed: () => boolean
 ): Promise<{ hostId: string }> {
   const now = dependencies.now()
-  const hostId = `host-${now}`
-  const hostName = await dependencies.getNextHostName()
+  // Why: if this desktop (by its pinned public key) is already paired, reuse
+  // that host's id and name so the pairing merges into the existing card
+  // instead of minting a fresh host-${now} and duplicating the row (STA-1840).
+  // Every downstream write (journal, credential bundle, saveHost) then keys to
+  // the same id, so persistHost updates in place. A new desktop key falls
+  // through to a fresh id/name.
+  const existing = await dependencies.findExistingHost(offer.publicKeyB64)
+  assertActive(isDisposed)
+  const hostId = existing?.id ?? `host-${now}`
+  const hostName = existing?.name ?? (await dependencies.getNextHostName())
   assertActive(isDisposed)
   let journal: MobileRelayPairingJournal | null = null
   if (offer.relay && dependencies.platform !== 'web') {

@@ -34,6 +34,7 @@ vi.mock('./host-credential-cleanup', () => ({
 }))
 
 import {
+  findStoredHostByPublicKey,
   loadHosts,
   MobileRelayUpgradeHostRemovedError,
   removeHost,
@@ -90,6 +91,18 @@ describe('host-store list mutations', () => {
     secureStoreMock.getItemAsync.mockImplementation(async (key: string) =>
       key.endsWith(HOST_ONE.id) || key.endsWith(HOST_TWO.id) ? `token-${key.at(-1)}` : null
     )
+  })
+
+  it('finds a stored host by its pinned public key (STA-1840 re-pair dedup)', async () => {
+    await expect(findStoredHostByPublicKey(HOST_TWO.publicKeyB64)).resolves.toEqual({
+      id: HOST_TWO.id,
+      name: HOST_TWO.name
+    })
+  })
+
+  it('returns null when no stored host has the public key, or the key is empty', async () => {
+    await expect(findStoredHostByPublicKey('unpaired-key')).resolves.toBeNull()
+    await expect(findStoredHostByPublicKey('')).resolves.toBeNull()
   })
 
   it('commits the removal when credential cleanup scheduling rejects', async () => {

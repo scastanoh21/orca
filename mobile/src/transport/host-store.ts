@@ -190,6 +190,25 @@ async function loadStoredHosts(): Promise<StoredHostProfile[]> {
   }
 }
 
+// Why: re-pairing the same desktop must merge into its existing card, not mint
+// a new host id and duplicate the row (STA-1840). publicKeyB64 is the desktop's
+// pinned identity key — stable across re-pairs, unlike id/endpoint/relay — so
+// it is the right dedup key. Reads the durable stored list (not loadHosts) so a
+// host whose keychain token read is transiently failing still matches and is
+// not duplicated.
+export async function findStoredHostByPublicKey(
+  publicKeyB64: string
+): Promise<{ id: string; name: string } | null> {
+  if (!publicKeyB64) {
+    return null
+  }
+  // Why: settle any in-flight save/remove first so a re-pair racing its own
+  // prior write matches the just-persisted host rather than an empty snapshot.
+  await hostListMutation
+  const match = (await loadStoredHosts()).find((h) => h.publicKeyB64 === publicKeyB64)
+  return match ? { id: match.id, name: match.name } : null
+}
+
 async function readStoredHostsForMutation(): Promise<StoredHostProfile[]> {
   try {
     const parsed = parseStoredHosts(await AsyncStorage.getItem(STORAGE_KEY))
