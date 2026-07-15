@@ -13,9 +13,14 @@
  */
 import { describe, expect, it } from 'vitest'
 import { Terminal } from '@xterm/headless'
+import packageJson from '../../../../../package.json'
+import { clearTerminalScrollbackAndFollowOutput } from './terminal-scrollback-clear'
 
 type TerminalWithBufferService = Terminal & {
-  _core?: { _bufferService?: { isUserScrolling?: boolean } }
+  _core?: {
+    _bufferService?: { isUserScrolling?: boolean }
+    coreService?: { onUserInput?: (listener: () => void) => { dispose: () => void } }
+  }
 }
 
 function write(term: Terminal, data: string): Promise<void> {
@@ -29,6 +34,12 @@ async function writeLines(term: Terminal, count: number, label: string): Promise
 }
 
 describe('xterm native user-scrolling contract (vendored 6.1.0-beta.287)', () => {
+  it('pins headless and renderer xterm to the same version', () => {
+    expect(packageJson.dependencies['@xterm/headless']).toBe(
+      packageJson.devDependencies['@xterm/xterm']
+    )
+  })
+
   it('keeps a scrolled-up viewport stable while output is written', async () => {
     const term = new Terminal({ rows: 10, cols: 40, scrollback: 1000, allowProposedApi: true })
     await writeLines(term, 30, 'line')
@@ -44,6 +55,25 @@ describe('xterm native user-scrolling contract (vendored 6.1.0-beta.287)', () =>
     expect(buffer.baseY).toBe(pinnedY + 15)
   })
 
+  it('treats a viewport one row above bottom as user-scrolling through output', async () => {
+    const term = new Terminal({
+      rows: 10,
+      cols: 40,
+      scrollback: 1000,
+      allowProposedApi: true
+    }) as TerminalWithBufferService
+    await writeLines(term, 30, 'line')
+    const buffer = term.buffer.active
+
+    term.scrollLines(-1)
+    const pinnedY = buffer.viewportY
+    expect(pinnedY).toBe(buffer.baseY - 1)
+    expect(term._core?._bufferService?.isUserScrolling).toBe(true)
+
+    await writeLines(term, 5, 'more')
+    expect(buffer.viewportY).toBe(pinnedY)
+  })
+
   it('follows output at the bottom and re-follows after scrolling back down', async () => {
     const term = new Terminal({ rows: 10, cols: 40, scrollback: 1000, allowProposedApi: true })
     await writeLines(term, 30, 'line')
@@ -56,6 +86,43 @@ describe('xterm native user-scrolling contract (vendored 6.1.0-beta.287)', () =>
     term.scrollToBottom()
     await writeLines(term, 5, 'after')
     expect(buffer.viewportY).toBe(buffer.baseY)
+  })
+
+  it('applies scrollOnUserInput before notifying onData listeners', async () => {
+    const term = new Terminal({ rows: 10, cols: 40, scrollback: 1000, allowProposedApi: true })
+    await writeLines(term, 30, 'line')
+    const buffer = term.buffer.active
+    term.scrollLines(-5)
+    let viewportSeenByOnData = -1
+    const subscription = term.onData(() => {
+      viewportSeenByOnData = buffer.viewportY
+    })
+
+    term.input('a', true)
+
+    // Why: Orca resyncs typing intent synchronously from onData, so this
+    // xterm ordering is part of the pinned-version contract.
+    expect(viewportSeenByOnData).toBe(buffer.baseY)
+    subscription.dispose()
+  })
+
+  it('distinguishes real user input from parser auto-replies', async () => {
+    const term = new Terminal({
+      rows: 10,
+      cols: 40,
+      allowProposedApi: true
+    }) as TerminalWithBufferService
+    expect(term._core?.coreService?.onUserInput).toBeTypeOf('function')
+    let userInputCount = 0
+    const subscription = term._core?.coreService?.onUserInput?.(() => {
+      userInputCount += 1
+    })
+
+    term.input('a', true)
+    await write(term, '\x1b[6n')
+
+    expect(userInputCount).toBe(1)
+    subscription?.dispose()
   })
 
   it('walks a pinned viewport down content-stably when scrollback trims', async () => {
@@ -84,12 +151,32 @@ describe('xterm native user-scrolling contract (vendored 6.1.0-beta.287)', () =>
     const bufferService = term._core?._bufferService
     expect(typeof bufferService?.isUserScrolling).toBe('boolean')
 
-    // scrollLines/scrollToBottom self-manage the flag from real movement —
-    // Orca's programmatic scrollToLine/scrollToBottom restores inherit this.
+    // scrollLines/scrollToBottom self-manage the flag, so Orca's programmatic
+    // scroll restores inherit xterm's native live-output ownership.
     expect(bufferService?.isUserScrolling).toBe(false)
     term.scrollLines(-5)
     expect(bufferService?.isUserScrolling).toBe(true)
     term.scrollToBottom()
     expect(bufferService?.isUserScrolling).toBe(false)
+  })
+
+  it('resets native user-scrolling when a pinned scrollback is cleared', async () => {
+    const term = new Terminal({
+      rows: 10,
+      cols: 40,
+      scrollback: 1000,
+      allowProposedApi: true
+    }) as TerminalWithBufferService
+    await writeLines(term, 30, 'line')
+    term.scrollLines(-5)
+    expect(term._core?._bufferService?.isUserScrolling).toBe(true)
+
+    clearTerminalScrollbackAndFollowOutput(term)
+    expect(term.buffer.active.viewportY).toBe(0)
+    expect(term.buffer.active.baseY).toBe(0)
+    expect(term._core?._bufferService?.isUserScrolling).toBe(false)
+
+    await writeLines(term, 15, 'after-clear')
+    expect(term.buffer.active.viewportY).toBe(term.buffer.active.baseY)
   })
 })

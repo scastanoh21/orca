@@ -198,6 +198,10 @@ test.describe('Terminal pinned viewport with streaming agent across worktree swi
       expect(
         bottomDistance,
         `settled ${bottomDistance} rows above the bottom (pinned 6 rows above)`
+      ).toBeGreaterThan(1)
+      expect(
+        bottomDistance,
+        `settled ${bottomDistance} rows above the bottom (pinned 6 rows above)`
       ).toBeLessThan(80)
     } finally {
       rmSync(scriptPath, { force: true })
