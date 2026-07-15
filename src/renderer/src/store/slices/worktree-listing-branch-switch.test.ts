@@ -27,14 +27,24 @@ function makeWorktree(overrides: Partial<Worktree> & { id: string }): Worktree {
 }
 
 const hasLinkedPR = (worktree: Worktree): boolean => worktree.linkedPR != null
+const matchesAnyHost = (): boolean => true
 
 describe('routeListingBranchSwitchesThroughGitIdentity', () => {
   it('routes a listing-observed branch switch through updateWorktreeGitIdentity', () => {
     const updateWorktreeGitIdentity = vi.fn()
+    const current = [makeWorktree({ id: 'repo1::/path/wt1', linkedPR: 101 })]
 
     routeListingBranchSwitchesThroughGitIdentity({
-      current: [makeWorktree({ id: 'repo1::/path/wt1', linkedPR: 101 })],
-      incoming: [{ id: 'repo1::/path/wt1', branch: 'refs/heads/feature-two', head: 'def456' }],
+      requestStarted: current,
+      current,
+      incoming: [
+        makeWorktree({
+          id: 'repo1::/path/wt1',
+          branch: 'refs/heads/feature-two',
+          head: 'def456'
+        })
+      ],
+      matchesRefreshHost: matchesAnyHost,
       hasBranchScopedReviewContext: hasLinkedPR,
       updateWorktreeGitIdentity
     })
@@ -48,10 +58,19 @@ describe('routeListingBranchSwitchesThroughGitIdentity', () => {
 
   it('does nothing when the branch is unchanged', () => {
     const updateWorktreeGitIdentity = vi.fn()
+    const current = [makeWorktree({ id: 'repo1::/path/wt1', linkedPR: 101 })]
 
     routeListingBranchSwitchesThroughGitIdentity({
-      current: [makeWorktree({ id: 'repo1::/path/wt1', linkedPR: 101 })],
-      incoming: [{ id: 'repo1::/path/wt1', branch: 'refs/heads/feature-one', head: 'def456' }],
+      requestStarted: current,
+      current,
+      incoming: [
+        makeWorktree({
+          id: 'repo1::/path/wt1',
+          branch: 'refs/heads/feature-one',
+          head: 'def456'
+        })
+      ],
+      matchesRefreshHost: matchesAnyHost,
       hasBranchScopedReviewContext: hasLinkedPR,
       updateWorktreeGitIdentity
     })
@@ -61,10 +80,19 @@ describe('routeListingBranchSwitchesThroughGitIdentity', () => {
 
   it('skips entries without branch-scoped review context (stale-refetch protection)', () => {
     const updateWorktreeGitIdentity = vi.fn()
+    const current = [makeWorktree({ id: 'repo1::/path/wt1', linkedPR: null })]
 
     routeListingBranchSwitchesThroughGitIdentity({
-      current: [makeWorktree({ id: 'repo1::/path/wt1', linkedPR: null })],
-      incoming: [{ id: 'repo1::/path/wt1', branch: 'refs/heads/feature-two', head: 'def456' }],
+      requestStarted: current,
+      current,
+      incoming: [
+        makeWorktree({
+          id: 'repo1::/path/wt1',
+          branch: 'refs/heads/feature-two',
+          head: 'def456'
+        })
+      ],
+      matchesRefreshHost: matchesAnyHost,
       hasBranchScopedReviewContext: hasLinkedPR,
       updateWorktreeGitIdentity
     })
@@ -74,10 +102,19 @@ describe('routeListingBranchSwitchesThroughGitIdentity', () => {
 
   it('skips incoming worktrees with no current entry (cold hydration)', () => {
     const updateWorktreeGitIdentity = vi.fn()
+    const current = [makeWorktree({ id: 'repo1::/path/other', linkedPR: 101 })]
 
     routeListingBranchSwitchesThroughGitIdentity({
-      current: [makeWorktree({ id: 'repo1::/path/other', linkedPR: 101 })],
-      incoming: [{ id: 'repo1::/path/wt1', branch: 'refs/heads/feature-two', head: 'def456' }],
+      requestStarted: current,
+      current,
+      incoming: [
+        makeWorktree({
+          id: 'repo1::/path/wt1',
+          branch: 'refs/heads/feature-two',
+          head: 'def456'
+        })
+      ],
+      matchesRefreshHost: matchesAnyHost,
       hasBranchScopedReviewContext: hasLinkedPR,
       updateWorktreeGitIdentity
     })
@@ -89,8 +126,16 @@ describe('routeListingBranchSwitchesThroughGitIdentity', () => {
     const updateWorktreeGitIdentity = vi.fn()
 
     routeListingBranchSwitchesThroughGitIdentity({
+      requestStarted: undefined,
       current: undefined,
-      incoming: [{ id: 'repo1::/path/wt1', branch: 'refs/heads/feature-two', head: 'def456' }],
+      incoming: [
+        makeWorktree({
+          id: 'repo1::/path/wt1',
+          branch: 'refs/heads/feature-two',
+          head: 'def456'
+        })
+      ],
+      matchesRefreshHost: matchesAnyHost,
       hasBranchScopedReviewContext: hasLinkedPR,
       updateWorktreeGitIdentity
     })
@@ -100,10 +145,13 @@ describe('routeListingBranchSwitchesThroughGitIdentity', () => {
 
   it('maps an empty listing branch to the explicit detached-HEAD signal', () => {
     const updateWorktreeGitIdentity = vi.fn()
+    const current = [makeWorktree({ id: 'repo1::/path/wt1', linkedPR: 101 })]
 
     routeListingBranchSwitchesThroughGitIdentity({
-      current: [makeWorktree({ id: 'repo1::/path/wt1', linkedPR: 101 })],
-      incoming: [{ id: 'repo1::/path/wt1', branch: '', head: 'def456' }],
+      requestStarted: current,
+      current,
+      incoming: [makeWorktree({ id: 'repo1::/path/wt1', branch: '', head: 'def456' })],
+      matchesRefreshHost: matchesAnyHost,
       hasBranchScopedReviewContext: hasLinkedPR,
       updateWorktreeGitIdentity
     })
@@ -112,5 +160,115 @@ describe('routeListingBranchSwitchesThroughGitIdentity', () => {
       head: 'def456',
       branch: null
     })
+  })
+
+  it('rejects a listing response when the branch changed again after the request started', () => {
+    const updateWorktreeGitIdentity = vi.fn()
+    const current = [
+      makeWorktree({
+        id: 'repo1::/path/wt1',
+        branch: 'refs/heads/feature-three',
+        head: 'newest-head',
+        linkedPR: 303
+      })
+    ]
+
+    const reconciled = routeListingBranchSwitchesThroughGitIdentity({
+      requestStarted: [
+        makeWorktree({
+          id: 'repo1::/path/wt1',
+          branch: 'refs/heads/feature-one',
+          linkedPR: 101
+        })
+      ],
+      current,
+      incoming: [
+        makeWorktree({
+          id: 'repo1::/path/wt1',
+          branch: 'refs/heads/feature-two',
+          head: 'stale-head'
+        })
+      ],
+      matchesRefreshHost: matchesAnyHost,
+      hasBranchScopedReviewContext: hasLinkedPR,
+      updateWorktreeGitIdentity
+    })
+
+    expect(updateWorktreeGitIdentity).not.toHaveBeenCalled()
+    expect(reconciled).toEqual(current)
+  })
+
+  it('preserves a manual relink made while the listing request was in flight', () => {
+    const updateWorktreeGitIdentity = vi.fn()
+    const requestStarted = [makeWorktree({ id: 'repo1::/path/wt1', linkedPR: 101 })]
+    const current = [makeWorktree({ id: 'repo1::/path/wt1', linkedPR: 303 })]
+
+    const reconciled = routeListingBranchSwitchesThroughGitIdentity({
+      requestStarted,
+      current,
+      incoming: [
+        makeWorktree({
+          id: 'repo1::/path/wt1',
+          branch: 'refs/heads/feature-two',
+          head: 'stale-head',
+          linkedPR: 101
+        })
+      ],
+      matchesRefreshHost: matchesAnyHost,
+      hasBranchScopedReviewContext: hasLinkedPR,
+      updateWorktreeGitIdentity
+    })
+
+    expect(updateWorktreeGitIdentity).not.toHaveBeenCalled()
+    expect(reconciled).toEqual(current)
+  })
+
+  it('fails closed when the same worktree id belongs to multiple execution hosts', () => {
+    const updateWorktreeGitIdentity = vi.fn()
+    const requestStarted = [
+      makeWorktree({ id: 'repo1::/same/path', hostId: 'local', linkedPR: 101 }),
+      makeWorktree({ id: 'repo1::/same/path', hostId: 'ssh:ssh-1', linkedPR: 202 })
+    ]
+
+    routeListingBranchSwitchesThroughGitIdentity({
+      requestStarted,
+      current: requestStarted,
+      incoming: [
+        makeWorktree({
+          id: 'repo1::/same/path',
+          branch: 'refs/heads/feature-two',
+          head: 'remote-head'
+        })
+      ],
+      matchesRefreshHost: matchesAnyHost,
+      hasBranchScopedReviewContext: hasLinkedPR,
+      updateWorktreeGitIdentity
+    })
+
+    expect(updateWorktreeGitIdentity).not.toHaveBeenCalled()
+  })
+
+  it('does not route an old-host response through a row now owned by another host', () => {
+    const updateWorktreeGitIdentity = vi.fn()
+
+    routeListingBranchSwitchesThroughGitIdentity({
+      requestStarted: [
+        makeWorktree({ id: 'repo1::/same/path', hostId: 'ssh:ssh-1', linkedPR: 101 })
+      ],
+      current: [makeWorktree({ id: 'repo1::/same/path', hostId: 'ssh:ssh-2', linkedPR: 202 })],
+      incoming: [
+        makeWorktree({
+          id: 'repo1::/same/path',
+          hostId: 'ssh:ssh-1',
+          branch: 'refs/heads/feature-two',
+          head: 'old-host-head'
+        })
+      ],
+      matchesRefreshHost: (worktree) => worktree.hostId === 'ssh:ssh-1',
+      hasBranchScopedReviewContext: hasLinkedPR,
+      updateWorktreeGitIdentity
+    })
+
+    expect(updateWorktreeGitIdentity).not.toHaveBeenCalled()
   })
 })

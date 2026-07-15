@@ -450,6 +450,47 @@ describe('fetchWorktrees', () => {
     })
   })
 
+  it('does not merge a stale listing row over a newer branch and review link', async () => {
+    const store = createTestStore()
+    const worktreeId = 'repo1::/path/wt1'
+    const requestStarted = makeWorktree({
+      id: worktreeId,
+      repoId: 'repo1',
+      path: '/path/wt1',
+      branch: 'refs/heads/feature-one',
+      head: 'first-head',
+      linkedPR: 101
+    })
+    const staleResponse = makeWorktree({
+      ...requestStarted,
+      branch: 'refs/heads/feature-two',
+      head: 'stale-head',
+      linkedPR: 202
+    })
+    let resolveListing!: (worktrees: Worktree[]) => void
+    const listing = new Promise<Worktree[]>((resolve) => {
+      resolveListing = resolve
+    })
+    worktreeListMock.mockReturnValueOnce(listing)
+    store.setState({ worktreesByRepo: { repo1: [requestStarted] } } as Partial<AppState>)
+
+    const refresh = store.getState().fetchWorktrees('repo1')
+    await vi.waitFor(() => expect(worktreeListMock).toHaveBeenCalledTimes(1))
+    const latest = makeWorktree({
+      ...requestStarted,
+      branch: 'refs/heads/feature-three',
+      head: 'latest-head',
+      linkedPR: 303
+    })
+    store.setState({ worktreesByRepo: { repo1: [latest] } } as Partial<AppState>)
+    resolveListing([staleResponse])
+
+    await refresh
+
+    expect(store.getState().worktreesByRepo.repo1).toEqual([latest])
+    expect(mockApi.worktrees.updateMeta).not.toHaveBeenCalled()
+  })
+
   it('updates the repo entry when only the persisted base ref changes', async () => {
     const store = createTestStore()
     const existing = makeWorktree({

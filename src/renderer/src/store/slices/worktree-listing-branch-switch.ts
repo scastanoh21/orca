@@ -1,5 +1,31 @@
 import type { Worktree } from '../../../../shared/types'
 
+function indexUnambiguousWorktrees(
+  worktrees: readonly Worktree[],
+  include?: (worktree: Worktree) => boolean
+): Map<string, Worktree | null> {
+  const byId = new Map<string, Worktree | null>()
+  for (const worktree of worktrees) {
+    if (include && !include(worktree)) {
+      continue
+    }
+    byId.set(worktree.id, byId.has(worktree.id) ? null : worktree)
+  }
+  return byId
+}
+
+function branchScopedReviewContextMatches(left: Worktree, right: Worktree): boolean {
+  return (
+    left.linkedPR === right.linkedPR &&
+    left.linkedGitLabMR === right.linkedGitLabMR &&
+    left.linkedBitbucketPR === right.linkedBitbucketPR &&
+    left.linkedAzureDevOpsPR === right.linkedAzureDevOpsPR &&
+    left.linkedGiteaPR === right.linkedGiteaPR &&
+    left.pushTarget?.remoteName === right.pushTarget?.remoteName &&
+    left.pushTarget?.branchName === right.pushTarget?.branchName
+  )
+}
+
 /**
  * Route branch switches observed by a worktree-listing refresh through
  * `updateWorktreeGitIdentity` before the listing is merged into the store.
@@ -18,22 +44,52 @@ import type { Worktree } from '../../../../shared/types'
  * listing row must not roll back a newer branch identity.
  */
 export function routeListingBranchSwitchesThroughGitIdentity(args: {
+  requestStarted: readonly Worktree[] | undefined
   current: readonly Worktree[] | undefined
-  incoming: readonly Pick<Worktree, 'id' | 'branch' | 'head'>[]
+  incoming: Worktree[]
+  matchesRefreshHost: (worktree: Worktree) => boolean
   hasBranchScopedReviewContext: (worktree: Worktree) => boolean
   updateWorktreeGitIdentity: (
     worktreeId: string,
     identity: { head?: string; branch?: string | null }
   ) => void
-}): void {
-  const { current, incoming, hasBranchScopedReviewContext, updateWorktreeGitIdentity } = args
-  if (!current?.length) {
-    return
+}): Worktree[] {
+  const {
+    requestStarted,
+    current,
+    incoming,
+    matchesRefreshHost,
+    hasBranchScopedReviewContext,
+    updateWorktreeGitIdentity
+  } = args
+  if (!requestStarted?.length || !current?.length) {
+    return incoming
   }
-  const currentById = new Map(current.map((worktree) => [worktree.id, worktree]))
-  for (const worktree of incoming) {
-    const existing = currentById.get(worktree.id)
+
+  const allLatestById = indexUnambiguousWorktrees(current)
+  const startedById = indexUnambiguousWorktrees(requestStarted, matchesRefreshHost)
+  const latestById = indexUnambiguousWorktrees(current, matchesRefreshHost)
+  let reconciled: Worktree[] | null = null
+  for (const [index, worktree] of incoming.entries()) {
+    const requestStartedWorktree = startedById.get(worktree.id)
+    const existing = latestById.get(worktree.id)
+    const isAmbiguousAcrossHosts = allLatestById.get(worktree.id) === null
     if (
+      requestStartedWorktree &&
+      existing &&
+      (existing.branch !== requestStartedWorktree.branch ||
+        existing.head !== requestStartedWorktree.head ||
+        !branchScopedReviewContextMatches(existing, requestStartedWorktree))
+    ) {
+      // Why: rejecting the clear alone is insufficient; preserve the newer row
+      // so the subsequent listing merge cannot roll its branch and metadata back.
+      reconciled ??= [...incoming]
+      reconciled[index] = existing
+      continue
+    }
+    if (
+      isAmbiguousAcrossHosts ||
+      !requestStartedWorktree ||
       !existing ||
       existing.branch === worktree.branch ||
       !hasBranchScopedReviewContext(existing)
@@ -47,4 +103,5 @@ export function routeListingBranchSwitchesThroughGitIdentity(args: {
       branch: worktree.branch === '' ? null : worktree.branch
     })
   }
+  return reconciled ?? incoming
 }
