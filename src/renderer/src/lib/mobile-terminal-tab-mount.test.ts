@@ -37,6 +37,18 @@ describe('planMobileTerminalTabMount', () => {
     ).toBeNull()
   })
 
+  it('does not mount either tab when stale persistence has duplicate pty ownership', () => {
+    const s = state(200)
+    s.terminalLayoutsByTabId['tab-199'] = {
+      root: null,
+      activeLeafId: null,
+      expandedLeafId: null,
+      ptyIdsByLeafId: { leaf: 'wt@@173' }
+    }
+
+    expect(planMobileTerminalTabMount(s, { worktreeId: 'wt', ptyId: 'wt@@173' })).toBeNull()
+  })
+
   it('does not mount a hidden worktree for a stale direct tab id', () => {
     const isTabMounted = vi.fn()
 

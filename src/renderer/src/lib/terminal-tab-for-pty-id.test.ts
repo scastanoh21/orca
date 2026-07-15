@@ -40,6 +40,19 @@ describe('resolveTerminalTabIdForPtyId', () => {
     expect(resolveTerminalTabIdForPtyId(s, 'wt', 'wt@@nope')).toBeNull()
   })
 
+  it('returns null when stale persistence binds the ptyId to multiple tabs', () => {
+    const s = state({
+      tabs: {
+        wt: [
+          { id: 'tab-a', ptyId: 'wt@@1' },
+          { id: 'tab-b', ptyId: null }
+        ]
+      },
+      layouts: { 'tab-b': { ptyIdsByLeafId: { leaf2: 'wt@@1' } } }
+    })
+    expect(resolveTerminalTabIdForPtyId(s, 'wt', 'wt@@1')).toBeNull()
+  })
+
   it('returns null for an unknown worktree', () => {
     const s = state({ tabs: { wt: [{ id: 'tab-a', ptyId: 'wt@@1' }] } })
     expect(resolveTerminalTabIdForPtyId(s, 'other', 'wt@@1')).toBeNull()
