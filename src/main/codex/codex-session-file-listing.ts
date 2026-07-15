@@ -57,7 +57,7 @@ function appendSessionFilePaths(target: string[], source: readonly string[]): vo
 export async function* listCodexSessionJsonlFilesIncrementally(
   rootPath: string,
   options: CodexSessionBridgeIncrementalOptions,
-  onDirectoryError?: (directoryPath: string, error: unknown) => void
+  onDirectoryError?: (directoryPath: string, error: unknown) => void | Promise<void>
 ): AsyncGenerator<string> {
   const batchSize = Math.max(1, options.batchSize ?? INCREMENTAL_BRIDGE_BATCH_SIZE)
   const yieldMs = Math.max(0, options.yieldMs ?? INCREMENTAL_BRIDGE_YIELD_MS)
@@ -85,7 +85,7 @@ export async function* listCodexSessionJsonlFilesIncrementally(
         }
       }
     } catch (error) {
-      onDirectoryError?.(currentDirectory, error)
+      await onDirectoryError?.(currentDirectory, error)
       console.warn('[codex-session-bridge] Failed to list system Codex sessions:', error)
     }
   }

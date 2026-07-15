@@ -1,16 +1,5 @@
-import {
-  appendFileSync,
-  constants,
-  copyFileSync,
-  existsSync,
-  linkSync,
-  lstatSync,
-  mkdirSync,
-  readFileSync,
-  rmSync,
-  writeFileSync
-} from 'node:fs'
-import { randomUUID } from 'node:crypto'
+import { mkdirSync, readFileSync } from 'node:fs'
+import { link, lstat, mkdir } from 'node:fs/promises'
 import { dirname, join, relative, sep } from 'node:path'
 import { writeFileAtomically } from '../codex-accounts/fs-utils'
 import {
@@ -18,6 +7,11 @@ import {
   getOrcaManagedCodexHomePath,
   getSystemCodexHomePath
 } from './codex-home-paths'
+import {
+  createCodexSessionBackfillAuditWriter,
+  type CodexSessionBackfillAuditWriter
+} from './codex-session-backfill-audit'
+import { copySessionFileWithoutOverwrite } from './codex-session-backfill-copy'
 import { listCodexSessionJsonlFilesIncrementally } from './codex-session-file-listing'
 import type { CodexSessionBridgeIncrementalOptions } from './codex-session-file-listing'
 
@@ -131,15 +125,22 @@ export async function backfillManagedCodexSessionsIntoSystemHome(
     failedDirectories: 0,
     failedFiles: 0
   }
-  if (existsSync(paths.managedSessionsRoot)) {
+  const appendAuditRecord = createCodexSessionBackfillAuditWriter(paths.auditLogPath)
+  const ensuredTargetDirectories = new Set<string>()
+  const managedSessionsRootExists = await checkManagedSessionsRoot(
+    paths,
+    summary,
+    appendAuditRecord
+  )
+  if (managedSessionsRootExists) {
     for await (const managedSessionFilePath of listCodexSessionJsonlFilesIncrementally(
       paths.managedSessionsRoot,
       options,
-      (directoryPath, error) => {
+      async (directoryPath, error) => {
         // Why: a partial walk must remain retryable; otherwise an unreadable
         // date directory would be silently omitted behind a completion marker.
         summary.failedDirectories += 1
-        appendAuditRecord(paths.auditLogPath, {
+        await appendAuditRecord({
           action: 'scan-failed',
           source: directoryPath,
           error: describeError(error)
@@ -151,11 +152,43 @@ export async function backfillManagedCodexSessionsIntoSystemHome(
         summary.skippedUnexpectedFiles += 1
         continue
       }
-      backfillOneManagedSessionFile(paths, managedSessionFilePath, summary)
+      // Why: sequential async mutations bound disk pressure while keeping the
+      // Electron main thread available for UI and PTY work.
+      await backfillOneManagedSessionFile(
+        paths,
+        managedSessionFilePath,
+        summary,
+        appendAuditRecord,
+        ensuredTargetDirectories
+      )
     }
   }
-  appendAuditRecord(paths.auditLogPath, { action: 'run-summary', ...summary })
+  await appendAuditRecord({ action: 'run-summary', ...summary })
   return summary
+}
+
+async function checkManagedSessionsRoot(
+  paths: CodexSessionBackfillPaths,
+  summary: CodexSessionBackfillSummary,
+  appendAuditRecord: CodexSessionBackfillAuditWriter
+): Promise<boolean> {
+  try {
+    await lstat(paths.managedSessionsRoot)
+    return true
+  } catch (error) {
+    if (isNotFoundError(error)) {
+      return false
+    }
+    // Why: existsSync collapses access failures into "missing," which could
+    // permanently hide sessions behind an incorrect completion marker.
+    summary.failedDirectories += 1
+    await appendAuditRecord({
+      action: 'scan-failed',
+      source: paths.managedSessionsRoot,
+      error: describeError(error)
+    })
+    return false
+  }
 }
 
 function isCodexRolloutPath(sessionsRoot: string, filePath: string): boolean {
@@ -172,12 +205,14 @@ function isCodexRolloutPath(sessionsRoot: string, filePath: string): boolean {
   )
 }
 
-function backfillOneManagedSessionFile(
+async function backfillOneManagedSessionFile(
   paths: CodexSessionBackfillPaths,
   managedSessionFilePath: string,
-  summary: CodexSessionBackfillSummary
-): void {
-  if (isSymbolicLink(managedSessionFilePath)) {
+  summary: CodexSessionBackfillSummary,
+  appendAuditRecord: CodexSessionBackfillAuditWriter,
+  ensuredTargetDirectories: Set<string>
+): Promise<void> {
+  if (await isSymbolicLink(managedSessionFilePath)) {
     // Why: bridge-created symlinks already point at a file in the user's own
     // home; materializing them here could duplicate a foreign tree.
     summary.skippedSymlinkFiles += 1
@@ -185,16 +220,22 @@ function backfillOneManagedSessionFile(
   }
   const relativePath = relative(paths.managedSessionsRoot, managedSessionFilePath)
   const systemSessionFilePath = join(paths.systemSessionsRoot, relativePath)
-  if (pathEntryExists(systemSessionFilePath)) {
+  if (await pathEntryExists(systemSessionFilePath)) {
     summary.skippedExistingFiles += 1
     return
   }
 
   try {
-    mkdirSync(dirname(systemSessionFilePath), { recursive: true })
-    linkSync(managedSessionFilePath, systemSessionFilePath)
+    const targetDirectory = dirname(systemSessionFilePath)
+    if (!ensuredTargetDirectories.has(targetDirectory)) {
+      // Why: one date directory can contain thousands of rollouts; avoid a
+      // redundant filesystem round trip before every hardlink.
+      await mkdir(targetDirectory, { recursive: true })
+      ensuredTargetDirectories.add(targetDirectory)
+    }
+    await link(managedSessionFilePath, systemSessionFilePath)
     summary.linkedFiles += 1
-    appendAuditRecord(paths.auditLogPath, {
+    await appendAuditRecord({
       action: 'hardlink',
       source: managedSessionFilePath,
       target: systemSessionFilePath
@@ -204,12 +245,15 @@ function backfillOneManagedSessionFile(
       summary.skippedExistingFiles += 1
       return
     }
+    if (isNotFoundError(linkError)) {
+      ensuredTargetDirectories.delete(dirname(systemSessionFilePath))
+    }
     try {
       // Why: cross-volume copies are staged so failures cannot strand a
       // truncated rollout, then installed without overwriting collisions.
-      copySessionFileWithoutOverwrite(managedSessionFilePath, systemSessionFilePath)
+      await copySessionFileWithoutOverwrite(managedSessionFilePath, systemSessionFilePath)
       summary.copiedFiles += 1
-      appendAuditRecord(paths.auditLogPath, {
+      await appendAuditRecord({
         action: 'copy',
         source: managedSessionFilePath,
         target: systemSessionFilePath
@@ -220,7 +264,7 @@ function backfillOneManagedSessionFile(
         return
       }
       summary.failedFiles += 1
-      appendAuditRecord(paths.auditLogPath, {
+      await appendAuditRecord({
         action: 'failed',
         source: managedSessionFilePath,
         target: systemSessionFilePath,
@@ -231,48 +275,18 @@ function backfillOneManagedSessionFile(
   }
 }
 
-function copySessionFileWithoutOverwrite(sourcePath: string, targetPath: string): void {
-  const temporaryPath = join(dirname(targetPath), `.orca-backfill-${randomUUID()}.tmp`)
-  // Why: stage cross-volume copies away from the rollout filename so a failed
-  // copy cannot strand a truncated session that a later retry would skip.
-  writeFileSync(temporaryPath, '', { encoding: 'utf-8', flag: 'wx', mode: 0o600 })
+async function isSymbolicLink(filePath: string): Promise<boolean> {
   try {
-    copyFileSync(sourcePath, temporaryPath)
-    try {
-      // Why: this same-volume hardlink atomically installs the staged copy
-      // without risking a collision overwrite after an EXDEV fallback.
-      linkSync(temporaryPath, targetPath)
-    } catch (installLinkError) {
-      if (isExistsError(installLinkError)) {
-        throw installLinkError
-      }
-      // Some target filesystems do not support hardlinks at all. COPYFILE_EXCL
-      // preserves the collision contract while retaining the staged snapshot.
-      copyFileSync(temporaryPath, targetPath, constants.COPYFILE_EXCL)
-    }
-  } finally {
-    try {
-      rmSync(temporaryPath, { force: true })
-    } catch (error) {
-      // Why: cleanup trouble must not misreport a successfully installed
-      // rollout as a copy failure; the .tmp file is ignored by Codex.
-      console.warn('[codex-session-backfill] Failed to remove staged copy:', temporaryPath, error)
-    }
-  }
-}
-
-function isSymbolicLink(filePath: string): boolean {
-  try {
-    return lstatSync(filePath).isSymbolicLink()
+    return (await lstat(filePath)).isSymbolicLink()
   } catch {
     return false
   }
 }
 
 /** Existence via lstat so a broken symlink at the target still counts as taken. */
-function pathEntryExists(entryPath: string): boolean {
+async function pathEntryExists(entryPath: string): Promise<boolean> {
   try {
-    lstatSync(entryPath)
+    await lstat(entryPath)
     return true
   } catch {
     return false
@@ -283,25 +297,12 @@ function isExistsError(error: unknown): boolean {
   return (error as NodeJS.ErrnoException | null)?.code === 'EEXIST'
 }
 
-function describeError(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
+function isNotFoundError(error: unknown): boolean {
+  return (error as NodeJS.ErrnoException | null)?.code === 'ENOENT'
 }
 
-function appendAuditRecord(auditLogPath: string, record: Record<string, unknown>): void {
-  try {
-    mkdirSync(dirname(auditLogPath), { recursive: true })
-    appendFileSync(
-      auditLogPath,
-      `${JSON.stringify({ at: new Date().toISOString(), ...record })}\n`,
-      {
-        encoding: 'utf-8'
-      }
-    )
-  } catch (error) {
-    // Why: the audit trail is diagnostics; losing a line must not fail the
-    // backfill or leave a half-linked tree unrecorded in the summary counts.
-    console.warn('[codex-session-backfill] Failed to append audit record:', error)
-  }
+function describeError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
 }
 
 function hasCompletedBackfillMarker(markerPath: string, systemSessionsRoot: string): boolean {

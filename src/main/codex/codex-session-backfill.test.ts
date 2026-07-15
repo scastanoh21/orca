@@ -24,7 +24,8 @@ const { fsMockState } = vi.hoisted(() => ({
   fsMockState: {
     failLink: false,
     failCopy: false,
-    failDirectoryPath: null as string | null
+    failDirectoryPath: null as string | null,
+    failLstatPath: null as string | null
   }
 }))
 
@@ -32,24 +33,11 @@ vi.mock('node:fs', async () => {
   const actual = await vi.importActual<typeof NodeFs>('node:fs')
   return {
     ...actual,
-    linkSync: (...args: Parameters<typeof actual.linkSync>) => {
-      if (fsMockState.failLink && String(args[0]).includes('codex-runtime-home')) {
-        const error = new Error('EXDEV: cross-device link') as NodeJS.ErrnoException
-        error.code = 'EXDEV'
-        throw error
+    existsSync: (...args: Parameters<typeof actual.existsSync>) => {
+      if (args[0] === fsMockState.failLstatPath) {
+        return false
       }
-      return actual.linkSync(...args)
-    },
-    copyFileSync: (...args: Parameters<typeof actual.copyFileSync>) => {
-      if (fsMockState.failCopy) {
-        // Simulate a copy that fails after opening its destination, which is
-        // the dangerous case for resumability rather than a preflight error.
-        actual.writeFileSync(args[1], 'partial copy\n', 'utf-8')
-        const error = new Error('EACCES: copy disabled for test') as NodeJS.ErrnoException
-        error.code = 'EACCES'
-        throw error
-      }
-      return actual.copyFileSync(...args)
+      return actual.existsSync(...args)
     }
   }
 })
@@ -58,6 +46,33 @@ vi.mock('node:fs/promises', async () => {
   const actual = await vi.importActual<typeof NodeFsPromises>('node:fs/promises')
   return {
     ...actual,
+    lstat: (...args: Parameters<typeof actual.lstat>) => {
+      if (args[0] === fsMockState.failLstatPath) {
+        const error = new Error('EACCES: path inaccessible') as NodeJS.ErrnoException
+        error.code = 'EACCES'
+        throw error
+      }
+      return actual.lstat(...args)
+    },
+    link: (...args: Parameters<typeof actual.link>) => {
+      if (fsMockState.failLink && String(args[0]).includes('codex-runtime-home')) {
+        const error = new Error('EXDEV: cross-device link') as NodeJS.ErrnoException
+        error.code = 'EXDEV'
+        throw error
+      }
+      return actual.link(...args)
+    },
+    copyFile: async (...args: Parameters<typeof actual.copyFile>) => {
+      if (fsMockState.failCopy) {
+        // Simulate a copy that fails after opening its destination, which is
+        // the dangerous case for resumability rather than a preflight error.
+        await actual.writeFile(args[1], 'partial copy\n', 'utf-8')
+        const error = new Error('EACCES: copy disabled for test') as NodeJS.ErrnoException
+        error.code = 'EACCES'
+        throw error
+      }
+      return actual.copyFile(...args)
+    },
     opendir: (...args: Parameters<typeof actual.opendir>) => {
       if (args[0] === fsMockState.failDirectoryPath) {
         const error = new Error('EACCES: directory unreadable') as NodeJS.ErrnoException
@@ -121,6 +136,7 @@ beforeEach(() => {
   fsMockState.failLink = false
   fsMockState.failCopy = false
   fsMockState.failDirectoryPath = null
+  fsMockState.failLstatPath = null
   fakeHomeDir = mkdtempSync(join(tmpdir(), 'orca-codex-backfill-home-'))
   userDataDir = mkdtempSync(join(tmpdir(), 'orca-codex-backfill-user-data-'))
   previousUserDataPath = process.env.ORCA_USER_DATA_PATH
@@ -354,6 +370,22 @@ describe('startCodexSessionBackfillInBackground', () => {
     expect(
       existsSync(join(getSystemSessionsRoot(), '2026', '06', '01', 'rollout-unreadable.jsonl'))
     ).toBe(true)
+    expect(existsSync(getMarkerPath())).toBe(true)
+  })
+
+  it('leaves the marker unset when the managed sessions root is inaccessible', async () => {
+    writeManagedSession(join('2026', '05', '26', 'rollout-a.jsonl'), '{"id":"a"}\n')
+    fsMockState.failLstatPath = getManagedSessionsRoot()
+
+    const first = await startCodexSessionBackfillInBackground()
+
+    expect(first).toMatchObject({ scannedFiles: 0, failedDirectories: 1 })
+    expect(existsSync(getMarkerPath())).toBe(false)
+    expect(readAuditActions()).toContain('scan-failed')
+
+    fsMockState.failLstatPath = null
+    const second = await startCodexSessionBackfillInBackground()
+    expect(second).toMatchObject({ linkedFiles: 1, failedDirectories: 0 })
     expect(existsSync(getMarkerPath())).toBe(true)
   })
 
