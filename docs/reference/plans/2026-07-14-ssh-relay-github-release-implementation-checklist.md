@@ -9,7 +9,7 @@ work; keep exact commands, runner identities, hashes, metrics, and residual gaps
 Date created: 2026-07-14<br>
 Last updated: 2026-07-14<br>
 Current phase: Milestone 3 / Work Package 2 oldest-supported-baseline and native-trust proof — **In progress — 2026-07-14, Codex implementation owner**; exact-head run [29373507297](https://github.com/stablyai/orca/actions/runs/29373507297) passes all six target-native build, smoke, exact clean-build equality, upload, SBOM, license, provenance, runner/toolchain, and prohibited-content cells, and direct inspection of every downloaded payload passes exact archive/subject hashes, archive-scoped SPDX identity, one-owner-per-file, dependency, commit/run/builder/runner, tool-version/hash, and closure assertions (E-M3-METADATA-CI-001); Windows x64/arm64 record strict `MSVC 14.44.35207` identities and distinct exact linker SHA-256 values despite the Git-for-Windows PATH collision; the all-six metadata/provenance gate is closed, while oldest-baseline execution, native signing/trust, cross-family remotes, and measured legacy baselines remain open; production/default behavior and every tuple state remain unchanged; no bundled-runtime path is enabled and no artifact is published<br>
-Session checkpoint: **In progress — 2026-07-14, Codex implementation owner** — credential-free macOS post-sign strict-codesign and signer-policy verification contracts are locally green under E-M3-MACOS-SIGNATURE-LOCAL-001 and pass under Node 24 on all six target-native jobs in exact-head run 29386372366 under E-M3-MACOS-SIGNATURE-CI-001. E-M3-WINDOWS-SIGNATURE-LOCAL-RED-001 proves the final Windows Authenticode policy verifier was absent; its final-tree-first implementation and POSIX/PowerShell workflow contracts pass locally under E-M3-WINDOWS-SIGNATURE-LOCAL-001 and under Node 24 on all six target-native jobs in exact-head run 29387668264 under E-M3-WINDOWS-SIGNATURE-CI-001. Target-native official-Node and preserved-upstream Windows source-signature policy is the next credential-free gate. Real Apple/SignPath signing, returned production signatures, Gatekeeper/notarization, Defender/WDAC, missing exact-floor snapshots, and native trust remain separately gated. Nothing is published or enabled, and legacy remains the production default.<br>
+Session checkpoint: **In progress — 2026-07-14, Codex implementation owner** — credential-free macOS post-sign strict-codesign and signer-policy verification contracts are locally green under E-M3-MACOS-SIGNATURE-LOCAL-001 and pass under Node 24 on all six target-native jobs in exact-head run 29386372366 under E-M3-MACOS-SIGNATURE-CI-001. E-M3-WINDOWS-SIGNATURE-LOCAL-RED-001 proves the final Windows Authenticode policy verifier was absent; its final-tree-first implementation and POSIX/PowerShell workflow contracts pass locally under E-M3-WINDOWS-SIGNATURE-LOCAL-001 and under Node 24 on all six target-native jobs in exact-head run 29387668264 under E-M3-WINDOWS-SIGNATURE-CI-001. Target-native official-Node and preserved-upstream source-signature verification is implemented at `6ef2943de` and locally green under E-M3-WINDOWS-SOURCE-SIGNATURE-LOCAL-001; exact x64/arm64 `Valid` reports are the active gate. Real Apple/SignPath signing, returned production signatures, Gatekeeper/notarization, Defender/WDAC, missing exact-floor snapshots, and native trust remain separately gated. Nothing is published or enabled, and legacy remains the production default.<br>
 Primary design: [SSH relay GitHub Release plan](./2026-07-14-ssh-relay-github-release-plan.html)<br>
 Motivating issues: [#8450](https://github.com/stablyai/orca/issues/8450), [#1693](https://github.com/stablyai/orca/issues/1693)
 
@@ -8576,6 +8576,91 @@ diff --check`.
 - Follow-up: keep native signing/trust and every tuple unchecked. Prove exact official-Node and
   preserved-upstream source signatures target-natively without credentials, then keep real returned
   SignPath bytes plus Defender/WDAC and exact-floor execution as separate required gates.
+
+### E-M3-WINDOWS-SOURCE-SIGNATURE-LOCAL-RED-001 — Missing Windows source-signature gate fails import contract
+
+- Date: 2026-07-14
+- Owner: Codex implementation owner
+- Source: pre-implementation head `bd3e40dc52ede75e44ded2f5e84f5092be5b2d87` plus the new
+  uncommitted purpose-named test.
+- Command:
+
+  ```sh
+  node --input-type=module -e \
+    "import('./config/scripts/ssh-relay-runtime-windows-source-signature-verification.test.mjs')"
+  ```
+
+- Result: expected RED with `ERR_MODULE_NOT_FOUND` for
+  `ssh-relay-runtime-windows-source-signature-verification.mjs`. A concurrent focused Vitest launch
+  was stopped after unrelated workspace CPU contention prevented a bounded result; it is not used as
+  evidence. No workflow, credential, signing, publication, tuple, SSH, or production behavior
+  changed.
+- Oracle proved: neither the pre-sign assessment nor final-runtime verifier already exposed a
+  reusable gate that authenticated the complete source tree and target-natively verified official
+  Node plus preserved upstream signer policy.
+- Does not prove: implementation, Windows execution, a `Valid` signature, SignPath returns,
+  Defender/WDAC, SSH behavior, or an enabled tuple.
+- Correction: consume the exact signing-stage assessment and selection, authenticate the complete
+  source tree, run three bounded native probes, require exact Node/preserved identity, re-hash each
+  target, and retain a separate report from each Windows runner.
+
+### E-M3-WINDOWS-SOURCE-SIGNATURE-LOCAL-001 — Immutable and preserved Windows source policy passes locally
+
+- Date: 2026-07-14
+- Owner: Codex implementation owner
+- Source: implementation commit `6ef2943dedd0165ae4b84d8295763aa06682d6cc`, based on CI
+  evidence commit `bd3e40dc52ede75e44ded2f5e84f5092be5b2d87`.
+- Runner/remote/network: local macOS 26.2 build 25C56 arm64, Node v26.0.0 and pnpm 10.24.0. No SSH
+  remote, Windows trust execution, credential, signing service, publication, or production path was
+  used. Native output was dependency-injected; exact target-native execution remains the next gate.
+- Commands:
+
+  ```sh
+  node --check config/scripts/ssh-relay-runtime-windows-source-signature-verification.mjs
+  node --check config/scripts/ssh-relay-runtime-windows-source-signature-verification.test.mjs
+  pnpm exec vitest run --config config/vitest.config.ts --maxWorkers=1 \
+    config/scripts/ssh-relay-runtime-windows-source-signature-verification.test.mjs \
+    config/scripts/ssh-relay-runtime-windows-signature-verification.test.mjs \
+    config/scripts/ssh-relay-runtime-workflow.test.mjs
+  pnpm exec vitest run --config config/vitest.config.ts config/scripts/ssh-relay-*.test.mjs
+  pnpm run typecheck
+  pnpm run lint
+  pnpm run check:max-lines-ratchet
+  pnpm exec oxfmt --check \
+    .github/workflows/ssh-relay-runtime-artifacts.yml \
+    config/scripts/ssh-relay-runtime-workflow.test.mjs \
+    config/scripts/ssh-relay-runtime-windows-signature-verification.mjs \
+    config/scripts/ssh-relay-runtime-windows-source-signature-verification.mjs \
+    config/scripts/ssh-relay-runtime-windows-source-signature-verification.test.mjs \
+    docs/reference/plans/2026-07-14-ssh-relay-github-release-implementation-checklist.md \
+    docs/reference/plans/2026-07-14-ssh-relay-github-release-implementation-checklist-summary.md
+  git diff --check
+  ```
+
+- Result: PASS. The final focused command passed 3 files/17 tests in 4.98 seconds; the complete
+  purpose-named SSH relay suite passed 31 files/163 tests in 5.16 seconds. Both syntax checks,
+  typecheck, full lint and reliability/localization/bundled-skill gates, max-lines (355
+  grandfathered suppressions and no new bypass), focused formatting, and `git diff --check` passed.
+  Lint emitted only existing unrelated warnings; local Node 26 emitted the expected repository
+  Node-24 engine warning.
+- Verification oracle: a bounded regular signing-stage report must exactly reproduce the
+  hash-authenticated tuple/platform/policy, assessments, immutable file, signing set, and preserved
+  set. On Windows, the verifier authenticates the complete source runtime before any probe, then
+  reuses the final verifier's exact signer policy and 30-second/64-KiB PowerShell boundary for the
+  one official Node file and two source-preserved Microsoft files. Every file is hashed before and
+  after probing. Cross-platform execution, report/selection drift, wrong signer/status/thumbprint,
+  prior tree mutation, and probe-time mutation fail closed.
+- Workflow oracle: both native shell families syntax-check and run the source contract. After the
+  real Windows first-build assessment, each native Windows job invokes the source verifier before
+  removing signing staging, requires exactly one `official-node` and two `preserved-upstream`
+  results, and retains a distinct `.source-signatures.json` evidence file. It has no credentials and
+  does not invoke SignPath or change runtime bytes.
+- Does not prove: target-native x64/arm64 execution, actual `Valid` status or signer outputs, real
+  SignPath returned Orca files, final Windows trust, Defender/WDAC, build 26100, release aggregation,
+  SSH transfer/install, fallback/performance, or an enabled tuple.
+- Follow-up: push the implementation and evidence, inspect both exact source-signature reports and
+  runner logs, and keep returned-byte/native-trust boxes unchecked until the separately gated real
+  SignPath and endpoint checks pass.
 
 ## Accepted Gaps
 

@@ -48,8 +48,9 @@ complete a box.
     [29387668264](https://github.com/stablyai/orca/actions/runs/29387668264): credential-free Windows
     final-tree-first Authenticode policy contracts execute under Node 24 on all six native jobs.
     This is contract proof, not proof of real SignPath returns or native trust.
-  - Active next: target-native official-Node and preserved-upstream Windows source-signature policy;
-    real signing and missing oldest-floor snapshots remain externally gated.
+  - Proven locally: target-native official-Node and preserved-upstream Windows source-signature
+    verification contracts. Exact x64/arm64 `Valid` signer reports are the active CI gate; real
+    SignPath returns and missing oldest-floor snapshots remain separately gated.
   - Next external proof: kernel 4.18, macOS 13.5, Windows arm64 build 26100, and native signing/trust.
   - No tuple is enabled; every SSH transfer/runtime and rollout cell remains open.
 
