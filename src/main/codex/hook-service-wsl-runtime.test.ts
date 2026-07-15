@@ -48,7 +48,9 @@ function createTestPlan(): CodexWslRuntimeHookInstallPlan {
     tomlPath: join(root, 'config.toml'),
     scriptPath: join(root, '.orca', 'agent-hooks', 'codex-hook.sh'),
     commandScriptPath: `${linuxHome}/.orca/agent-hooks/codex-hook.sh`,
-    trustConfigPath: `${linuxHome}/hooks.json`
+    trustConfigPath: `${linuxHome}/hooks.json`,
+    wslDistro: 'Ubuntu',
+    linuxRuntimeHome: linuxHome
   }
 }
 
@@ -83,7 +85,9 @@ describe('Codex WSL runtime hook install', () => {
       scriptPath: pathWin32.join(runtimeHome, '.orca', 'agent-hooks', 'codex-hook.sh'),
       commandScriptPath:
         '/home/alice/.local/share/orca/codex-runtime-home/home/.orca/agent-hooks/codex-hook.sh',
-      trustConfigPath: '/home/alice/.local/share/orca/codex-runtime-home/home/hooks.json'
+      trustConfigPath: '/home/alice/.local/share/orca/codex-runtime-home/home/hooks.json',
+      wslDistro: 'Ubuntu',
+      linuxRuntimeHome: '/home/alice/.local/share/orca/codex-runtime-home/home'
     })
   })
 
@@ -102,7 +106,9 @@ describe('Codex WSL runtime hook install', () => {
       scriptPath: pathWin32.join(runtimeHome, '.orca', 'agent-hooks', 'codex-hook.sh'),
       commandScriptPath:
         '/mnt/d/wsl-home/.local/share/orca/codex-runtime-home/home/.orca/agent-hooks/codex-hook.sh',
-      trustConfigPath: '/mnt/d/wsl-home/.local/share/orca/codex-runtime-home/home/hooks.json'
+      trustConfigPath: '/mnt/d/wsl-home/.local/share/orca/codex-runtime-home/home/hooks.json',
+      wslDistro: 'Ubuntu',
+      linuxRuntimeHome: '/mnt/d/wsl-home/.local/share/orca/codex-runtime-home/home'
     })
   })
 
