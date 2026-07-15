@@ -60,9 +60,12 @@ complete a box.
     remain separately gated.
   - Next external proof: kernel 4.18, macOS 13.5, Windows arm64 build 26100, and native signing/trust.
   - No tuple is enabled; every SSH transfer/runtime and rollout cell remains open.
-- [ ] **WP3 active implementation — Prove disconnected release/signing DAG behavior in exact-head
-      CI.** Local contracts pass at `6f13e94f8`, which is one commit ahead of PR #8741; no production
-      workflow, publication, desktop consumer, or tuple is connected.
+- [ ] **WP3 active implementation — Add disconnected aggregate-input and authenticated draft
+      read-back verification.** Release-DAG contracts pass locally and on all six native build jobs in
+      exact-head run [29390079639](https://github.com/stablyai/orca/actions/runs/29390079639) under
+      `E-M4-RELEASE-DAG-CI-001`. Aggregate/read-back RED/GREEN, workflow, full SSH-relay, and static
+      gates pass locally under `E-M4-AGGREGATE-READBACK-LOCAL-001`; exact-head CI is next. No
+      production workflow, publication, desktop consumer, signing credential, or tuple is connected.
 
 ## Work packages, in required order
 
@@ -97,11 +100,12 @@ complete a box.
 
 ### WP3 — Release build and signing
 
-- [ ] **In progress — 2026-07-15, Codex implementation owner:** add disconnected credential-free
-      fail-closed release/signing DAG contracts before production workflow wiring. Local red/green,
-      full SSH-relay, type, lint, formatting, and native-job wiring gates pass under
-      `E-M4-RELEASE-DAG-LOCAL-001` at local commit `6f13e94f8`; the commit is one ahead of the PR and
-      exact-head CI is next.
+- [x] Release/signing DAG contracts pass locally and on all six native build jobs under
+      `E-M4-RELEASE-DAG-LOCAL-001` and `E-M4-RELEASE-DAG-CI-001`.
+- [ ] **In progress — 2026-07-15, Codex implementation owner:** implement disconnected
+      aggregate-input and authenticated draft read-back verification before any production workflow,
+      publication, desktop consumer, or signing credential is connected. Local implementation and
+      verification pass under `E-M4-AGGREGATE-READBACK-LOCAL-001`; exact-head CI is next.
 - [ ] Add target-native runtime jobs as desktop release prerequisites.
 - [ ] Add native signing jobs; hash only the returned signed bytes.
 - [ ] Add a fail-closed aggregate and immutable manifest-signing job.

@@ -98,7 +98,9 @@ describe('SSH relay runtime artifact workflow', () => {
     for (const moduleName of [
       'windows-source-signature-verification',
       'release-stage-gate',
-      'draft-recovery'
+      'draft-recovery',
+      'aggregate-input',
+      'draft-readback'
     ]) {
       const script = `ssh-relay-runtime-${moduleName}`
       expect(source.split(`${script}.test.mjs`)).toHaveLength(5)

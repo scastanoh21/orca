@@ -147,6 +147,10 @@ jobs:
           node --check config/scripts/ssh-relay-runtime-release-stage-gate.test.mjs
           node --check config/scripts/ssh-relay-runtime-draft-recovery.mjs
           node --check config/scripts/ssh-relay-runtime-draft-recovery.test.mjs
+          node --check config/scripts/ssh-relay-runtime-aggregate-input.mjs
+          node --check config/scripts/ssh-relay-runtime-aggregate-input.test.mjs
+          node --check config/scripts/ssh-relay-runtime-draft-readback.mjs
+          node --check config/scripts/ssh-relay-runtime-draft-readback.test.mjs
           pnpm exec vitest run --config config/vitest.config.ts \
             config/scripts/ssh-relay-node-release-verification.test.mjs \
             config/scripts/ssh-relay-node-tar-inspection.test.mjs \
@@ -170,6 +174,8 @@ jobs:
             config/scripts/ssh-relay-runtime-windows-source-signature-verification.test.mjs \
             config/scripts/ssh-relay-runtime-release-stage-gate.test.mjs \
             config/scripts/ssh-relay-runtime-draft-recovery.test.mjs \
+            config/scripts/ssh-relay-runtime-aggregate-input.test.mjs \
+            config/scripts/ssh-relay-runtime-draft-readback.test.mjs \
             config/scripts/ssh-relay-runtime-closure.test.mjs \
             config/scripts/ssh-relay-runtime-pty-smoke.test.mjs \
             config/scripts/ssh-relay-runtime-reproducibility.test.mjs \
@@ -493,6 +499,14 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'runtime draft recovery syntax check failed' }
           node --check config/scripts/ssh-relay-runtime-draft-recovery.test.mjs
           if ($LASTEXITCODE -ne 0) { throw 'runtime draft recovery test syntax check failed' }
+          node --check config/scripts/ssh-relay-runtime-aggregate-input.mjs
+          if ($LASTEXITCODE -ne 0) { throw 'runtime aggregate input syntax check failed' }
+          node --check config/scripts/ssh-relay-runtime-aggregate-input.test.mjs
+          if ($LASTEXITCODE -ne 0) { throw 'runtime aggregate input test syntax check failed' }
+          node --check config/scripts/ssh-relay-runtime-draft-readback.mjs
+          if ($LASTEXITCODE -ne 0) { throw 'runtime draft read-back syntax check failed' }
+          node --check config/scripts/ssh-relay-runtime-draft-readback.test.mjs
+          if ($LASTEXITCODE -ne 0) { throw 'runtime draft read-back test syntax check failed' }
           pnpm exec vitest run --config config/vitest.config.ts `
             config/scripts/ssh-relay-node-release-verification.test.mjs `
             config/scripts/ssh-relay-node-tar-inspection.test.mjs `
@@ -516,6 +530,8 @@ jobs:
             config/scripts/ssh-relay-runtime-windows-source-signature-verification.test.mjs `
             config/scripts/ssh-relay-runtime-release-stage-gate.test.mjs `
             config/scripts/ssh-relay-runtime-draft-recovery.test.mjs `
+            config/scripts/ssh-relay-runtime-aggregate-input.test.mjs `
+            config/scripts/ssh-relay-runtime-draft-readback.test.mjs `
             config/scripts/ssh-relay-runtime-closure.test.mjs `
             config/scripts/ssh-relay-runtime-pty-smoke.test.mjs `
             config/scripts/ssh-relay-runtime-reproducibility.test.mjs `
