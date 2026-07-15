@@ -94,12 +94,12 @@ export function NativeChatInteractiveCard({
         key={cardKey ?? 'question'}
         prompt={card.prompt}
         answerInputRef={answerInputRef}
-        onAnswer={(text) => {
+        onAnswer={(selections) => {
           if (submittingRef.current) {
             return
           }
           submittingRef.current = true
-          const settleMs = sendAnswer(text)
+          const settleMs = sendAnswer(card.prompt, selections)
           // Hold the card until the paced write finishes, then mark it answered
           // (which hides it and restores the composer).
           dismissTimerRef.current = setTimeout(() => {

@@ -2,12 +2,12 @@ import { useState, type RefObject } from 'react'
 import { Check, Pencil, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { translate } from '@/i18n/i18n'
-import { formatAskAnswer, type AskPrompt } from './native-chat-interactive-prompt'
+import type { AskAnswerSelection, AskPrompt } from './native-chat-interactive-prompt'
 
 export type NativeChatQuestionCardProps = {
   prompt: AskPrompt
-  /** Send the formatted answer text to the agent. */
-  onAnswer: (text: string) => void
+  /** Deliver the chosen answer (per-question option indices + free text). */
+  onAnswer: (selections: AskAnswerSelection[]) => void
   /** Dismiss the prompt (sends Escape to the agent). */
   onCancel: () => void
   /** Exposes the free-text row so pane-level Paste can target it while the
@@ -53,15 +53,24 @@ export function NativeChatQuestionCard({
 
   const currentAnswered = answerFor(index).length > 0
 
+  // Resolve the card's label-keyed selection state into per-question option
+  // INDICES (in option order) + trimmed free text, the index-based shape the
+  // answer is delivered by (the agent's selector commits by option number, not
+  // by label — STA-1860).
   const submitAll = (sel: string[][], oth: string[]): void => {
-    const resolved = prompt.questions.map((_, i) => {
+    const selections: AskAnswerSelection[] = prompt.questions.map((question, i) => {
       const picked = sel[i] ?? []
-      const other = (oth[i] ?? '').trim()
-      return [...picked, ...(other ? [other] : [])]
+      const indices = question.options.reduce<number[]>((acc, opt, oi) => {
+        if (picked.includes(opt.label)) {
+          acc.push(oi)
+        }
+        return acc
+      }, [])
+      return { indices, other: (oth[i] ?? '').trim() }
     })
-    const text = formatAskAnswer(prompt, resolved)
-    if (text.length > 0) {
-      onAnswer(text)
+    const anyAnswered = selections.some((s) => s.indices.length > 0 || (s.other ?? '').length > 0)
+    if (anyAnswered) {
+      onAnswer(selections)
     }
   }
 
