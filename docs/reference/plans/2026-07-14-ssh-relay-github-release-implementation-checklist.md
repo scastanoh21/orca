@@ -9,7 +9,7 @@ work; keep exact commands, runner identities, hashes, metrics, and residual gaps
 Date created: 2026-07-14<br>
 Last updated: 2026-07-14<br>
 Current phase: Milestone 3 / Work Package 2 oldest-supported-baseline and native-trust proof — **In progress — 2026-07-14, Codex implementation owner**; exact-head run [29373507297](https://github.com/stablyai/orca/actions/runs/29373507297) passes all six target-native build, smoke, exact clean-build equality, upload, SBOM, license, provenance, runner/toolchain, and prohibited-content cells, and direct inspection of every downloaded payload passes exact archive/subject hashes, archive-scoped SPDX identity, one-owner-per-file, dependency, commit/run/builder/runner, tool-version/hash, and closure assertions (E-M3-METADATA-CI-001); Windows x64/arm64 record strict `MSVC 14.44.35207` identities and distinct exact linker SHA-256 values despite the Git-for-Windows PATH collision; the all-six metadata/provenance gate is closed, while oldest-baseline execution, native signing/trust, cross-family remotes, and measured legacy baselines remain open; production/default behavior and every tuple state remain unchanged; no bundled-runtime path is enabled and no artifact is published<br>
-Session checkpoint: **In progress — 2026-07-14, Codex implementation owner** — exact-head run [29379227209](https://github.com/stablyai/orca/actions/runs/29379227209) proves the non-root correction and both digest-pinned Linux builders on native x64/arm64 through two clean builds, equality, archive/tree inspection, bundled Node/PTY/watcher smoke, upload, download, direct metadata/closure audit, and supplemental glibc 2.28/libstdc++ 6.0.25 execution (E-M3-LINUX-NATIVE-USERLAND-CI-001); Windows x64 qualifies on exact Server 2022 build 20348 (E-M3-WINDOWS-X64-BASELINE-CI-001), while native Windows arm64 artifacts and smoke pass but hosted build 26200 again fails closed against required build 26100 (E-M3-WINDOWS-ARM64-BASELINE-CI-RED-001); exact kernel 4.18, macOS 13.5, Windows arm64 build 26100, and native signing/trust remain open; no tuple is enabled or published.<br>
+Session checkpoint: **In progress — 2026-07-14, Codex implementation owner** — implementation commit `9bdae7f5b` defines the credential-free native-signing plan contract and is locally green against hostile fixtures and all six downloaded exact-run identities under E-M3-NATIVE-SIGNING-PLAN-LOCAL-001; it preserves official Node bytes, selects the exact non-Node native signing set, enumerates every native verification file, and rejects closure/path/role/count/extension drift before credentials or signing side effects. Exact-head CI and every credentialed native-signing/trust cell remain open; no tuple is enabled or published.<br>
 Primary design: [SSH relay GitHub Release plan](./2026-07-14-ssh-relay-github-release-plan.html)<br>
 Motivating issues: [#8450](https://github.com/stablyai/orca/issues/8450), [#1693](https://github.com/stablyai/orca/issues/1693)
 
@@ -658,6 +658,17 @@ macOS 13.5, Windows arm64 build 26100, and target-native signing/trust remain op
 runner, static symbol scan, or container may add evidence but cannot silently stand in for an
 unavailable qualifying snapshot. Every tuple remains disabled and no production consumer is
 connected.
+
+**Active native-trust contract slice — 2026-07-14, Codex implementation owner:** before any
+credentialed Apple or SignPath job, derive one exact signing plan from the builder-enforced runtime
+identity. The plan must keep the official Node executable immutable, enumerate every native file
+that requires platform verification, select no Linux signing targets, select every non-Node macOS
+native file for Developer ID signing, and select every non-Node Windows PE file as a SignPath
+candidate whose already-valid upstream signature may be preserved. Unknown roles/extensions,
+duplicates, missing expected files, or identity/closure drift fail before credentials or signing
+side effects. This package is contract/test-only and cannot sign, publish, aggregate, or enable a
+tuple. The local contract and all-six actual-identity proof pass under
+E-M3-NATIVE-SIGNING-PLAN-LOCAL-001; exact-head CI is the next gate.
 
 **Baseline correction — 2026-07-14, Codex implementation owner:**
 E-M3-LINUX-BASELINE-LOCAL-RED-001 proves the existing Linux x64 candidate cannot load its patched
@@ -7526,6 +7537,102 @@ diff --check`.
   aggregation, fallback/performance, or an enabled tuple.
 - Follow-up: keep the tuple disabled until native trust and the remaining required live SSH evidence
   pass.
+
+### E-M3-NATIVE-SIGNING-PLAN-SORT-LOCAL-RED-001 — Locale collation changes Windows signing order
+
+- Date: 2026-07-14
+- Owner: Codex implementation owner
+- Source: local macOS arm64 shell at Git HEAD
+  `c6a7277cc6f56d453662ebd373e9e8e4e278f4ac`; no runtime or signing credentials were used.
+- Command:
+
+  ```sh
+  node - <<'NODE'
+  const paths = [
+    'node_modules/node-pty/build/Release/conpty.node',
+    'node_modules/node-pty/build/Release/conpty/OpenConsole.exe',
+    'node_modules/node-pty/build/Release/conpty/conpty.dll',
+    'node_modules/node-pty/build/Release/conpty_console_list.node'
+  ]
+  console.log(JSON.stringify({
+    locale: [...paths].sort((left, right) => left.localeCompare(right)),
+    portable: [...paths].sort((left, right) => left < right ? -1 : left > right ? 1 : 0)
+  }, null, 2))
+  NODE
+  ```
+
+- Result: expected RED control. Locale collation ordered `conpty_console_list.node`, `conpty.node`,
+  `conpty/conpty.dll`, then `conpty/OpenConsole.exe`; portable byte ordering produced
+  `conpty.node`, `conpty/OpenConsole.exe`, `conpty/conpty.dll`, then
+  `conpty_console_list.node`, matching `canonicalSshRelayRuntimeIdentityBytes`.
+- Correction/oracle: the signing plan uses explicit `<`/`>` path comparison, and the Windows x64
+  and arm64 expected-path assertions lock that order. Locale-sensitive `localeCompare` is not used.
+- Does not prove: target-native execution, any signature, native trust, release aggregation, SSH
+  behavior, or an enabled tuple.
+
+### E-M3-NATIVE-SIGNING-PLAN-LOCAL-001 — Exact credential-free signing plans pass for all six identities
+
+- Date: 2026-07-14
+- Owner: Codex implementation owner
+- Source: implementation commit `9bdae7f5bd7d5df838ab8c59af9346fc2282443c`, based on
+  `c6a7277cc6f56d453662ebd373e9e8e4e278f4ac`; downloaded identities are from exact-head Actions run
+  [29379227209](https://github.com/stablyai/orca/actions/runs/29379227209) and were already audited
+  under E-M3-LINUX-NATIVE-USERLAND-CI-001.
+- Runner/remote/network: local macOS arm64 shell, Node v26.0.0 and pnpm 10.24.0; no remote, signing
+  service, credential, publication, or network access was used by the plan command. The source
+  artifacts were produced on the six native GitHub runner families recorded by the prior evidence.
+- Commands:
+
+  ```sh
+  pnpm exec vitest run --config config/vitest.config.ts \
+    config/scripts/ssh-relay-runtime-native-signing-plan.test.mjs
+  pnpm exec vitest run --config config/vitest.config.ts config/scripts/ssh-relay-*.test.mjs
+  pnpm run typecheck
+  pnpm run lint
+  pnpm run check:max-lines-ratchet
+  pnpm exec oxfmt --check \
+    config/scripts/ssh-relay-runtime-native-signing-plan.mjs \
+    config/scripts/ssh-relay-runtime-native-signing-plan.test.mjs \
+    docs/reference/plans/2026-07-14-ssh-relay-github-release-implementation-checklist.md \
+    docs/reference/plans/2026-07-14-ssh-relay-github-release-implementation-checklist-summary.md
+  git diff --check
+  for identity in /private/tmp/orca-8450-run-29379227209-artifacts/ssh-relay-runtime-*/*.identity.json; do
+    node config/scripts/ssh-relay-runtime-native-signing-plan.mjs --identity "$identity"
+  done
+  ```
+
+- Static result: PASS. The purpose-named contract passed 1 file/6 tests in 944 ms; the aggregate SSH
+  relay artifact suite passed 23 files/107 tests in 6.91 seconds. Typecheck, full lint, reliability
+  gates, max-lines (355 grandfathered suppressions and no new bypass), bundled-skill verification,
+  localization catalog/coverage, focused formatting, and `git diff --check` passed. Lint emitted only
+  existing unrelated warnings; the local Node 26 shell emitted the expected Node-24 engine warning.
+- Actual-identity result: PASS. Every plan retained one official Node executable as
+  `preserve-exact-bytes`, copied the exact identity digest into `sourceSha256`, and produced this
+  closed cardinality:
+
+  | Tuple             | Policy                     | Immutable vendor files | Signing candidates | Verification files |
+  | ----------------- | -------------------------- | ---------------------- | ------------------ | ------------------ |
+  | linux-x64-glibc   | `linux-hash-only-v1`       | 1                      | 0                  | 3                  |
+  | linux-arm64-glibc | `linux-hash-only-v1`       | 1                      | 0                  | 3                  |
+  | darwin-x64        | `apple-developer-id-v1`    | 1                      | 3                  | 4                  |
+  | darwin-arm64      | `apple-developer-id-v1`    | 1                      | 3                  | 4                  |
+  | win32-x64         | `signpath-authenticode-v1` | 1                      | 5                  | 6                  |
+  | win32-arm64       | `signpath-authenticode-v1` | 1                      | 5                  | 6                  |
+
+- Fail-closed coverage: wrong tuple/OS, role/path/count/extension drift, duplicates, missing exact
+  Node, non-executable native entries, malformed invocation, malformed JSON, directories, and input
+  larger than 4 MiB reject. Every native file is present in `verificationFiles`; Linux selects no
+  signing target, macOS requires Developer ID for all three non-Node native files, and Windows sends
+  all five non-Node PE files through the preserve-valid-upstream-signature SignPath policy.
+- Oracle proved: one bounded, deterministic, credential-free contract derives the complete platform
+  signing/verification plan from the builder-enforced closure before signing side effects, while
+  keeping official Node outside Orca signing.
+- Does not prove: Apple or SignPath credential wiring, returned signed-byte hashes, Gatekeeper,
+  quarantine, notarized containing-app provenance, Authenticode signer policy, Defender, WDAC, exact
+  oldest-OS snapshots, release aggregation, SSH transfer/install, packaged desktop use, fallback,
+  performance, or an enabled tuple.
+- Follow-up: commit this evidence separately, require exact-head CI, then make native signing staging
+  consume this plan without weakening any remaining credential/snapshot gate.
 
 ## Accepted Gaps
 
