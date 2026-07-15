@@ -647,12 +647,23 @@ const CODEX_HOME_ENV_KEYS = ['CODEX_HOME', 'ORCA_CODEX_HOME'] as const
 // the marker so a shell-ready wrapper cannot restore the managed home. A
 // user-set CODEX_HOME with no Orca marker is preserved untouched (see #8606).
 function stripInheritedOrcaCodexHomeOverride(baseEnv: Record<string, string>): void {
-  const inheritedOrcaOverride = baseEnv.ORCA_CODEX_HOME ?? process.env.ORCA_CODEX_HOME
-  const inheritedCodexHome = baseEnv.CODEX_HOME ?? process.env.CODEX_HOME
-  if (inheritedOrcaOverride && inheritedCodexHome === inheritedOrcaOverride) {
-    delete baseEnv.CODEX_HOME
+  for (const key of getInheritedOrcaCodexHomeEnvKeysToDelete(baseEnv)) {
+    delete baseEnv[key]
   }
-  delete baseEnv.ORCA_CODEX_HOME
+}
+
+// Why: the daemon spawns the PTY from its own inherited environment and honors
+// only spawnOptions.envToDelete, so mutating the sparse env object is not enough
+// to strip an Orca-owned CODEX_HOME the daemon already carries. Return the exact
+// keys to delete, preserving a user-owned CODEX_HOME.
+function getInheritedOrcaCodexHomeEnvKeysToDelete(env: Record<string, string>): string[] {
+  const inheritedOrcaOverride = env.ORCA_CODEX_HOME ?? process.env.ORCA_CODEX_HOME
+  const inheritedCodexHome = env.CODEX_HOME ?? process.env.CODEX_HOME
+  const keysToDelete = ['ORCA_CODEX_HOME']
+  if (inheritedOrcaOverride && inheritedCodexHome === inheritedOrcaOverride) {
+    keysToDelete.push('CODEX_HOME')
+  }
+  return keysToDelete
 }
 
 type GetSelectedCodexHomePath = (target?: CodexAccountSelectionTarget) => string | null
@@ -3082,6 +3093,12 @@ export function registerPtyHandlers(
         isDaemonHostSpawn &&
         shouldSkipCodexHomeEnvForWindowsShell(daemonShellOverride, cwd) &&
         !selectedCodexHomePath
+      const stripInheritedOrcaCodexHome = shouldStripInheritedOrcaCodexHome({
+        target: codexSelectionTarget,
+        selectedCodexHomePath,
+        skipCodexHomeEnv,
+        settings: getSettings?.()
+      })
       if (isDaemonHostSpawn && sessionId) {
         if (!isSafePtySessionId(sessionId, app.getPath('userData'))) {
           throw new Error('Invalid PTY session id')
@@ -3091,12 +3108,7 @@ export function registerPtyHandlers(
           userDataPath: app.getPath('userData'),
           selectedCodexHomePath,
           skipCodexHomeEnv,
-          stripInheritedOrcaCodexHome: shouldStripInheritedOrcaCodexHome({
-            target: codexSelectionTarget,
-            selectedCodexHomePath,
-            skipCodexHomeEnv,
-            settings: getSettings?.()
-          }),
+          stripInheritedOrcaCodexHome,
           githubAttributionEnabled: getSettings?.()?.enableGitHubAttribution ?? false,
           launchCommand: args.command,
           launchAgent: isTuiAgent(args.launchAgent) ? args.launchAgent : undefined,
@@ -3128,6 +3140,13 @@ export function registerPtyHandlers(
         spawnOptions.envToDelete = mergePtyEnvDeletions(
           spawnOptions.envToDelete,
           CODEX_HOME_ENV_KEYS
+        )
+      } else if (stripInheritedOrcaCodexHome) {
+        // Why: the daemon inherits its own CODEX_HOME; strip the Orca-owned
+        // override there too, preserving a user-set CODEX_HOME.
+        spawnOptions.envToDelete = mergePtyEnvDeletions(
+          spawnOptions.envToDelete,
+          getInheritedOrcaCodexHomeEnvKeysToDelete(env ?? {})
         )
       }
       deleteRequestedEnvKeys(env, spawnOptions.envToDelete)
@@ -3955,6 +3974,12 @@ export function registerPtyHandlers(
         isDaemonHostSpawn &&
         shouldSkipCodexHomeEnvForWindowsShell(effectiveShellOverride, cwd) &&
         !selectedCodexHomePath
+      const stripInheritedOrcaCodexHome = shouldStripInheritedOrcaCodexHome({
+        target: codexSelectionTarget,
+        selectedCodexHomePath,
+        skipCodexHomeEnv,
+        settings: getSettings?.()
+      })
       if (isDaemonHostSpawn) {
         if (effectiveSessionId === undefined) {
           // Should be unreachable: the expression above returns a string when
@@ -3979,12 +4004,7 @@ export function registerPtyHandlers(
             userDataPath: app.getPath('userData'),
             selectedCodexHomePath,
             skipCodexHomeEnv,
-            stripInheritedOrcaCodexHome: shouldStripInheritedOrcaCodexHome({
-              target: codexSelectionTarget,
-              selectedCodexHomePath,
-              skipCodexHomeEnv,
-              settings: getSettings?.()
-            }),
+            stripInheritedOrcaCodexHome,
             githubAttributionEnabled: getSettings?.()?.enableGitHubAttribution ?? false,
             launchCommand: args.command,
             launchAgent: isTuiAgent(args.launchAgent) ? args.launchAgent : undefined,
@@ -4023,12 +4043,17 @@ export function registerPtyHandlers(
       const combinedEnvToDelete = mergePtyEnvDeletions(
         mergePtyEnvDeletions(
           mergePtyEnvDeletions(
-            mergePtyEnvDeletions(envToDelete, args.envToDelete ?? []),
-            agentTeamsEnvToDelete ?? []
+            mergePtyEnvDeletions(
+              mergePtyEnvDeletions(envToDelete, args.envToDelete ?? []),
+              agentTeamsEnvToDelete ?? []
+            ),
+            isDaemonHostSpawn ? getInheritedAgentHookEnvKeysToDelete(spawnEnv) : []
           ),
-          isDaemonHostSpawn ? getInheritedAgentHookEnvKeysToDelete(spawnEnv) : []
+          skipCodexHomeEnv ? CODEX_HOME_ENV_KEYS : []
         ),
-        skipCodexHomeEnv ? CODEX_HOME_ENV_KEYS : []
+        // Why: real-home routing strips the Orca-owned override the daemon
+        // inherits, while preserving a user-set CODEX_HOME.
+        stripInheritedOrcaCodexHome ? getInheritedOrcaCodexHomeEnvKeysToDelete(spawnEnv ?? {}) : []
       )
       deleteRequestedEnvKeys(spawnEnv, combinedEnvToDelete)
       promoteAgentTeamsShimPath(spawnEnv, requestedAgentTeamsPath)

@@ -1750,6 +1750,39 @@ describe('registerPtyHandlers', () => {
         }
       })
 
+      it('strips the daemon-inherited Orca-owned CODEX_HOME for real-home routing', async () => {
+        const spawnOptions = await daemonSpawnAndGetOptions(
+          {},
+          () => null,
+          () => ({ codexSystemDefaultRealHomeEnabled: true }) as never,
+          { CODEX_HOME: '/managed/home', ORCA_CODEX_HOME: '/managed/home' }
+        )
+        expect(spawnOptions.env.CODEX_HOME).toBeUndefined()
+        expect(spawnOptions.env.ORCA_CODEX_HOME).toBeUndefined()
+        expect(spawnOptions.envToDelete).toEqual(
+          expect.arrayContaining(['CODEX_HOME', 'ORCA_CODEX_HOME'])
+        )
+      })
+
+      it('preserves a daemon-inherited user CODEX_HOME for real-home routing', async () => {
+        const spawnOptions = await daemonSpawnAndGetOptions(
+          {},
+          () => null,
+          () => ({ codexSystemDefaultRealHomeEnabled: true }) as never,
+          { CODEX_HOME: '/home/me/.config/codex', ORCA_CODEX_HOME: undefined }
+        )
+        expect(spawnOptions.envToDelete).toEqual(expect.arrayContaining(['ORCA_CODEX_HOME']))
+        expect(spawnOptions.envToDelete).not.toEqual(expect.arrayContaining(['CODEX_HOME']))
+      })
+
+      it('does not strip the daemon-inherited CODEX_HOME when the flag is OFF', async () => {
+        const spawnOptions = await daemonSpawnAndGetOptions({}, () => null, undefined, {
+          CODEX_HOME: '/managed/home',
+          ORCA_CODEX_HOME: '/managed/home'
+        })
+        expect(spawnOptions.envToDelete ?? []).not.toEqual(expect.arrayContaining(['CODEX_HOME']))
+      })
+
       it('prepends the bare-orca CLI shim dir to PATH for packaged Linux spawns', async () => {
         const originalPlatform = process.platform
         Object.defineProperty(process, 'platform', {
