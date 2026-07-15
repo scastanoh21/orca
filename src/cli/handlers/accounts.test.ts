@@ -53,6 +53,10 @@ import { main } from '../index'
 import { RuntimeClientError } from '../runtime-client'
 import { okFixture, queueFixtures } from '../test-fixtures'
 
+// Why: main()'s cwd argument must never assume a POSIX path (SSH/Windows
+// hosts too) — use the real cwd instead of a hardcoded POSIX-style path.
+const testCwd = process.cwd()
+
 describe('orca accounts CLI handlers', () => {
   const originalStdinIsTTY = process.stdin.isTTY
 
@@ -100,7 +104,7 @@ describe('orca accounts CLI handlers', () => {
       })
     )
 
-    await main(['accounts', 'list'], '/tmp/repo')
+    await main(['accounts', 'list'], testCwd)
 
     expect(callMock).toHaveBeenCalledWith('accounts.list')
     const output = String(vi.mocked(console.log).mock.calls[0][0])
@@ -115,7 +119,7 @@ describe('orca accounts CLI handlers', () => {
   })
 
   it('rejects an unknown --provider before calling the runtime', async () => {
-    await main(['accounts', 'select', '--provider', 'gemini', '--id', 'acc-1'], '/tmp/repo')
+    await main(['accounts', 'select', '--provider', 'gemini', '--id', 'acc-1'], testCwd)
 
     expect(callMock).not.toHaveBeenCalled()
     expect(vi.mocked(console.error).mock.calls[0][0]).toContain(
@@ -133,7 +137,7 @@ describe('orca accounts CLI handlers', () => {
       })
     )
 
-    await main(['accounts', 'select', '--provider', 'codex', '--id', 'acc-codex-1'], '/tmp/repo')
+    await main(['accounts', 'select', '--provider', 'codex', '--id', 'acc-codex-1'], testCwd)
 
     expect(callMock).toHaveBeenCalledWith('accounts.selectCodex', { accountId: 'acc-codex-1' })
     expect(vi.mocked(console.log).mock.calls[0][0]).toContain(
@@ -150,7 +154,7 @@ describe('orca accounts CLI handlers', () => {
       })
     )
 
-    await main(['accounts', 'select', '--provider', 'claude', '--id', 'acc-claude-1'], '/tmp/repo')
+    await main(['accounts', 'select', '--provider', 'claude', '--id', 'acc-claude-1'], testCwd)
 
     expect(callMock).toHaveBeenCalledWith('accounts.selectClaude', { accountId: 'acc-claude-1' })
   })
@@ -164,7 +168,7 @@ describe('orca accounts CLI handlers', () => {
       })
     )
 
-    await main(['accounts', 'remove', '--provider', 'codex', '--id', 'acc-codex-1'], '/tmp/repo')
+    await main(['accounts', 'remove', '--provider', 'codex', '--id', 'acc-codex-1'], testCwd)
 
     expect(callMock).toHaveBeenCalledWith('accounts.removeCodex', { accountId: 'acc-codex-1' })
     expect(vi.mocked(console.log).mock.calls[0][0]).toContain(
@@ -194,7 +198,7 @@ describe('orca accounts CLI handlers', () => {
       })
     )
 
-    await main(['accounts', 'add', '--provider', 'codex'], '/tmp/repo')
+    await main(['accounts', 'add', '--provider', 'codex'], testCwd)
 
     expect(callMock).toHaveBeenCalledWith('accounts.addCodex', {})
     expect(callMock).toHaveBeenCalledWith(
@@ -220,15 +224,26 @@ describe('orca accounts CLI handlers', () => {
     expect(process.exitCode).toBeUndefined()
   })
 
-  it('omits the login URL from the final summary once it was announced live, but still prints it if only discovered at completion', async () => {
+  it('announces a live login URL exactly once, omits it from the final human-readable summary, but --json output still includes it', async () => {
+    // Why: this fixture must include a real URL in outputTail (unlike a prior
+    // version of this test, which asserted against a fixture with no URL at
+    // all — trivially "passing" without ever distinguishing "announced once,
+    // then correctly omitted" from "there was never a URL to announce").
+    const url = 'https://auth.example.com/login?code=live-url'
     queueFixtures(
       callMock,
       okFixture('req_add', { loginId: 'login-5' }),
       okFixture('req_poll_1', {
         loginId: 'login-5',
         provider: 'codex',
+        status: 'in_progress',
+        outputTail: `Visit ${url} to continue.\n`
+      }),
+      okFixture('req_poll_2', {
+        loginId: 'login-5',
+        provider: 'codex',
         status: 'completed',
-        outputTail: 'Signed in without a printed URL.\n',
+        outputTail: `Visit ${url} to continue.\nSigned in.\n`,
         state: {
           accounts: [{ id: 'acc-codex-2', email: 'codex2@example.com' }],
           activeAccountId: 'acc-codex-2'
@@ -236,15 +251,47 @@ describe('orca accounts CLI handlers', () => {
       })
     )
 
-    await main(['accounts', 'add', '--provider', 'codex'], '/tmp/repo')
+    await main(['accounts', 'add', '--provider', 'codex'], testCwd)
 
     const logged = vi.mocked(console.log).mock.calls.map((call) => String(call[0]))
-    // No URL was ever present in the output tail, so there is nothing to announce
-    // or repeat; the final summary should simply report the added account.
-    expect(logged.some((line) => line.includes('Login URL'))).toBe(false)
-    expect(
-      logged.some((line) => line.includes('Added codex account: codex2@example.com (acc-codex-2)'))
-    ).toBe(true)
+    const urlAnnouncements = logged.filter((line) =>
+      line.includes('Login URL (open on another device')
+    )
+    expect(urlAnnouncements).toHaveLength(1)
+    const finalSummary = logged.at(-1)
+    expect(finalSummary).not.toContain(url)
+    expect(finalSummary).toContain('Added codex account: codex2@example.com (acc-codex-2)')
+
+    // The human-readable summary above omits the URL once it was announced
+    // live (see omitLoginUrl in formatAccountAddResult), but --json mode must
+    // still carry it for scripts/tools parsing the final response.
+    callMock.mockReset()
+    vi.mocked(console.log).mockClear()
+    queueFixtures(
+      callMock,
+      okFixture('req_add', { loginId: 'login-5b' }),
+      okFixture('req_poll_1', {
+        loginId: 'login-5b',
+        provider: 'codex',
+        status: 'in_progress',
+        outputTail: `Visit ${url} to continue.\n`
+      }),
+      okFixture('req_poll_2', {
+        loginId: 'login-5b',
+        provider: 'codex',
+        status: 'completed',
+        outputTail: `Visit ${url} to continue.\nSigned in.\n`,
+        state: {
+          accounts: [{ id: 'acc-codex-2', email: 'codex2@example.com' }],
+          activeAccountId: 'acc-codex-2'
+        }
+      })
+    )
+
+    await main(['accounts', 'add', '--provider', 'codex', '--json'], testCwd)
+
+    const jsonPrinted = JSON.parse(String(vi.mocked(console.log).mock.calls.at(-1)?.[0]))
+    expect(jsonPrinted.result.loginUrl).toBe(url)
   })
 
   it('skips a loopback callback-server URL and announces the real external auth URL', async () => {
@@ -265,7 +312,7 @@ describe('orca accounts CLI handlers', () => {
       })
     )
 
-    await main(['accounts', 'add', '--provider', 'codex'], '/tmp/repo')
+    await main(['accounts', 'add', '--provider', 'codex'], testCwd)
 
     const logged = vi.mocked(console.log).mock.calls.map((call) => String(call[0]))
     expect(logged.some((line) => line.includes('auth.openai.com/oauth/authorize'))).toBe(true)
@@ -301,7 +348,7 @@ describe('orca accounts CLI handlers', () => {
       })
     )
 
-    await main(['accounts', 'add', '--provider', 'codex'], '/tmp/repo')
+    await main(['accounts', 'add', '--provider', 'codex'], testCwd)
 
     const logged = vi.mocked(console.log).mock.calls.map((call) => String(call[0]))
     expect(logged.some((line) => line.includes('https://auth.openai.com/codex/device'))).toBe(true)
@@ -334,7 +381,7 @@ describe('orca accounts CLI handlers', () => {
       })
     )
 
-    await main(['accounts', 'add', '--provider', 'claude'], '/tmp/repo')
+    await main(['accounts', 'add', '--provider', 'claude'], testCwd)
 
     const logged = vi.mocked(console.log).mock.calls.map((call) => String(call[0]))
     const urlLine = logged.find((line) => line.includes('Login URL'))
@@ -373,7 +420,7 @@ describe('orca accounts CLI handlers', () => {
       })
     )
 
-    await main(['accounts', 'add', '--provider', 'codex', '--json'], '/tmp/repo')
+    await main(['accounts', 'add', '--provider', 'codex', '--json'], testCwd)
 
     // Why: stdout must stay clean JSON for scripts/tools, so raw streaming
     // and the URL/code announcement are not allowed to touch it here.
@@ -421,7 +468,7 @@ describe('orca accounts CLI handlers', () => {
       })
     )
 
-    await main(['accounts', 'add', '--provider', 'codex'], '/tmp/repo')
+    await main(['accounts', 'add', '--provider', 'codex'], testCwd)
 
     const written = vi.mocked(process.stdout.write).mock.calls.map((call) => String(call[0]))
     // Every chunk (A, B, C, D, E) must appear exactly once in the combined
@@ -445,7 +492,7 @@ describe('orca accounts CLI handlers', () => {
       })
     )
 
-    await main(['accounts', 'add', '--provider', 'claude', '--json'], '/tmp/repo')
+    await main(['accounts', 'add', '--provider', 'claude', '--json'], testCwd)
 
     expect(callMock).toHaveBeenCalledWith('accounts.addClaude', {})
     expect(vi.mocked(process.stdout.write)).not.toHaveBeenCalled()
@@ -468,7 +515,7 @@ describe('orca accounts CLI handlers', () => {
       })
     )
 
-    await main(['accounts', 'add', '--provider', 'codex'], '/tmp/repo')
+    await main(['accounts', 'add', '--provider', 'codex'], testCwd)
 
     expect(process.exitCode).toBe(1)
     const logged = vi.mocked(console.log).mock.calls.map((call) => String(call[0]))
@@ -494,7 +541,7 @@ describe('orca accounts CLI handlers', () => {
         return okFixture('req_add', { loginId: 'login-4' })
       })
 
-      await main(['accounts', 'add', '--provider', 'codex'], '/tmp/repo')
+      await main(['accounts', 'add', '--provider', 'codex'], testCwd)
 
       expect(process.exitCode).toBe(1)
       expect(vi.mocked(console.error).mock.calls[0][0]).toContain(
@@ -505,18 +552,66 @@ describe('orca accounts CLI handlers', () => {
     }
   })
 
-  it('tolerates the real-world claude worst case (180s login + 20s status) without timing out client-side', async () => {
+  it('closes the readline interface left open by an unanswered paste-code prompt when the claude login times out client-side', async () => {
+    // Why: this is issue #1's exact regression scenario — a Claude paste-code
+    // prompt opens a readline.Interface (see promptForPastedCode) and is only
+    // ever closed via pendingPrompt?.abandon(); before the try/finally fix,
+    // that call only ran on the normal "status !== in_progress" return, never
+    // on the timeout throw at the top of the loop, so an abandoned prompt kept
+    // the whole CLI process alive waiting on stdin after the command had
+    // already failed and exited. Mirrors "does not block on an unanswered
+    // paste-code prompt" above for how the never-resolving questionMock is set up.
+    questionMock.mockImplementationOnce(() => new Promise<string>(() => {}))
+    vi.useFakeTimers()
+    try {
+      queueFixtures(callMock, okFixture('req_add', { loginId: 'login-18' }))
+      callMock.mockImplementation(async (method: string) => {
+        if (method === 'accounts.pollAdd') {
+          vi.advanceTimersByTime(20_000)
+          return okFixture('req_poll', {
+            loginId: 'login-18',
+            provider: 'claude',
+            status: 'in_progress',
+            outputTail: 'Paste code here if prompted > '
+          })
+        }
+        return okFixture('req_add', { loginId: 'login-18' })
+      })
+
+      await main(['accounts', 'add', '--provider', 'claude'], testCwd)
+
+      expect(process.exitCode).toBe(1)
+      expect(vi.mocked(console.error).mock.calls[0][0]).toContain(
+        'Timed out waiting for the claude login to finish'
+      )
+      // The regression: without the try/finally fix, this never fires because
+      // the timeout throw bypasses the loop's only (pre-fix) cleanup call.
+      expect(closeMock).toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('tolerates the real-world claude worst case (16min login + 20s status) without timing out client-side', async () => {
     vi.useFakeTimers()
     try {
       queueFixtures(callMock, okFixture('req_add', { loginId: 'login-6' }))
       let elapsedMs = 0
+      // Why: pinned to ADD_ACCOUNT_TIMEOUT_MS.claude's own documented formula
+      // in accounts.ts (16 * 60 * 1000 + 20_000 server-side worst case, before
+      // its +10_000 client grace) rather than an arbitrary guess, so this test
+      // actually fails if that constant regresses to a shorter value.
+      const CLAUDE_WORST_CASE_SERVER_MS = 16 * 60 * 1000 + 20_000
       callMock.mockImplementation(async (method: string) => {
         if (method === 'accounts.pollAdd') {
-          // 195s of polling mirrors the ClaudeAccountService worst case (180s
-          // login + 20s status, minus the last poll window) before completing.
-          if (elapsedMs < 195_000) {
-            elapsedMs += 15_000
-            vi.advanceTimersByTime(15_000)
+          if (elapsedMs < CLAUDE_WORST_CASE_SERVER_MS) {
+            // Why: cap the final increment so total elapsed lands exactly on
+            // the worst-case boundary instead of overshooting past it (15s
+            // poll windows don't evenly divide 980s) — overshooting would eat
+            // into the +10s client grace and spuriously time out the test.
+            const increment = Math.min(15_000, CLAUDE_WORST_CASE_SERVER_MS - elapsedMs)
+            elapsedMs += increment
+            vi.advanceTimersByTime(increment)
             return okFixture('req_poll_in_progress', {
               loginId: 'login-6',
               provider: 'claude',
@@ -538,7 +633,7 @@ describe('orca accounts CLI handlers', () => {
         return okFixture('req_add', { loginId: 'login-6' })
       })
 
-      await main(['accounts', 'add', '--provider', 'claude'], '/tmp/repo')
+      await main(['accounts', 'add', '--provider', 'claude'], testCwd)
 
       expect(process.exitCode).toBeUndefined()
       expect(vi.mocked(console.error)).not.toHaveBeenCalled()
@@ -601,7 +696,7 @@ describe('orca accounts CLI handlers', () => {
       throw new Error(`unexpected method: ${method}`)
     })
 
-    await main(['accounts', 'add', '--provider', 'claude'], '/tmp/repo')
+    await main(['accounts', 'add', '--provider', 'claude'], testCwd)
 
     expect(createInterfaceMock).toHaveBeenCalledTimes(1)
     expect(questionMock).toHaveBeenCalledTimes(1)
@@ -655,7 +750,7 @@ describe('orca accounts CLI handlers', () => {
 
     // If the old blocking implementation were still in place, this await
     // would hang forever on the never-resolving questionMock promise.
-    await main(['accounts', 'add', '--provider', 'claude'], '/tmp/repo')
+    await main(['accounts', 'add', '--provider', 'claude'], testCwd)
 
     expect(process.exitCode).toBeUndefined()
     const stderrWritten = vi.mocked(process.stderr.write).mock.calls.map((call) => String(call[0]))
@@ -719,7 +814,7 @@ describe('orca accounts CLI handlers', () => {
       throw new Error(`unexpected method: ${method}`)
     })
 
-    await main(['accounts', 'add', '--provider', 'claude'], '/tmp/repo')
+    await main(['accounts', 'add', '--provider', 'claude'], testCwd)
     expect(process.exitCode).toBeUndefined()
 
     // The command already finished; now the user finally finishes typing.
@@ -766,7 +861,7 @@ describe('orca accounts CLI handlers', () => {
       })
     )
 
-    await main(['accounts', 'add', '--provider', 'claude'], '/tmp/repo')
+    await main(['accounts', 'add', '--provider', 'claude'], testCwd)
 
     expect(createInterfaceMock).not.toHaveBeenCalled()
     expect(callMock.mock.calls.some(([method]) => method === 'accounts.submitLoginInput')).toBe(
@@ -798,7 +893,7 @@ describe('orca accounts CLI handlers', () => {
       })
     )
 
-    await main(['accounts', 'add', '--provider', 'codex'], '/tmp/repo')
+    await main(['accounts', 'add', '--provider', 'codex'], testCwd)
 
     expect(createInterfaceMock).not.toHaveBeenCalled()
     expect(callMock.mock.calls.some(([method]) => method === 'accounts.submitLoginInput')).toBe(
@@ -850,7 +945,7 @@ describe('orca accounts CLI handlers', () => {
       throw new Error(`unexpected method: ${method}`)
     })
 
-    await main(['accounts', 'add', '--provider', 'claude'], '/tmp/repo')
+    await main(['accounts', 'add', '--provider', 'claude'], testCwd)
 
     expect(process.exitCode).toBeUndefined()
     const stderrWritten = vi.mocked(process.stderr.write).mock.calls.map((call) => String(call[0]))

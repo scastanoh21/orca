@@ -87,6 +87,36 @@ describe('PendingAccountLoginRegistry', () => {
     expect(registry.get('login-1')?.status).toBe('in_progress')
   })
 
+  it('waitForUpdate resolves immediately when passed an already-aborted signal', async () => {
+    // Why: the RPC long-poll layer passes the caller's AbortSignal through so
+    // a disconnected client releases its waiter right away instead of holding
+    // the long-poll open for the full timeout.
+    const registry = new PendingAccountLoginRegistry<{ id: string }>()
+    registry.begin('login-1', 'codex')
+    const controller = new AbortController()
+    controller.abort()
+
+    const waitPromise = registry.waitForUpdate('login-1', 30_000, controller.signal)
+
+    // No timers advanced and no update posted — an already-aborted signal
+    // must settle the wait without waiting out the timeout.
+    await expect(waitPromise).resolves.toBeUndefined()
+  })
+
+  it('waitForUpdate resolves promptly when its signal aborts partway through the wait', async () => {
+    const registry = new PendingAccountLoginRegistry<{ id: string }>()
+    registry.begin('login-1', 'codex')
+    const controller = new AbortController()
+
+    const waitPromise = registry.waitForUpdate('login-1', 30_000, controller.signal)
+    await vi.advanceTimersByTimeAsync(1_000)
+    controller.abort()
+
+    // Resolves right away on abort, well before the 30s timeout would fire.
+    await expect(waitPromise).resolves.toBeUndefined()
+    expect(registry.get('login-1')?.status).toBe('in_progress')
+  })
+
   it('reclaims a settled login after its TTL elapses', async () => {
     const registry = new PendingAccountLoginRegistry<{ id: string }>()
     registry.begin('login-1', 'codex')

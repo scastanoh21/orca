@@ -19,6 +19,7 @@ import { rewriteRelativePathConfigValues } from '../codex/codex-config-path-refe
 import { resolveCodexCommand } from '../codex-cli/command'
 import type { Store } from '../persistence'
 import type { RateLimitService } from '../rate-limits/service'
+import { invokeLoginCallbackSafely } from '../accounts/safe-login-callback-invocation'
 import { parseWslUncPath } from '../../shared/wsl-paths'
 import { toWindowsWslPath } from '../wsl'
 import { buildEncodedWslBashCommand } from '../wsl-bash-command'
@@ -880,11 +881,7 @@ export class CodexAccountService {
         // above and must not affect the timeout/kill/reject flow below. This
         // runs synchronously inside a child.stdout 'data' handler, so a
         // throwing callback must not escape and crash the host process.
-        try {
-          onOutput?.(text)
-        } catch (error) {
-          console.warn('[codex-accounts] onOutput callback threw:', error)
-        }
+        invokeLoginCallbackSafely('codex-accounts onOutput', onOutput, text)
       }
 
       let timeout: ReturnType<typeof setTimeout> | null = null

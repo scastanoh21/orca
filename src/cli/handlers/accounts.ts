@@ -238,86 +238,94 @@ async function pollAccountAdd(
   // a login that finishes on its own while the prompt is still unanswered.
   let pendingPrompt: PendingPastePrompt | null = null
 
-  for (;;) {
-    const remainingMs = deadline - Date.now()
-    if (remainingMs <= 0) {
-      throw new RuntimeClientError(
-        'timeout',
-        `Timed out waiting for the ${provider} login to finish. Run \`orca accounts add --provider ${provider}\` again.`
+  // Why: pendingPrompt's readline.Interface must be released on EVERY exit
+  // from this loop — normal completion, the timeout throw, and an RPC-failure
+  // throw from client.call alike — or an abandoned prompt keeps the CLI
+  // process alive waiting on stdin nobody needs anymore after the command has
+  // already failed and returned.
+  try {
+    for (;;) {
+      const remainingMs = deadline - Date.now()
+      if (remainingMs <= 0) {
+        throw new RuntimeClientError(
+          'timeout',
+          `Timed out waiting for the ${provider} login to finish. Run \`orca accounts add --provider ${provider}\` again.`
+        )
+      }
+      const pollTimeoutMs = Math.min(POLL_WINDOW_MS, remainingMs)
+      const response = await client.call<RuntimeAccountPollAddResult>(
+        'accounts.pollAdd',
+        { loginId, timeoutMs: pollTimeoutMs },
+        { timeoutMs: pollTimeoutMs + POLL_CLIENT_GRACE_MS }
       )
-    }
-    const pollTimeoutMs = Math.min(POLL_WINDOW_MS, remainingMs)
-    const response = await client.call<RuntimeAccountPollAddResult>(
-      'accounts.pollAdd',
-      { loginId, timeoutMs: pollTimeoutMs },
-      { timeoutMs: pollTimeoutMs + POLL_CLIENT_GRACE_MS }
-    )
-    const { outputTail, status } = response.result
+      const { outputTail, status } = response.result
 
-    if (!json) {
-      const newText = computeNewOutputText(previousOutputTail, outputTail)
-      if (newText) {
-        process.stdout.write(newText)
+      if (!json) {
+        const newText = computeNewOutputText(previousOutputTail, outputTail)
+        if (newText) {
+          process.stdout.write(newText)
+        }
+        previousOutputTail = outputTail
       }
-      previousOutputTail = outputTail
-    }
 
-    // Why: Codex's device code expires in ~15 minutes and --json mode
-    // otherwise prints nothing until the final response, so the user would
-    // never see the code in time to enter it. Announce as soon as detected
-    // regardless of --json, routing to stderr under --json so stdout stays
-    // clean JSON for scripts/tools parsing it.
-    if (!announcedLoginUrl) {
-      const loginUrl = extractLoginUrl(outputTail)
-      if (loginUrl) {
-        announcedLoginUrl = true
-        const message = `\nLogin URL (open on another device if needed): ${loginUrl}`
-        if (json) {
-          process.stderr.write(`${message}\n`)
-        } else {
-          console.log(message)
+      // Why: Codex's device code expires in ~15 minutes and --json mode
+      // otherwise prints nothing until the final response, so the user would
+      // never see the code in time to enter it. Announce as soon as detected
+      // regardless of --json, routing to stderr under --json so stdout stays
+      // clean JSON for scripts/tools parsing it.
+      if (!announcedLoginUrl) {
+        const loginUrl = extractLoginUrl(outputTail)
+        if (loginUrl) {
+          announcedLoginUrl = true
+          const message = `\nLogin URL (open on another device if needed): ${loginUrl}`
+          if (json) {
+            process.stderr.write(`${message}\n`)
+          } else {
+            console.log(message)
+          }
         }
       }
-    }
-    if (!announcedDeviceCode) {
-      const deviceCode = extractDeviceCode(outputTail)
-      if (deviceCode) {
-        announcedDeviceCode = true
-        const message = `One-time code (enter at the URL above, expires in ~15 min): ${deviceCode}`
-        if (json) {
-          process.stderr.write(`${message}\n`)
-        } else {
-          console.log(message)
+      if (!announcedDeviceCode) {
+        const deviceCode = extractDeviceCode(outputTail)
+        if (deviceCode) {
+          announcedDeviceCode = true
+          const message = `One-time code (enter at the URL above, expires in ~15 min): ${deviceCode}`
+          if (json) {
+            process.stderr.write(`${message}\n`)
+          } else {
+            console.log(message)
+          }
         }
       }
-    }
 
-    // Why: Claude's login has no local browser to auto-complete OAuth, so the
-    // user may need to paste the code themselves; Codex's device-auth flow
-    // needs no paste-back at all, so this must never fire for it. The prompt
-    // itself and its eventual submit run detached from this loop (see
-    // promptForPastedCode / submitPastedCodeInBackground) — the common case
-    // is that Claude's CLI completes the login on its own within seconds of
-    // the user authorizing in the browser, so the loop must keep polling
-    // rather than block on an answer that may never matter.
-    if (provider === 'claude' && !promptedForCode && PASTE_CODE_PROMPT_PATTERN.test(outputTail)) {
-      // Why: set this before the prompt settles so a slow user typing the
-      // answer doesn't cause a re-prompt on the next loop iteration.
-      promptedForCode = true
-      pendingPrompt = promptForPastedCode(json)
-      // Why: intentionally not awaited — a detached background task, not a
-      // step in this loop's control flow. It can never throw (see
-      // submitPastedCodeInBackground), so there is nothing to catch here.
-      void submitPastedCodeInBackground(client, loginId, pendingPrompt, json)
-    }
+      // Why: Claude's login has no local browser to auto-complete OAuth, so the
+      // user may need to paste the code themselves; Codex's device-auth flow
+      // needs no paste-back at all, so this must never fire for it. The prompt
+      // itself and its eventual submit run detached from this loop (see
+      // promptForPastedCode / submitPastedCodeInBackground) — the common case
+      // is that Claude's CLI completes the login on its own within seconds of
+      // the user authorizing in the browser, so the loop must keep polling
+      // rather than block on an answer that may never matter.
+      if (provider === 'claude' && !promptedForCode && PASTE_CODE_PROMPT_PATTERN.test(outputTail)) {
+        // Why: set this before the prompt settles so a slow user typing the
+        // answer doesn't cause a re-prompt on the next loop iteration.
+        promptedForCode = true
+        pendingPrompt = promptForPastedCode(json)
+        // Why: intentionally not awaited — a detached background task, not a
+        // step in this loop's control flow. It can never throw (see
+        // submitPastedCodeInBackground), so there is nothing to catch here.
+        void submitPastedCodeInBackground(client, loginId, pendingPrompt, json)
+      }
 
-    if (status !== 'in_progress') {
-      // Why: release stdin if a prompt is still awaiting an answer nobody
-      // needs anymore, so an abandoned readline.Interface never keeps the CLI
-      // process alive after the login has already settled.
-      pendingPrompt?.abandon()
-      return { response, announcedLoginUrl }
+      if (status !== 'in_progress') {
+        return { response, announcedLoginUrl }
+      }
     }
+  } finally {
+    // Why: release stdin if a prompt is still awaiting an answer nobody needs
+    // anymore, so an abandoned readline.Interface never keeps the CLI process
+    // alive after the login has already settled or the command has failed.
+    pendingPrompt?.abandon()
   }
 }
 

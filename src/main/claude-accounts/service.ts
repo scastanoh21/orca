@@ -12,6 +12,7 @@ import type {
 } from '../../shared/types'
 import type { Store } from '../persistence'
 import type { RateLimitService } from '../rate-limits/service'
+import { invokeLoginCallbackSafely } from '../accounts/safe-login-callback-invocation'
 import { resolveClaudeCommand } from '../codex-cli/command'
 import type { ClaudeRuntimeAuthService } from './runtime-auth-service'
 import {
@@ -970,11 +971,7 @@ export class ClaudeAccountService {
             console.warn('[claude-accounts] Failed to write pasted input to Claude login:', error)
           }
         }
-        try {
-          options?.onChildReady?.(writeInput)
-        } catch (error) {
-          console.warn('[claude-accounts] onChildReady callback threw:', error)
-        }
+        invokeLoginCallbackSafely('claude-accounts onChildReady', options?.onChildReady, writeInput)
       }
       const stdout = child.stdout
       const stderr = child.stderr
@@ -999,11 +996,7 @@ export class ClaudeAccountService {
         // chunk that triggered the kill, matching Codex's additive semantics.
         // This runs synchronously inside a child.stdout 'data' handler, so a
         // throwing callback must not escape and crash the host process.
-        try {
-          options?.onOutput?.(text)
-        } catch (error) {
-          console.warn('[claude-accounts] onOutput callback threw:', error)
-        }
+        invokeLoginCallbackSafely('claude-accounts onOutput', options?.onOutput, text)
         if (CLAUDE_AUTH_DENIED_PATTERN.test(output)) {
           // Use killChild (not child.kill) so the whole login/browser tree is torn down on
           // Windows (taskkill /t) and the detached POSIX group, matching the timeout/abort paths.
