@@ -39,6 +39,11 @@ const PollAddAccountParams = z.object({
   timeoutMs: OptionalFiniteNumber
 })
 
+const SubmitLoginInputParams = z.object({
+  loginId: z.string().min(1, 'Missing loginId'),
+  input: z.string().min(1, 'Missing input')
+})
+
 // Why: bridges the desktop ClaudeAccountService / CodexAccountService /
 // RateLimitService into the mobile WebSocket RPC and the headless CLI.
 // Add/re-auth still spawn `claude login` / `codex login`, which need a real
@@ -94,6 +99,16 @@ export const ACCOUNT_METHODS: readonly RpcAnyMethod[] = [
     params: PollAddAccountParams,
     handler: async (params, { runtime, signal }) =>
       runtime.pollAddAccount(params.loginId, { timeoutMs: params.timeoutMs, signal })
+  }),
+  // Why: relays a pasted OAuth code from the CLI's terminal into the Claude
+  // login child process's stdin on the server — see ClaudeAccountAddOptions.
+  defineMethod({
+    name: 'accounts.submitLoginInput',
+    params: SubmitLoginInputParams,
+    handler: async (params, { runtime }) => {
+      runtime.submitAccountLoginInput(params.loginId, params.input)
+      return { submitted: true }
+    }
   }),
   // Why: streaming counterpart so mobile usage bars refresh in place when the
   // desktop's 5-minute rate-limit poll completes or when the user switches

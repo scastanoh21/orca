@@ -96,4 +96,45 @@ describe('PendingAccountLoginRegistry', () => {
 
     expect(registry.get('login-1')).toBeUndefined()
   })
+
+  it('relays submitted input to the writer stored via setInputWriter', () => {
+    const registry = new PendingAccountLoginRegistry<{ id: string }>()
+    registry.begin('login-1', 'claude')
+    const writeInput = vi.fn()
+
+    registry.setInputWriter('login-1', writeInput)
+    registry.submitInput('login-1', 'pasted-code')
+
+    expect(writeInput).toHaveBeenCalledWith('pasted-code')
+  })
+
+  it('throws submitting input for an unknown loginId', () => {
+    const registry = new PendingAccountLoginRegistry<{ id: string }>()
+
+    expect(() => registry.submitInput('missing-login', 'pasted-code')).toThrow(
+      'That account login no longer exists.'
+    )
+  })
+
+  it('throws submitting input before any writer has been set', () => {
+    const registry = new PendingAccountLoginRegistry<{ id: string }>()
+    registry.begin('login-1', 'claude')
+
+    expect(() => registry.submitInput('login-1', 'pasted-code')).toThrow(
+      'This login is not waiting for input.'
+    )
+  })
+
+  it('throws submitting input after the login has settled', () => {
+    const registry = new PendingAccountLoginRegistry<{ id: string }>()
+    registry.begin('login-1', 'claude')
+    const writeInput = vi.fn()
+    registry.setInputWriter('login-1', writeInput)
+    registry.complete('login-1', { id: 'account-1' })
+
+    expect(() => registry.submitInput('login-1', 'pasted-code')).toThrow(
+      'That account login no longer exists.'
+    )
+    expect(writeInput).not.toHaveBeenCalled()
+  })
 })

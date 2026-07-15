@@ -8121,7 +8121,14 @@ export class OrcaRuntimeService {
     const loginId = randomUUID()
     this.pendingAccountLogins.begin(loginId, 'codex')
     void codexAccounts
-      .addAccount(target, (chunk) => this.pendingAccountLogins.appendOutput(loginId, chunk))
+      .addAccount(
+        target,
+        (chunk) => this.pendingAccountLogins.appendOutput(loginId, chunk),
+        // Why: this RPC is only reachable via headless CLI/mobile, which have
+        // no local browser sharing the login process's machine — device-code
+        // auth avoids a localhost OAuth callback that could never complete.
+        { deviceAuth: true }
+      )
       .then(
         (state) => this.pendingAccountLogins.complete(loginId, state),
         (error) => this.pendingAccountLogins.fail(loginId, describeAccountLoginError(error))
@@ -8134,12 +8141,24 @@ export class OrcaRuntimeService {
     const loginId = randomUUID()
     this.pendingAccountLogins.begin(loginId, 'claude')
     void claudeAccounts
-      .addAccount(target, (chunk) => this.pendingAccountLogins.appendOutput(loginId, chunk))
+      .addAccount(target, (chunk) => this.pendingAccountLogins.appendOutput(loginId, chunk), {
+        // Why: this RPC is only reachable via headless CLI/mobile, which has
+        // no local browser sharing the login process's machine — the user
+        // must paste the OAuth code back in, which needs a stdin writer and
+        // more wall-clock time than the desktop same-machine flow.
+        remoteAuth: true,
+        onChildReady: (writeInput) => this.pendingAccountLogins.setInputWriter(loginId, writeInput)
+      })
       .then(
         (state) => this.pendingAccountLogins.complete(loginId, state),
         (error) => this.pendingAccountLogins.fail(loginId, describeAccountLoginError(error))
       )
     return { loginId }
+  }
+
+  submitAccountLoginInput(loginId: string, input: string): void {
+    this.requireAccountServices()
+    this.pendingAccountLogins.submitInput(loginId, input)
   }
 
   // Why: long-poll counterpart to terminal.wait/orchestration.check — blocks

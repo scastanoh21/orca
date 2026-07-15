@@ -105,4 +105,19 @@ describe('account RPC methods', () => {
     ).resolves.toBe(snapshot)
     expect(runtime.pollAddAccount).toHaveBeenCalledWith('login-1', { timeoutMs: 5000, signal })
   })
+
+  it('submits pasted login input and returns an ack', async () => {
+    const runtime = {
+      submitAccountLoginInput: vi.fn()
+    } as unknown as OrcaRuntimeService
+    const submitLoginInput = method('accounts.submitLoginInput')
+    if (isStreamingMethod(submitLoginInput)) {
+      throw new Error('accounts.submitLoginInput must be a request method')
+    }
+
+    await expect(
+      submitLoginInput.handler({ loginId: 'login-1', input: 'pasted-code' }, { runtime })
+    ).resolves.toEqual({ submitted: true })
+    expect(runtime.submitAccountLoginInput).toHaveBeenCalledWith('login-1', 'pasted-code')
+  })
 })
