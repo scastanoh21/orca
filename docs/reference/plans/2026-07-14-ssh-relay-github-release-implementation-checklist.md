@@ -9,7 +9,7 @@ work; keep exact commands, runner identities, hashes, metrics, and residual gaps
 Date created: 2026-07-14<br>
 Last updated: 2026-07-15<br>
 Current phase: Milestone 4 / Work Package 3 credential-free release/signing DAG failure contracts — **In progress — 2026-07-15, Codex implementation owner**. Work Package 2's target-native Windows official-Node and preserved-upstream source-signature gate is closed under E-M3-WINDOWS-SOURCE-SIGNATURE-CI-001. Exact-floor gaps and real native signing/trust remain open external gates, so the active package is limited to disconnected fail-closed release-DAG contracts and tests; it may not publish, connect desktop consumers, or enable a tuple. Production/default behavior is unchanged, no bundled-runtime path is enabled, and no artifact is published.<br>
-Session checkpoint: **In progress — 2026-07-15, Codex implementation owner** — exact-head artifact jobs 87267322867 and 87267322870 in run [29388734922](https://github.com/stablyai/orca/actions/runs/29388734922) passed target-native Windows source-signature verification and uploaded independently inspected reports under E-M3-WINDOWS-SOURCE-SIGNATURE-CI-001. PR Checks [29388734935](https://github.com/stablyai/orca/actions/runs/29388734935) and Golden E2E [29388734914](https://github.com/stablyai/orca/actions/runs/29388734914) are green at exact head `be32653a7`; the artifact run's only failure is the retained Windows arm64 build-26200-versus-26100 floor gate. E-M4-RELEASE-DAG-LOCAL-RED-001 proves the disconnected release-stage and draft-recovery modules were absent; their implementation and native-workflow test wiring now pass locally under E-M4-RELEASE-DAG-LOCAL-001. Exact-head CI for the new package is the active gate. Real Apple/SignPath signing, returned production signatures, Gatekeeper/notarization, Defender/WDAC, missing exact-floor snapshots, and native trust remain separately gated. Nothing is published or enabled, and legacy remains the production default.<br>
+Session checkpoint: **In progress — 2026-07-15, Codex implementation owner** — local implementation commit `6f13e94f8a7a315ac3da6bb2067b99da8e02a803` is one commit ahead of the PR head and closes the disconnected release-stage and draft-recovery contracts locally under E-M4-RELEASE-DAG-LOCAL-001. Exact-head CI for that commit is the active gate; push and GitHub-runner evidence collection are now authorized. The current PR head remains `be32653a7`: artifact jobs 87267322867 and 87267322870 in run [29388734922](https://github.com/stablyai/orca/actions/runs/29388734922) passed target-native Windows source-signature verification under E-M3-WINDOWS-SOURCE-SIGNATURE-CI-001, while PR Checks [29388734935](https://github.com/stablyai/orca/actions/runs/29388734935) and Golden E2E [29388734914](https://github.com/stablyai/orca/actions/runs/29388734914) are green. The artifact run's only failure is the retained Windows arm64 build-26200-versus-26100 floor gate. Real Apple/SignPath signing, returned production signatures, Gatekeeper/notarization, Defender/WDAC, missing exact-floor snapshots, and native trust remain separately gated. Nothing is published or enabled, and legacy remains the production default.<br>
 Primary design: [SSH relay GitHub Release plan](./2026-07-14-ssh-relay-github-release-plan.html)<br>
 Motivating issues: [#8450](https://github.com/stablyai/orca/issues/8450), [#1693](https://github.com/stablyai/orca/issues/1693)
 
@@ -57,13 +57,14 @@ same change as the work it records.
 - Implementation status: Work Package 0 is committed at `c4259d94f` on current `main`, with refreshed
   focused, static, full-lint, live #8450 SSH/PTY, and GitHub Actions proof (E-M0-UNIT-002,
   E-M0-STATIC-002, E-M0-LIVE-002, E-M0-CI-001). Draft PR
-  [#8724](https://github.com/stablyai/orca/pull/8724) is open and CI-green at implementation head
-  `94e58d83e`.
+  [#8724](https://github.com/stablyai/orca/pull/8724) is open and CI-green at current PR head
+  `9a8f98fd9`; the implementation evidence remains anchored at `94e58d83e`.
 - Completed package: Work Package 1's disconnected manifest, content-identity, signature,
   release-asset, and conservative selector contracts are locally and CI-green under E-M2-RED-001,
   E-M2-CONTRACT-001, and E-M2-CI-001. They remain isolated in stacked draft PR
-  [#8728](https://github.com/stablyai/orca/pull/8728) at implementation commit `b9d80a4cb`; no
-  deploy/resolver call site is connected and no tuple is enabled.
+  [#8728](https://github.com/stablyai/orca/pull/8728), which is CI-green at current PR head
+  `0c299fe18`; implementation evidence remains anchored at `b9d80a4cb`. No deploy/resolver call site
+  is connected and no tuple is enabled.
 - Active package: Work Package 3 credential-free release/signing DAG failure contracts. The package
   must model fail-closed build, approval, signing, aggregate, upload, read-back, and recovered-draft
   outcomes without credentials, production workflow wiring, publication, desktop consumers, or
@@ -8775,7 +8776,7 @@ diff --check`.
 
 - Date: 2026-07-15
 - Owner: Codex implementation owner
-- Source: uncommitted implementation based on exact head
+- Source: exact implementation commit `6f13e94f8a7a315ac3da6bb2067b99da8e02a803`, based on
   `be32653a7b77eeaed168d91b790fc2e006b438db`.
 - Runner/remote/network: local macOS 26.2 build 25C56 arm64, Node v26.0.0 and pnpm 10.24.0. No
   GitHub release, signing service, credential, approval environment, SSH remote, publication, or

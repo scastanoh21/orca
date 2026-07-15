@@ -18,9 +18,9 @@ complete a box.
 - [x] Integrity, security, and corruption failures are designed to fail closed, not fall back.
 - [x] Legacy removal or a default-on change requires a separate reviewed decision.
 
-## Active work
+## Current gates
 
-- [ ] **WP2 — Prove oldest supported baselines and native trust.**
+- [ ] **WP2 external gate — Prove oldest supported baselines and native trust.**
   - Proven: all-six target-native build/equality/smoke/metadata gates and direct payload audit.
   - Proven: exact-head run
     [29379227209](https://github.com/stablyai/orca/actions/runs/29379227209) builds both Linux tuples in
@@ -60,6 +60,9 @@ complete a box.
     remain separately gated.
   - Next external proof: kernel 4.18, macOS 13.5, Windows arm64 build 26100, and native signing/trust.
   - No tuple is enabled; every SSH transfer/runtime and rollout cell remains open.
+- [ ] **WP3 active implementation — Prove disconnected release/signing DAG behavior in exact-head
+      CI.** Local contracts pass at `6f13e94f8`, which is one commit ahead of PR #8741; no production
+      workflow, publication, desktop consumer, or tuple is connected.
 
 ## Work packages, in required order
 
@@ -97,7 +100,8 @@ complete a box.
 - [ ] **In progress — 2026-07-15, Codex implementation owner:** add disconnected credential-free
       fail-closed release/signing DAG contracts before production workflow wiring. Local red/green,
       full SSH-relay, type, lint, formatting, and native-job wiring gates pass under
-      `E-M4-RELEASE-DAG-LOCAL-001`; exact-head CI is next.
+      `E-M4-RELEASE-DAG-LOCAL-001` at local commit `6f13e94f8`; the commit is one ahead of the PR and
+      exact-head CI is next.
 - [ ] Add target-native runtime jobs as desktop release prerequisites.
 - [ ] Add native signing jobs; hash only the returned signed bytes.
 - [ ] Add a fail-closed aggregate and immutable manifest-signing job.
