@@ -115,12 +115,21 @@ describe('SSH relay runtime artifact workflow', () => {
       'manifest-signing-handoff',
       'manifest-aggregate',
       'manifest-tuple',
-      'post-sign-metadata'
+      'post-sign-metadata',
+      'archive-extraction',
+      'macos-signing',
+      'native-signing-finalization'
     ]) {
       const script = `ssh-relay-runtime-${moduleName}`
       expect(source.split(`${script}.test.mjs`)).toHaveLength(5)
       expect(source.split(`node --check config/scripts/${script}.mjs`)).toHaveLength(3)
     }
+    expect(
+      source.match(
+        /node --check config\/scripts\/ssh-relay-runtime-native-signing-stage-report\.mjs/g
+      )
+    ).toHaveLength(2)
+    expect(source.match(/ssh-relay-runtime-native-signing-workflow\.test\.mjs/g)).toHaveLength(4)
     expect(
       source.match(/node --check config\/scripts\/ssh-relay-runtime-native-signing-plan\.mjs/g)
     ).toHaveLength(2)
