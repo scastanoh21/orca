@@ -24,6 +24,38 @@ const makeRequest = (method: string, params?: unknown): RpcRequest => ({
 })
 
 describe('terminal.subscribe blank-tab background mount', () => {
+  it('does not mount a hidden tab for an already-aborted mobile subscribe', async () => {
+    const controller = new AbortController()
+    controller.abort()
+    const requestRendererTerminalTabMount = vi.fn()
+    const runtime = stubRuntime({
+      resolveLeafForHandle: vi.fn().mockReturnValue(null),
+      requestRendererTerminalTabMount,
+      waitForLeafPtyId: vi.fn(),
+      readTerminal: vi.fn()
+    })
+    const dispatcher = new RpcDispatcher({ runtime, methods: TERMINAL_METHODS })
+
+    await dispatcher.dispatchStreaming(
+      makeRequest('terminal.subscribe', {
+        terminal: 'terminal-1',
+        client: { id: 'phone-1', type: 'mobile' },
+        capabilities: { terminalBinaryStream: 1 }
+      }),
+      vi.fn(),
+      {
+        signal: controller.signal,
+        connectionId: 'conn-phone',
+        sendBinary: vi.fn(),
+        registerBinaryStreamHandler: vi.fn(() => vi.fn())
+      }
+    )
+
+    expect(requestRendererTerminalTabMount).not.toHaveBeenCalled()
+    expect(runtime.waitForLeafPtyId).not.toHaveBeenCalled()
+    expect(runtime.readTerminal).not.toHaveBeenCalled()
+  })
+
   it('requests a renderer tab mount when a mobile subscribe has no headless model', async () => {
     // Why: stale preview text must not hide the missing live model/attachment.
     const cleanups = new Map<string, () => void>()

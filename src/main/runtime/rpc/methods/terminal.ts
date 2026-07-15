@@ -2357,6 +2357,11 @@ export const TERMINAL_METHODS: RpcAnyMethod[] = [
       const isMobile = params.client?.type === 'mobile'
       const useBinaryStream = params.capabilities?.terminalBinaryStream === 1 && Boolean(sendBinary)
       let rendererMountRequested = false
+      // Why: a closed stream must not allocate listeners, mobile-fit state, or
+      // a hidden renderer surface that no client remains to consume.
+      if (signal?.aborted) {
+        return
+      }
 
       // Why: the left pane's PTY spawns asynchronously after the tab is created.
       // Mobile clients that subscribe before the PTY is ready would get a bare
