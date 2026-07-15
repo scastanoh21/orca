@@ -64,10 +64,11 @@ complete a box.
       Windows compatibility-kind parity is closed locally and on all six target-native jobs in
       exact-head run
       [29393022768](https://github.com/stablyai/orca/actions/runs/29393022768) under
-      `E-M4-WINDOWS-MANIFEST-PARITY-LOCAL-001` and `E-M4-WINDOWS-MANIFEST-PARITY-CI-001`. Next,
-      canonicalize only validated unsigned manifest bytes, create the bounded signing request, and
-      verify returned signatures without production credentials. No production workflow,
-      publication, desktop consumer, signing credential, or tuple is connected.
+      `E-M4-WINDOWS-MANIFEST-PARITY-LOCAL-001` and `E-M4-WINDOWS-MANIFEST-PARITY-CI-001`.
+      Disconnected canonical assembly and signing-handoff modules are implemented locally. Focused
+      and broad local gates pass under `E-M4-MANIFEST-HANDOFF-LOCAL-001` and
+      `E-M4-MANIFEST-HANDOFF-LOCAL-002`; exact-head native CI remains pending. No production
+      workflow, publication, desktop consumer, signing credential, or tuple is connected.
 
 ## Work packages, in required order
 
@@ -113,7 +114,10 @@ complete a box.
 - [ ] **In progress — 2026-07-15, Codex implementation owner:** add disconnected canonical unsigned
       manifest assembly, a bounded signing request, and returned-signature verification. Keep final
       detached-signature asset encoding, production credentials, publication, desktop consumers, and
-      every tuple outside this slice until their contracts and gates are explicit.
+      every tuple outside this slice until their contracts and gates are explicit. Purpose-named RED
+      and GREEN suites plus broad local regressions are recorded under
+      `E-M4-MANIFEST-HANDOFF-LOCAL-RED-001`, `E-M4-MANIFEST-HANDOFF-LOCAL-001`, and
+      `E-M4-MANIFEST-HANDOFF-LOCAL-002`; exact-head native CI is next.
 - [ ] Add target-native runtime jobs as desktop release prerequisites.
 - [ ] Add native signing jobs; hash only the returned signed bytes.
 - [ ] Add a fail-closed aggregate and immutable manifest-signing job.
