@@ -174,6 +174,24 @@ export function isValidPaneKey(value: unknown): value is string {
   )
 }
 
+function dropHydratedIdleClaudeSubagents(
+  payload: ParsedAgentStatusPayload
+): ParsedAgentStatusPayload {
+  if (
+    payload.agentType !== 'claude' ||
+    !payload.subagents?.some((subagent) => subagent.state === 'idle')
+  ) {
+    return payload
+  }
+  const workingSubagents = payload.subagents.filter((subagent) => subagent.state === 'working')
+  // Why: older builds persisted finished Claude children as idle rows. Prune
+  // them from the replay payload itself so restart cannot resurrect the pile.
+  return {
+    ...payload,
+    subagents: workingSubagents.length > 0 ? workingSubagents : undefined
+  }
+}
+
 function sanitizeHydratedEntry(
   paneKey: string,
   rawEntry: unknown
@@ -226,10 +244,11 @@ function sanitizeHydratedEntry(
   } else {
     return null
   }
-  const payload = normalizeAgentStatusPayload(record.payload)
-  if (!payload) {
+  const normalizedPayload = normalizeAgentStatusPayload(record.payload)
+  if (!normalizedPayload) {
     return null
   }
+  const payload = dropHydratedIdleClaudeSubagents(normalizedPayload)
   return {
     paneKey,
     launchToken: typeof record.launchToken === 'string' ? record.launchToken : undefined,
