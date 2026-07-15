@@ -37,6 +37,19 @@ describe('planMobileTerminalTabMount', () => {
     ).toBeNull()
   })
 
+  it('does not mount a hidden worktree for a stale direct tab id', () => {
+    const isTabMounted = vi.fn()
+
+    expect(
+      planMobileTerminalTabMount(
+        state(200),
+        { worktreeId: 'wt', tabId: 'tab-missing' },
+        { isTabMounted }
+      )
+    ).toBeNull()
+    expect(isTabMounted).not.toHaveBeenCalled()
+  })
+
   it('does not schedule hidden layout work for an already-mounted tab', () => {
     const isTabMounted = vi.fn().mockReturnValue(true)
 
