@@ -597,6 +597,25 @@ deliberately. The post-upgrade binary and version record are retained in
 `/opt/orca` with the same `rollback-current-<timestamp>` suffix. Inspect these
 artifacts and remove them according to your retention policy after the rollback
 is resolved.
+## Installing Agent Skills Without A Desktop
+
+Orca's agent skills (CLI usage, orchestration, computer use, etc.) are normally
+installed from Orca Settings, which pre-fills an `npx skills add ... --global`
+command in a terminal for you to run. A headless host has no Settings UI, so
+use `orca skills install` instead:
+
+```bash
+orca skills install                                      # list installable skills
+orca skills install --skill orca-cli --skill orchestration # install globally (default)
+orca skills install --skill orca-cli --local              # install into the current project only
+orca skills install --all                                 # install every bundled skill
+orca skills install --all --dry-run                       # print the npx command without running it
+```
+
+This resolves the same `npx skills add <repo> --skill <names...>` command
+Settings would show you (adding `--global` unless `--local` is passed), then
+runs it via `npx` and forwards its output and exit code. It requires
+`node`/`npx` on the host; it does not need a running Orca runtime.
 
 ## Troubleshooting
 
