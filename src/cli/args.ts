@@ -30,6 +30,7 @@ export const BOOLEAN_FLAGS = new Set([
   'all',
   'attachments',
   'children',
+  'check',
   'comments',
   'connect',
   'current',
@@ -49,6 +50,7 @@ export const BOOLEAN_FLAGS = new Set([
   'no-pairing',
   'parent-current',
   'provision',
+  'prerelease',
   'ready',
   'recipe-json',
   'relations',
@@ -164,7 +166,7 @@ export function specPaths(spec: CommandSpec): string[][] {
 
 export function supportsBrowserPageFlag(commandPath: string[]): boolean {
   const joined = commandPath.join(' ')
-  if (['open', 'status'].includes(commandPath[0])) {
+  if (['open', 'status', 'update', 'version'].includes(commandPath[0])) {
     return false
   }
   if (

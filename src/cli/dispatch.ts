@@ -25,6 +25,7 @@ import { EMULATOR_HANDLERS } from './handlers/emulator'
 import { LINEAR_HANDLERS } from './handlers/linear'
 import { VM_HANDLERS } from './handlers/vm'
 import { SKILL_HANDLERS } from './handlers/skills'
+import { UPDATER_HANDLERS } from './handlers/updater'
 
 export type HandlerContext = {
   flags: Map<string, string | boolean>
@@ -40,6 +41,7 @@ function buildHandlers(): Map<string, CommandHandler> {
   const table = new Map<string, CommandHandler>()
   const groups = [
     CORE_HANDLERS,
+    UPDATER_HANDLERS,
     AUTOMATION_HANDLERS,
     PROJECT_HANDLERS,
     REPO_HANDLERS,

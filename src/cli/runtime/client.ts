@@ -1,4 +1,5 @@
 import type { CliStatusResult, RuntimeStatus } from '../../shared/runtime-types'
+import type { UpdateStatus } from '../../shared/types'
 import { parsePairingCode, type PairingOffer } from '../../shared/pairing'
 import { launchOrcaApp } from './launch'
 import { getDefaultUserDataPath, readMetadata } from './metadata'
@@ -136,6 +137,26 @@ export class RuntimeClient {
       }
     }
     return getCliStatus(this.userDataPath)
+  }
+
+  async getAppVersion(): Promise<RuntimeRpcSuccess<{ version: string }>> {
+    return await this.call('updater.getVersion')
+  }
+
+  async getUpdateStatus(): Promise<RuntimeRpcSuccess<UpdateStatus>> {
+    return await this.call('updater.getStatus')
+  }
+
+  async checkForUpdate(includePrerelease = false): Promise<RuntimeRpcSuccess<UpdateStatus>> {
+    return await this.call('updater.check', { includePrerelease })
+  }
+
+  async downloadUpdate(): Promise<RuntimeRpcSuccess<UpdateStatus>> {
+    return await this.call('updater.download')
+  }
+
+  async installUpdate(): Promise<RuntimeRpcSuccess<{ ok: true }>> {
+    return await this.call('updater.install')
   }
 
   private async ensureRemoteRuntimeCompatible(timeoutMs: number): Promise<void> {
