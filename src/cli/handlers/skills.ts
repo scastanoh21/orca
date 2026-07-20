@@ -4,7 +4,8 @@ import { RuntimeClientError } from '../runtime-client'
 import { getRepeatedStringFlag } from '../flags'
 import {
   ORCA_SKILLS_REPOSITORY_URL,
-  buildAgentFeatureSkillInstallCommand
+  buildAgentFeatureSkillInstallCommand,
+  buildAgentFeatureSkillUpdateCommand
 } from '../../shared/agent-feature-install-commands'
 
 type BundledSkillGuide = {
@@ -56,19 +57,19 @@ function writeStdout(value: string): void {
 }
 
 /** Resolves --skill/--all to canonical skill names, accepting legacy topic aliases. */
-function resolveInstallSkillNames(
+function resolveSelectedSkillNames(
   flags: Map<string, string | boolean>,
   guides: BundledSkillGuide[]
 ): string[] {
   const requestedSkills = getRepeatedStringFlag(flags, 'skill')
-  const installAll = flags.get('all') === true
-  if (installAll && requestedSkills.length > 0) {
+  const selectAll = flags.get('all') === true
+  if (selectAll && requestedSkills.length > 0) {
     throw new RuntimeClientError('invalid_argument', 'Use either --all or --skill, not both.')
   }
-  if (!installAll && requestedSkills.length === 0) {
+  if (!selectAll && requestedSkills.length === 0) {
     return []
   }
-  if (installAll) {
+  if (selectAll) {
     return guides.map((guide) => guide.name)
   }
   const availableTopics = guides.map((guide) => guide.name).join(', ')
@@ -89,28 +90,104 @@ function resolveInstallSkillNames(
   return [...canonicalNames].sort()
 }
 
-/** Runs `npx skills add ...` and resolves with npx's exit code (1 if killed by a signal). */
-function runSkillInstallCommand(skillNames: string[], global: boolean): Promise<number> {
+/** Runs `npx skills <args...>` inheriting stdio; resolves with the exit code (1 if signal-killed). */
+function runNpxSkills(args: string[]): Promise<number> {
   return new Promise((resolve, reject) => {
     // Why: Windows only resolves the `npx.cmd` shim through a shell; macOS/Linux
     // spawn the `npx` script directly without one.
-    const child = spawn(
-      'npx',
-      [
-        'skills',
-        'add',
-        ORCA_SKILLS_REPOSITORY_URL,
-        '--skill',
-        ...skillNames,
-        ...(global ? ['--global'] : [])
-      ],
-      { stdio: 'inherit', shell: process.platform === 'win32' }
-    )
+    const child = spawn('npx', ['skills', ...args], {
+      stdio: 'inherit',
+      shell: process.platform === 'win32'
+    })
     child.once('error', reject)
     child.once('exit', (code, signal) => {
       resolve(typeof code === 'number' ? code : signal ? 1 : 0)
     })
   })
+}
+
+type SkillMutationVerb = 'install' | 'update'
+
+/** The resolved `npx skills ...` command shown to the user and (word-for-word) spawned. */
+function buildSkillMutationCommand(
+  verb: SkillMutationVerb,
+  skillNames: string[],
+  global: boolean
+): string {
+  return verb === 'install'
+    ? buildAgentFeatureSkillInstallCommand(skillNames, { global })
+    : buildAgentFeatureSkillUpdateCommand(skillNames, { global })
+}
+
+/** The argv for `npx skills ...`, kept in lockstep with buildSkillMutationCommand. */
+function buildNpxSkillsArgs(
+  verb: SkillMutationVerb,
+  skillNames: string[],
+  global: boolean
+): string[] {
+  const globalArg = global ? ['--global'] : []
+  return verb === 'install'
+    ? ['add', ORCA_SKILLS_REPOSITORY_URL, '--skill', ...skillNames, ...globalArg]
+    : ['update', ...skillNames, ...globalArg]
+}
+
+/** The "pick some skills" listing shown when neither --skill nor --all is given. */
+function formatSkillSelectionHelp(verb: SkillMutationVerb, skillNames: string[]): string {
+  return [
+    `Choose one or more skills to ${verb}:`,
+    ...skillNames.map((name) => `  ${name}`),
+    '',
+    `Usage: orca skills ${verb} --skill <name> [--skill <name> ...]`,
+    `   or: orca skills ${verb} --all`
+  ].join('\n')
+}
+
+/** Builds the shared install/update handler: select skills, then preview or run `npx skills`. */
+function createSkillMutationHandler(verb: SkillMutationVerb): CommandHandler {
+  return async ({ flags, json }) => {
+    // Why: keep the large generated table off the eager handler registry path.
+    const { BUNDLED_SKILL_GUIDES } = await import('../bundled-skill-guides.js')
+    const guides = canonicalGuides(BUNDLED_SKILL_GUIDES)
+    const skillNames = resolveSelectedSkillNames(flags, guides)
+
+    if (skillNames.length === 0) {
+      const names = guides.map((guide) => guide.name)
+      writeStdout(
+        json
+          ? JSON.stringify({ availableSkills: names }, null, 2)
+          : formatSkillSelectionHelp(verb, names)
+      )
+      return
+    }
+
+    const global = flags.get('local') !== true
+    const command = buildSkillMutationCommand(verb, skillNames, global)
+    const dryRun = flags.get('dry-run') === true
+
+    if (dryRun) {
+      writeStdout(
+        json
+          ? JSON.stringify({ command, skills: skillNames, global, executed: false }, null, 2)
+          : `${command}\n\nRerun without --dry-run to ${verb} now.`
+      )
+      return
+    }
+
+    if (json) {
+      // Why: a real run inherits npx's own stdout so progress stays visible live;
+      // that stream is not JSON, so --json can't be honored here.
+      throw new RuntimeClientError(
+        'invalid_argument',
+        `orca skills ${verb} --json only supports --dry-run. Real ${verb}s stream ` +
+          "npx's own output, which isn't JSON."
+      )
+    }
+
+    // Why: stdio is inherited for the child below, so this status line must go to
+    // stderr — stdout is npx's own output, not this command's JSON channel.
+    process.stderr.write(`Running: ${command}\n`)
+    process.exitCode = await runNpxSkills(buildNpxSkillsArgs(verb, skillNames, global))
+  }
 }
 
 export const SKILL_HANDLERS: Record<string, CommandHandler> = {
@@ -138,54 +215,6 @@ export const SKILL_HANDLERS: Record<string, CommandHandler> = {
     const markdown = full ? guide.fullMarkdown : guide.markdown
     writeStdout(json ? JSON.stringify({ name: guide.name, full, markdown }, null, 2) : markdown)
   },
-  'skills install': async ({ flags, json }) => {
-    // Why: keep the large generated table off the eager handler registry path.
-    const { BUNDLED_SKILL_GUIDES } = await import('../bundled-skill-guides.js')
-    const guides = canonicalGuides(BUNDLED_SKILL_GUIDES)
-    const skillNames = resolveInstallSkillNames(flags, guides)
-
-    if (skillNames.length === 0) {
-      const topics = guides.map((guide) => guide.name)
-      writeStdout(
-        json
-          ? JSON.stringify({ availableSkills: topics }, null, 2)
-          : [
-              'Choose one or more skills to install:',
-              ...topics.map((name) => `  ${name}`),
-              '',
-              'Usage: orca skills install --skill <name> [--skill <name> ...]',
-              '   or: orca skills install --all'
-            ].join('\n')
-      )
-      return
-    }
-
-    const global = flags.get('local') !== true
-    const command = buildAgentFeatureSkillInstallCommand(skillNames, { global })
-    const dryRun = flags.get('dry-run') === true
-
-    if (dryRun) {
-      writeStdout(
-        json
-          ? JSON.stringify({ command, skills: skillNames, global, executed: false }, null, 2)
-          : `${command}\n\nRerun without --dry-run to install now.`
-      )
-      return
-    }
-
-    if (json) {
-      // Why: a real install inherits npx's own stdout so install progress stays
-      // visible live; that stream is not JSON, so --json can't be honored here.
-      throw new RuntimeClientError(
-        'invalid_argument',
-        'orca skills install --json only supports --dry-run. Real installs stream ' +
-          "npx's own output, which isn't JSON."
-      )
-    }
-
-    // Why: stdio is inherited for the child below, so this status line must go to
-    // stderr — stdout is npx's own output, not this command's JSON channel.
-    process.stderr.write(`Running: ${command}\n`)
-    process.exitCode = await runSkillInstallCommand(skillNames, global)
-  }
+  'skills install': createSkillMutationHandler('install'),
+  'skills update': createSkillMutationHandler('update')
 }

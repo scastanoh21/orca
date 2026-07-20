@@ -617,6 +617,15 @@ Settings would show you (adding `--global` unless `--local` is passed), then
 runs it via `npx` and forwards its output and exit code. It requires
 `node`/`npx` on the host; it does not need a running Orca runtime.
 
+To refresh already-installed skills, `orca skills update` mirrors the same flags
+(`--skill`, `--all`, `--local`, `--dry-run`, `--json`) and resolves to
+`npx skills update <names...>`:
+
+```bash
+orca skills update --all                                  # update every bundled skill globally
+orca skills update --skill orca-cli --dry-run             # print the npx command without running it
+```
+
 ## Troubleshooting
 
 - `dlopen(): error loading libfuse.so.2`: install `libfuse2`.

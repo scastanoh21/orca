@@ -22,13 +22,18 @@ export function buildAgentFeatureSkillInstallCommand(
   }`
 }
 
-/** Builds the `npx skills update` command shown for refreshing an installed skill. */
-export function buildAgentFeatureSkillUpdateCommand(skillName: string): string {
-  const trimmedSkillName = skillName.trim()
-  if (!trimmedSkillName) {
+/** Builds the `npx skills update` command shown for refreshing one or more installed skills. */
+export function buildAgentFeatureSkillUpdateCommand(
+  skillNames: string | readonly string[],
+  options: { global?: boolean } = {}
+): string {
+  const rawNames = typeof skillNames === 'string' ? [skillNames] : skillNames
+  const names = rawNames.map((name) => name.trim()).filter((name) => name.length > 0)
+  if (names.length === 0) {
     throw new Error('A skill name is required.')
   }
-  return `npx skills update ${trimmedSkillName} --global`
+  const global = options.global ?? true
+  return `npx skills update ${names.join(' ')}${global ? ' --global' : ''}`
 }
 
 export const ORCA_CLI_SKILL_INSTALL_COMMAND = buildAgentFeatureSkillInstallCommand([

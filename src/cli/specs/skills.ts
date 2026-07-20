@@ -51,5 +51,29 @@ export const SKILL_COMMAND_SPECS: CommandSpec[] = [
       'orca skills install --skill orca-cli --local',
       'orca skills install --all --dry-run'
     ]
+  },
+  {
+    path: ['skills', 'update'],
+    summary: 'Update already-installed Orca skills via the community skills CLI',
+    usage: 'orca skills update [--skill <name>]... [--all] [--local] [--dry-run] [--json]',
+    allowedFlags: [...GLOBAL_FLAGS, 'skill', 'all', 'local', 'dry-run'],
+    notes: [
+      'Reads the bundled skill registry locally without contacting the Orca runtime.',
+      'Resolves to the same `npx skills update <names...>` command used by Orca Settings, ' +
+        'then runs it via npx and forwards its output and exit code.',
+      'Updates the global install (all projects, adds --global) by default. Use --local to ' +
+        'update the current project instead.',
+      'Use --dry-run to print the resolved command without running it.',
+      "--json is only supported with --dry-run; a real update streams npx's own " +
+        'output live, which is not JSON.',
+      'Omit --skill and --all to list updatable skill names.',
+      'Intended for headless hosts (SSH, containers, CI) with no desktop Settings UI to copy the update command from.'
+    ],
+    examples: [
+      'orca skills update',
+      'orca skills update --skill orca-cli --skill orchestration',
+      'orca skills update --skill orca-cli --local',
+      'orca skills update --all --dry-run'
+    ]
   }
 ]

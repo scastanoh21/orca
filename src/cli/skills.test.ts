@@ -196,7 +196,14 @@ describe('orca skills CLI', () => {
     expect(String(logSpy.mock.calls[1]?.[0])).toContain(
       'get                Print a version-matched skill guide'
     )
+    expect(String(logSpy.mock.calls[1]?.[0])).toContain(
+      'install            Install bundled Orca skills'
+    )
+    expect(String(logSpy.mock.calls[1]?.[0])).toContain(
+      'update             Update already-installed Orca skills'
+    )
     expect(String(logSpy.mock.calls[2]?.[0])).toContain('Skills:\n  skills list')
+    expect(String(logSpy.mock.calls[2]?.[0])).toContain('skills update')
     expect(runtimeClientConstructorMock).not.toHaveBeenCalled()
   })
 
@@ -426,6 +433,103 @@ describe('orca skills CLI', () => {
 
     expect(process.exitCode).toBe(1)
     expect(errorSpy).toHaveBeenCalledWith('npx not found')
+  })
+
+  it('lists updatable skills when no --skill/--all is given', async () => {
+    const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
+
+    await main(['skills', 'update'], '/tmp/repo')
+
+    expect(stdoutText(stdoutSpy)).toBe(
+      [
+        'Choose one or more skills to update:',
+        '  alpha',
+        '  gamma',
+        '  zeta',
+        '',
+        'Usage: orca skills update --skill <name> [--skill <name> ...]',
+        '   or: orca skills update --all',
+        ''
+      ].join('\n')
+    )
+    expect(spawnMock).not.toHaveBeenCalled()
+  })
+
+  it('prints the resolved update command without running it for --dry-run', async () => {
+    const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
+
+    await main(['skills', 'update', '--skill', 'legacy-alpha', '--dry-run'], '/tmp/repo')
+
+    expect(stdoutText(stdoutSpy)).toBe(
+      'npx skills update alpha --global\n\nRerun without --dry-run to update now.\n'
+    )
+    expect(spawnMock).not.toHaveBeenCalled()
+  })
+
+  it('drops --global for --local on update', async () => {
+    const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
+
+    await main(
+      ['skills', 'update', '--skill', 'alpha', '--local', '--dry-run', '--json'],
+      '/tmp/repo'
+    )
+
+    expect(stdoutText(stdoutSpy)).toBe(
+      `${JSON.stringify(
+        {
+          command: 'npx skills update alpha',
+          skills: ['alpha'],
+          global: false,
+          executed: false
+        },
+        null,
+        2
+      )}\n`
+    )
+  })
+
+  it('runs npx skills update for --all and forwards its exit code', async () => {
+    const child = createFakeChild()
+    spawnMock.mockReturnValue(child)
+    vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+
+    const resultPromise = main(['skills', 'update', '--all'], '/tmp/repo')
+    await vi.waitFor(() => expect(spawnMock).toHaveBeenCalled())
+    child.emit('exit', 2, null)
+    await resultPromise
+
+    expect(spawnMock).toHaveBeenCalledWith(
+      'npx',
+      ['skills', 'update', 'alpha', 'gamma', 'zeta', '--global'],
+      expect.objectContaining({ stdio: 'inherit' })
+    )
+    expect(process.exitCode).toBe(2)
+  })
+
+  it('rejects --json for a real (non-dry-run) update', async () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+
+    await main(['skills', 'update', '--skill', 'alpha', '--json'], '/tmp/repo')
+
+    expect(process.exitCode).toBe(1)
+    expect(logSpy).toHaveBeenCalledWith(
+      JSON.stringify(
+        {
+          id: 'local',
+          ok: false,
+          error: {
+            code: 'invalid_argument',
+            message:
+              "orca skills update --json only supports --dry-run. Real updates stream npx's " +
+              "own output, which isn't JSON."
+          },
+          _meta: { runtimeId: null }
+        },
+        null,
+        2
+      )
+    )
+    expect(spawnMock).not.toHaveBeenCalled()
   })
 })
 

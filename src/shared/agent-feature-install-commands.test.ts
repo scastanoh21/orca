@@ -37,6 +37,16 @@ describe('agent feature skill commands', () => {
     expect(() => buildAgentFeatureSkillUpdateCommand('   ')).toThrow('A skill name is required.')
   })
 
+  it('builds multi-skill update commands and honors --local', () => {
+    expect(buildAgentFeatureSkillUpdateCommand(['orca-cli', 'orchestration'])).toBe(
+      'npx skills update orca-cli orchestration --global'
+    )
+    expect(buildAgentFeatureSkillUpdateCommand(['orca-cli'], { global: false })).toBe(
+      'npx skills update orca-cli'
+    )
+    expect(() => buildAgentFeatureSkillUpdateCommand([])).toThrow('A skill name is required.')
+  })
+
   it('exports single-skill update constants without changing install bundles', () => {
     expect(ORCA_CLI_SKILL_UPDATE_COMMAND).toBe('npx skills update orca-cli --global')
     expect(COMPUTER_USE_SKILL_UPDATE_COMMAND).toBe('npx skills update computer-use --global')
