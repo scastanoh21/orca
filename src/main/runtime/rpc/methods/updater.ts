@@ -5,6 +5,11 @@ const UpdaterCheckParams = z.object({
   includePrerelease: z.boolean().optional()
 })
 
+/**
+ * RPC methods that expose the desktop app's existing electron-updater flow to the
+ * CLI: read the version/status, check, download, and install. Deliberately not on
+ * the mobile allowlist so only the local CLI and the trusted SSH relay can install.
+ */
 export const UPDATER_METHODS: RpcMethod[] = [
   defineMethod({
     name: 'updater.getVersion',
@@ -52,6 +57,7 @@ export const UPDATER_METHODS: RpcMethod[] = [
   })
 ]
 
+/** Lazily imports the updater module. */
 async function loadUpdater() {
   // Why: the registry is also inspected in plain Node processes where Electron's desktop exports are unavailable.
   return await import('../../../updater')

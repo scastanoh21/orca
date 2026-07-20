@@ -7,10 +7,15 @@ export type UpdateCommandResult = {
   timedOut?: boolean
 }
 
+/** Renders the `orca version` result as the bare version string for humans. */
 export function formatAppVersion(result: { version: string }): string {
   return result.version
 }
 
+/**
+ * Renders the final human-readable line for `orca update` / `orca update --check`,
+ * covering every terminal updater state plus the timed-out case.
+ */
 export function formatUpdateResult(result: UpdateCommandResult): string {
   const { status } = result
   if (result.timedOut) {
@@ -40,6 +45,10 @@ export function formatUpdateResult(result: UpdateCommandResult): string {
   }
 }
 
+/**
+ * Renders a live progress line for an in-flight update, or `null` for states that
+ * carry no progress to show (idle / not-available / error).
+ */
 export function formatUpdateProgress(status: UpdateStatus): string | null {
   switch (status.state) {
     case 'checking':
@@ -57,6 +66,7 @@ export function formatUpdateProgress(status: UpdateStatus): string | null {
   }
 }
 
+/** Clamps a download percentage to 0–100 and renders it as a whole-number percent. */
 function formatPercent(percent: number): string {
   return `${Math.max(0, Math.min(100, percent)).toFixed(0)}%`
 }

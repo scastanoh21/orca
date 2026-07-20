@@ -139,22 +139,27 @@ export class RuntimeClient {
     return getCliStatus(this.userDataPath)
   }
 
+  /** Returns the running Orca app's version (the CLI ships inside it). */
   async getAppVersion(): Promise<RuntimeRpcSuccess<{ version: string }>> {
     return await this.call('updater.getVersion')
   }
 
+  /** Reads the app's current updater status without triggering a new check. */
   async getUpdateStatus(): Promise<RuntimeRpcSuccess<UpdateStatus>> {
     return await this.call('updater.getStatus')
   }
 
+  /** Asks the app to start an update check; the result is polled via {@link getUpdateStatus}. */
   async checkForUpdate(includePrerelease = false): Promise<RuntimeRpcSuccess<UpdateStatus>> {
     return await this.call('updater.check', { includePrerelease })
   }
 
+  /** Asks the app to begin downloading the available update. */
   async downloadUpdate(): Promise<RuntimeRpcSuccess<UpdateStatus>> {
     return await this.call('updater.download')
   }
 
+  /** Asks the app to quit and install the downloaded update. */
   async installUpdate(): Promise<RuntimeRpcSuccess<{ ok: true }>> {
     return await this.call('updater.install')
   }

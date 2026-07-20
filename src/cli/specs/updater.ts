@@ -1,6 +1,7 @@
 import type { CommandSpec } from '../args'
 import { GLOBAL_FLAGS } from '../args'
 
+/** Argument/help specs for the `orca version` and `orca update` commands. */
 export const UPDATER_COMMAND_SPECS: CommandSpec[] = [
   {
     path: ['version'],

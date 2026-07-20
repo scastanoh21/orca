@@ -126,6 +126,61 @@ describe('updater CLI handlers', () => {
     expect(JSON.parse(String(log.mock.calls.at(-1)?.[0])).result.status.state).toBe('available')
   })
 
+  it('attaches to an in-progress download instead of starting a new one', async () => {
+    vi.useFakeTimers()
+    checkForUpdate.mockResolvedValue(
+      success<UpdateStatus>({ state: 'downloading', version: '1.5.0', percent: 30 })
+    )
+    getUpdateStatus.mockResolvedValue(
+      success<UpdateStatus>({ state: 'downloaded', version: '1.5.0' })
+    )
+
+    const pending = invokeUpdate()
+    await vi.runAllTimersAsync()
+    await pending
+
+    expect(downloadUpdate).not.toHaveBeenCalled()
+    expect(installUpdate).toHaveBeenCalledOnce()
+    expect(JSON.parse(String(log.mock.calls.at(-1)?.[0])).result).toMatchObject({
+      operation: 'update',
+      status: { state: 'downloaded', version: '1.5.0' },
+      installRequested: true
+    })
+  })
+
+  it('installs an already-downloaded update without re-downloading', async () => {
+    checkForUpdate.mockResolvedValue(
+      success<UpdateStatus>({ state: 'downloaded', version: '1.5.0' })
+    )
+
+    await invokeUpdate()
+
+    expect(downloadUpdate).not.toHaveBeenCalled()
+    expect(installUpdate).toHaveBeenCalledOnce()
+    expect(JSON.parse(String(log.mock.calls.at(-1)?.[0])).result).toMatchObject({
+      operation: 'update',
+      status: { state: 'downloaded', version: '1.5.0' },
+      installRequested: true
+    })
+  })
+
+  it('reports an in-progress download for --check without installing', async () => {
+    checkForUpdate.mockResolvedValue(
+      success<UpdateStatus>({ state: 'downloading', version: '1.5.0', percent: 30 })
+    )
+
+    await invokeUpdate(new Map([['check', true]]))
+
+    expect(downloadUpdate).not.toHaveBeenCalled()
+    expect(installUpdate).not.toHaveBeenCalled()
+    expect(getUpdateStatus).not.toHaveBeenCalled()
+    expect(JSON.parse(String(log.mock.calls.at(-1)?.[0])).result).toMatchObject({
+      operation: 'check',
+      status: { state: 'downloading', version: '1.5.0', percent: 30 },
+      installRequested: false
+    })
+  })
+
   it('reports that Orca is up to date', async () => {
     checkForUpdate.mockResolvedValue(success<UpdateStatus>({ state: 'not-available' }))
 

@@ -19,11 +19,20 @@ type PollResult = {
   timedOut: boolean
 }
 
+/**
+ * CLI handlers for `orca version` and `orca update`. All work is delegated to the
+ * running desktop app over RPC — the CLI only drives and reports on the flow.
+ */
 export const UPDATER_HANDLERS: Record<string, CommandHandler> = {
+  /** `orca version` — reports the running app's version. */
   version: async ({ client, json }) => {
     const response = await withUpdaterRecovery(() => client.getAppVersion())
     printResult(response, json, formatAppVersion)
   },
+  /**
+   * `orca update [--check] [--prerelease]` — checks for an update and, unless
+   * `--check`, downloads and installs it (attaching to any in-progress download).
+   */
   update: async ({ client, flags, json }) => {
     const checkOnly = flags.get('check') === true
     if (!json) {
@@ -36,14 +45,22 @@ export const UPDATER_HANDLERS: Record<string, CommandHandler> = {
     const check = await pollForStatus(
       client,
       initialCheck,
+      // Why: 'downloading'/'downloaded' are terminal for the check phase too — a
+      // download may already be in flight (e.g. started from the desktop UI), so
+      // surface it immediately instead of polling until the check-phase timeout.
       (status) =>
         status.state === 'available' ||
         status.state === 'not-available' ||
-        status.state === 'error',
+        status.state === 'error' ||
+        status.state === 'downloading' ||
+        status.state === 'downloaded',
       CHECK_POLL_ATTEMPTS
     )
 
-    if (checkOnly || check.timedOut || check.response.result.state !== 'available') {
+    const checkState = check.response.result.state
+    const downloadInProgress = checkState === 'downloading' || checkState === 'downloaded'
+
+    if (checkOnly || check.timedOut || (checkState !== 'available' && !downloadInProgress)) {
       finishUpdateCommand(check.response, json, {
         operation: checkOnly ? 'check' : 'update',
         installRequested: false,
@@ -52,10 +69,14 @@ export const UPDATER_HANDLERS: Record<string, CommandHandler> = {
       return
     }
 
-    if (!json) {
+    if (!json && checkState === 'available') {
       console.log(`Update available: Orca ${check.response.result.version}. Downloading...`)
     }
-    const initialDownload = await withUpdaterRecovery(() => client.downloadUpdate())
+    // Why: attach to an existing download rather than kicking off a redundant one.
+    const initialDownload =
+      checkState === 'available'
+        ? await withUpdaterRecovery(() => client.downloadUpdate())
+        : check.response
     let lastProgress = ''
     let ttyProgressLineActive = false
     const download = await pollForStatus(
@@ -108,6 +129,11 @@ export const UPDATER_HANDLERS: Record<string, CommandHandler> = {
   }
 }
 
+/**
+ * Polls `updater.getStatus` until `isTerminal` matches or `maxAttempts` is
+ * exhausted, invoking `onStatus` for the initial response and each poll.
+ * Returns `timedOut: true` when the attempt budget runs out first.
+ */
 async function pollForStatus(
   client: RuntimeClient,
   initialResponse: RuntimeRpcSuccess<UpdateStatus>,
@@ -132,6 +158,10 @@ async function pollForStatus(
   return { response, timedOut: true }
 }
 
+/**
+ * Prints the terminal outcome of `orca update` and sets a failing exit code when
+ * the run timed out or ended in an updater error.
+ */
 function finishUpdateCommand(
   response: RuntimeRpcSuccess<UpdateStatus>,
   json: boolean,
@@ -147,6 +177,10 @@ function finishUpdateCommand(
   printResult(result, json, formatUpdateResult)
 }
 
+/**
+ * Runs an updater RPC call, translating an unreachable-app error into a
+ * `runtime_unavailable` error carrying actionable, platform-aware next steps.
+ */
 async function withUpdaterRecovery<T>(operation: () => Promise<T>): Promise<T> {
   try {
     return await operation()
@@ -167,6 +201,7 @@ async function withUpdaterRecovery<T>(operation: () => Promise<T>): Promise<T> {
   }
 }
 
+/** Resolves after `ms` milliseconds; used to space out status polls. */
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
