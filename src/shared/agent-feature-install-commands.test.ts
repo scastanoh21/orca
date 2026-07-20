@@ -24,6 +24,12 @@ describe('agent feature skill commands', () => {
     )
   })
 
+  it('repeats --skill per name for multi-skill installs', () => {
+    expect(buildAgentFeatureSkillInstallCommand(['orca-cli', 'orchestration'])).toBe(
+      'npx skills add https://github.com/stablyai/orca --skill orca-cli --skill orchestration --global'
+    )
+  })
+
   it('builds single-skill update commands', () => {
     expect(buildAgentFeatureSkillUpdateCommand('orchestration')).toBe(
       'npx skills update orchestration --global'

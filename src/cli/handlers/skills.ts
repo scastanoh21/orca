@@ -99,7 +99,17 @@ function runNpxSkills(args: string[]): Promise<number> {
       stdio: 'inherit',
       shell: process.platform === 'win32'
     })
-    child.once('error', reject)
+    // Why: a missing npx/Node on a headless host surfaces as a raw spawn ENOENT;
+    // wrap it so the CLI reports an actionable message like every other failure here.
+    child.once('error', (error) => {
+      const detail = error instanceof Error ? error.message : String(error)
+      reject(
+        new RuntimeClientError(
+          'invalid_environment',
+          `Could not run npx: ${detail}. Install Node.js and ensure npx is on PATH.`
+        )
+      )
+    })
     child.once('exit', (code, signal) => {
       resolve(typeof code === 'number' ? code : signal ? 1 : 0)
     })
@@ -126,8 +136,14 @@ function buildNpxSkillsArgs(
   global: boolean
 ): string[] {
   const globalArg = global ? ['--global'] : []
+  // Why: `add` takes one skill per `--skill` flag; `update` takes positional names.
   return verb === 'install'
-    ? ['add', ORCA_SKILLS_REPOSITORY_URL, '--skill', ...skillNames, ...globalArg]
+    ? [
+        'add',
+        ORCA_SKILLS_REPOSITORY_URL,
+        ...skillNames.flatMap((name) => ['--skill', name]),
+        ...globalArg
+      ]
     : ['update', ...skillNames, ...globalArg]
 }
 

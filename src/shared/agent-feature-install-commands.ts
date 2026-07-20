@@ -17,9 +17,10 @@ export function buildAgentFeatureSkillInstallCommand(
     throw new Error('At least one skill name is required.')
   }
   const global = options.global ?? true
-  return `npx skills add ${ORCA_SKILLS_REPOSITORY_URL} --skill ${skillNames.join(' ')}${
-    global ? ' --global' : ''
-  }`
+  // Why: `skills add` takes one skill per `--skill`; repeating it per name works across
+  // skills-CLI versions, unlike a single space-joined `--skill a b`.
+  const skillArgs = skillNames.map((name) => `--skill ${name}`).join(' ')
+  return `npx skills add ${ORCA_SKILLS_REPOSITORY_URL} ${skillArgs}${global ? ' --global' : ''}`
 }
 
 /** Builds the `npx skills update` command shown for refreshing one or more installed skills. */

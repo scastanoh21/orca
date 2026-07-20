@@ -411,7 +411,9 @@ describe('orca skills CLI', () => {
         'https://github.com/stablyai/orca',
         '--skill',
         'alpha',
+        '--skill',
         'gamma',
+        '--skill',
         'zeta',
         '--global'
       ],
@@ -428,11 +430,13 @@ describe('orca skills CLI', () => {
 
     const resultPromise = main(['skills', 'install', '--skill', 'alpha'], '/tmp/repo')
     await vi.waitFor(() => expect(spawnMock).toHaveBeenCalled())
-    child.emit('error', new Error('npx not found'))
+    child.emit('error', new Error('spawn npx ENOENT'))
     await resultPromise
 
     expect(process.exitCode).toBe(1)
-    expect(errorSpy).toHaveBeenCalledWith('npx not found')
+    expect(errorSpy).toHaveBeenCalledWith(
+      'Could not run npx: spawn npx ENOENT. Install Node.js and ensure npx is on PATH.'
+    )
   })
 
   it('lists updatable skills when no --skill/--all is given', async () => {
