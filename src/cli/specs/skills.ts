@@ -35,7 +35,7 @@ export const SKILL_COMMAND_SPECS: CommandSpec[] = [
     allowedFlags: [...GLOBAL_FLAGS, 'skill', 'all', 'local', 'dry-run'],
     notes: [
       'Reads the bundled skill registry locally without contacting the Orca runtime.',
-      'Resolves to the same `npx skills add <repo> --skill <names...>` command used by ' +
+      'Resolves to the same `npx skills add <repo> --skill <name> ...` command used by ' +
         'Orca Settings, then runs it via npx and forwards its output and exit code.',
       'Installs globally (all projects, adds --global) by default. Use --local to install ' +
         'into the current project instead.',

@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const { guideModuleLoadMock, runtimeClientConstructorMock, spawnMock } = vi.hoisted(() => ({
   guideModuleLoadMock: vi.fn(),
@@ -87,6 +87,11 @@ describe('orca skills CLI', () => {
     runtimeClientConstructorMock.mockClear()
     spawnMock.mockReset()
     process.exitCode = undefined
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+    vi.unstubAllEnvs()
   })
 
   it('keeps the bundled table off the eager command-registry path', async () => {
@@ -272,6 +277,16 @@ describe('orca skills CLI', () => {
     expect(spawnMock).not.toHaveBeenCalled()
   })
 
+  it('rejects --skill without a value', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    await main(['skills', 'install', '--skill'], '/tmp/repo')
+
+    expect(process.exitCode).toBe(1)
+    expect(errorSpy).toHaveBeenCalledWith('Missing required --skill')
+    expect(spawnMock).not.toHaveBeenCalled()
+  })
+
   it('rejects --json for a real (non-dry-run) install', async () => {
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
 
@@ -376,6 +391,36 @@ describe('orca skills CLI', () => {
     )
   })
 
+  it('invokes the npx command shim explicitly on Windows', async () => {
+    vi.spyOn(process, 'platform', 'get').mockReturnValue('win32')
+    vi.stubEnv('ComSpec', 'C:\\Windows\\System32\\cmd.exe')
+    const child = createFakeChild()
+    spawnMock.mockReturnValue(child)
+    vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+
+    const resultPromise = main(['skills', 'install', '--skill', 'alpha'], '/tmp/repo')
+    await vi.waitFor(() => expect(spawnMock).toHaveBeenCalled())
+    child.emit('exit', 0, null)
+    await resultPromise
+
+    expect(spawnMock).toHaveBeenCalledWith(
+      'C:\\Windows\\System32\\cmd.exe',
+      [
+        '/d',
+        '/s',
+        '/c',
+        'npx.cmd',
+        'skills',
+        'add',
+        'https://github.com/stablyai/orca',
+        '--skill',
+        'alpha',
+        '--global'
+      ],
+      { stdio: 'inherit' }
+    )
+  })
+
   it('resolves a legacy topic alias to the canonical skill name for install', async () => {
     const child = createFakeChild()
     spawnMock.mockReturnValue(child)
@@ -470,7 +515,7 @@ describe('orca skills CLI', () => {
     expect(spawnMock).not.toHaveBeenCalled()
   })
 
-  it('drops --global for --local on update', async () => {
+  it('selects project scope for --local on update', async () => {
     const stdoutSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
 
     await main(
@@ -481,7 +526,7 @@ describe('orca skills CLI', () => {
     expect(stdoutText(stdoutSpy)).toBe(
       `${JSON.stringify(
         {
-          command: 'npx skills update alpha',
+          command: 'npx skills update alpha --project',
           skills: ['alpha'],
           global: false,
           executed: false
@@ -489,6 +534,23 @@ describe('orca skills CLI', () => {
         null,
         2
       )}\n`
+    )
+  })
+
+  it('runs local updates with explicit project scope', async () => {
+    const child = createFakeChild()
+    spawnMock.mockReturnValue(child)
+    vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+
+    const resultPromise = main(['skills', 'update', '--skill', 'alpha', '--local'], '/tmp/repo')
+    await vi.waitFor(() => expect(spawnMock).toHaveBeenCalled())
+    child.emit('exit', 0, null)
+    await resultPromise
+
+    expect(spawnMock).toHaveBeenCalledWith(
+      'npx',
+      ['skills', 'update', 'alpha', '--project'],
+      expect.objectContaining({ stdio: 'inherit' })
     )
   })
 

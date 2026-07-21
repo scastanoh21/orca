@@ -597,6 +597,7 @@ deliberately. The post-upgrade binary and version record are retained in
 `/opt/orca` with the same `rollback-current-<timestamp>` suffix. Inspect these
 artifacts and remove them according to your retention policy after the rollback
 is resolved.
+
 ## Installing Agent Skills Without A Desktop
 
 Orca's agent skills (CLI usage, orchestration, computer use, etc.) are normally
@@ -612,7 +613,7 @@ orca skills install --all                                 # install every bundle
 orca skills install --all --dry-run                       # print the npx command without running it
 ```
 
-This resolves the same `npx skills add <repo> --skill <names...>` command
+This resolves the same `npx skills add <repo> --skill <name> ...` command
 Settings would show you (adding `--global` unless `--local` is passed), then
 runs it via `npx` and forwards its output and exit code. It requires
 `node`/`npx` on the host; it does not need a running Orca runtime.

@@ -8,33 +8,50 @@ export const ORCA_LINEAR_SKILL_NAME = 'orca-linear'
 export const LINEAR_TICKETS_SKILL_NAME = 'linear-tickets'
 export const LINEAR_AGENT_SKILL_NAMES = [ORCA_LINEAR_SKILL_NAME, LINEAR_TICKETS_SKILL_NAME] as const
 
-/** Builds the `npx skills add` command Settings/CLI show for installing skills. */
-export function buildAgentFeatureSkillInstallCommand(
+export function buildAgentFeatureSkillInstallArgs(
   skillNames: readonly string[],
   options: { global?: boolean } = {}
-): string {
+): string[] {
   if (skillNames.length === 0) {
     throw new Error('At least one skill name is required.')
   }
   const global = options.global ?? true
-  // Why: `skills add` takes one skill per `--skill`; repeating it per name works across
-  // skills-CLI versions, unlike a single space-joined `--skill a b`.
-  const skillArgs = skillNames.map((name) => `--skill ${name}`).join(' ')
-  return `npx skills add ${ORCA_SKILLS_REPOSITORY_URL} ${skillArgs}${global ? ' --global' : ''}`
+  // Why: one flag per name remains compatible with both single-value and variadic parsers.
+  const skillArgs = skillNames.flatMap((name) => ['--skill', name])
+  return [
+    'skills',
+    'add',
+    ORCA_SKILLS_REPOSITORY_URL,
+    ...skillArgs,
+    ...(global ? ['--global'] : [])
+  ]
 }
 
-/** Builds the `npx skills update` command shown for refreshing one or more installed skills. */
-export function buildAgentFeatureSkillUpdateCommand(
-  skillNames: string | readonly string[],
+export function buildAgentFeatureSkillInstallCommand(
+  skillNames: readonly string[],
   options: { global?: boolean } = {}
 ): string {
+  return `npx ${buildAgentFeatureSkillInstallArgs(skillNames, options).join(' ')}`
+}
+
+export function buildAgentFeatureSkillUpdateArgs(
+  skillNames: string | readonly string[],
+  options: { global?: boolean } = {}
+): string[] {
   const rawNames = typeof skillNames === 'string' ? [skillNames] : skillNames
   const names = rawNames.map((name) => name.trim()).filter((name) => name.length > 0)
   if (names.length === 0) {
     throw new Error('A skill name is required.')
   }
   const global = options.global ?? true
-  return `npx skills update ${names.join(' ')}${global ? ' --global' : ''}`
+  return ['skills', 'update', ...names, global ? '--global' : '--project']
+}
+
+export function buildAgentFeatureSkillUpdateCommand(
+  skillNames: string | readonly string[],
+  options: { global?: boolean } = {}
+): string {
+  return `npx ${buildAgentFeatureSkillUpdateArgs(skillNames, options).join(' ')}`
 }
 
 export const ORCA_CLI_SKILL_INSTALL_COMMAND = buildAgentFeatureSkillInstallCommand([

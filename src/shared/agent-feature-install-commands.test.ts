@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
+  buildAgentFeatureSkillInstallArgs,
   buildAgentFeatureSkillInstallCommand,
+  buildAgentFeatureSkillUpdateArgs,
   buildAgentFeatureSkillUpdateCommand,
   COMPUTER_USE_SKILL_UPDATE_COMMAND,
   EPHEMERAL_VMS_SKILL_UPDATE_COMMAND,
@@ -28,6 +30,16 @@ describe('agent feature skill commands', () => {
     expect(buildAgentFeatureSkillInstallCommand(['orca-cli', 'orchestration'])).toBe(
       'npx skills add https://github.com/stablyai/orca --skill orca-cli --skill orchestration --global'
     )
+    expect(buildAgentFeatureSkillInstallArgs(['orca-cli', 'orchestration'])).toEqual([
+      'skills',
+      'add',
+      'https://github.com/stablyai/orca',
+      '--skill',
+      'orca-cli',
+      '--skill',
+      'orchestration',
+      '--global'
+    ])
   })
 
   it('builds single-skill update commands', () => {
@@ -43,13 +55,19 @@ describe('agent feature skill commands', () => {
     expect(() => buildAgentFeatureSkillUpdateCommand('   ')).toThrow('A skill name is required.')
   })
 
-  it('builds multi-skill update commands and honors --local', () => {
+  it('builds multi-skill update commands and selects project scope for --local', () => {
     expect(buildAgentFeatureSkillUpdateCommand(['orca-cli', 'orchestration'])).toBe(
       'npx skills update orca-cli orchestration --global'
     )
     expect(buildAgentFeatureSkillUpdateCommand(['orca-cli'], { global: false })).toBe(
-      'npx skills update orca-cli'
+      'npx skills update orca-cli --project'
     )
+    expect(buildAgentFeatureSkillUpdateArgs(['orca-cli'], { global: false })).toEqual([
+      'skills',
+      'update',
+      'orca-cli',
+      '--project'
+    ])
     expect(() => buildAgentFeatureSkillUpdateCommand([])).toThrow('A skill name is required.')
   })
 

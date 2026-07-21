@@ -3,8 +3,9 @@ import type { CommandHandler } from '../dispatch'
 import { RuntimeClientError } from '../runtime-client'
 import { getRepeatedStringFlag } from '../flags'
 import {
-  ORCA_SKILLS_REPOSITORY_URL,
+  buildAgentFeatureSkillInstallArgs,
   buildAgentFeatureSkillInstallCommand,
+  buildAgentFeatureSkillUpdateArgs,
   buildAgentFeatureSkillUpdateCommand
 } from '../../shared/agent-feature-install-commands'
 
@@ -16,14 +17,12 @@ type BundledSkillGuide = {
   aliases: readonly string[]
 }
 
-/** Returns guides sorted by canonical name for deterministic output. */
 function canonicalGuides(guides: readonly BundledSkillGuide[]): BundledSkillGuide[] {
   return [...guides].sort((left, right) =>
     left.name < right.name ? -1 : left.name > right.name ? 1 : 0
   )
 }
 
-/** Resolves the required --topic flag to its guide, following legacy aliases. */
 function requireTopic(
   flags: Map<string, string | boolean>,
   guides: BundledSkillGuide[]
@@ -51,18 +50,19 @@ function requireTopic(
   return guide
 }
 
-/** Writes to stdout, appending a trailing newline if missing. */
 function writeStdout(value: string): void {
   process.stdout.write(value.endsWith('\n') ? value : `${value}\n`)
 }
 
-/** Resolves --skill/--all to canonical skill names, accepting legacy topic aliases. */
 function resolveSelectedSkillNames(
   flags: Map<string, string | boolean>,
   guides: BundledSkillGuide[]
 ): string[] {
   const requestedSkills = getRepeatedStringFlag(flags, 'skill')
   const selectAll = flags.get('all') === true
+  if (flags.has('skill') && requestedSkills.length === 0) {
+    throw new RuntimeClientError('invalid_argument', 'Missing required --skill')
+  }
   if (selectAll && requestedSkills.length > 0) {
     throw new RuntimeClientError('invalid_argument', 'Use either --all or --skill, not both.')
   }
@@ -90,15 +90,13 @@ function resolveSelectedSkillNames(
   return [...canonicalNames].sort()
 }
 
-/** Runs `npx skills <args...>` inheriting stdio; resolves with the exit code (1 if signal-killed). */
 function runNpxSkills(args: string[]): Promise<number> {
   return new Promise((resolve, reject) => {
-    // Why: Windows only resolves the `npx.cmd` shim through a shell; macOS/Linux
-    // spawn the `npx` script directly without one.
-    const child = spawn('npx', ['skills', ...args], {
-      stdio: 'inherit',
-      shell: process.platform === 'win32'
-    })
+    const isWindows = process.platform === 'win32'
+    const executable = isWindows ? (process.env.ComSpec ?? 'cmd.exe') : 'npx'
+    // Why: `.cmd` shims need cmd.exe; invoking it explicitly avoids shell-mode argv rewriting.
+    const childArgs = isWindows ? ['/d', '/s', '/c', 'npx.cmd', ...args] : args
+    const child = spawn(executable, childArgs, { stdio: 'inherit' })
     // Why: a missing npx/Node on a headless host surfaces as a raw spawn ENOENT;
     // wrap it so the CLI reports an actionable message like every other failure here.
     child.once('error', (error) => {
@@ -118,7 +116,6 @@ function runNpxSkills(args: string[]): Promise<number> {
 
 type SkillMutationVerb = 'install' | 'update'
 
-/** The resolved `npx skills ...` command shown to the user and (word-for-word) spawned. */
 function buildSkillMutationCommand(
   verb: SkillMutationVerb,
   skillNames: string[],
@@ -129,25 +126,16 @@ function buildSkillMutationCommand(
     : buildAgentFeatureSkillUpdateCommand(skillNames, { global })
 }
 
-/** The argv for `npx skills ...`, kept in lockstep with buildSkillMutationCommand. */
 function buildNpxSkillsArgs(
   verb: SkillMutationVerb,
   skillNames: string[],
   global: boolean
 ): string[] {
-  const globalArg = global ? ['--global'] : []
-  // Why: `add` takes one skill per `--skill` flag; `update` takes positional names.
   return verb === 'install'
-    ? [
-        'add',
-        ORCA_SKILLS_REPOSITORY_URL,
-        ...skillNames.flatMap((name) => ['--skill', name]),
-        ...globalArg
-      ]
-    : ['update', ...skillNames, ...globalArg]
+    ? buildAgentFeatureSkillInstallArgs(skillNames, { global })
+    : buildAgentFeatureSkillUpdateArgs(skillNames, { global })
 }
 
-/** The "pick some skills" listing shown when neither --skill nor --all is given. */
 function formatSkillSelectionHelp(verb: SkillMutationVerb, skillNames: string[]): string {
   return [
     `Choose one or more skills to ${verb}:`,
@@ -158,7 +146,6 @@ function formatSkillSelectionHelp(verb: SkillMutationVerb, skillNames: string[])
   ].join('\n')
 }
 
-/** Builds the shared install/update handler: select skills, then preview or run `npx skills`. */
 function createSkillMutationHandler(verb: SkillMutationVerb): CommandHandler {
   return async ({ flags, json }) => {
     // Why: keep the large generated table off the eager handler registry path.
