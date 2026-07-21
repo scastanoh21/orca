@@ -17,9 +17,14 @@ describe('RuntimeClient updater methods', () => {
   it('maps the version and status methods', async () => {
     await client.getAppVersion()
     await client.getUpdateStatus()
+    await client.waitForUpdateStatus(4, 25_000)
 
     expect(call).toHaveBeenNthCalledWith(1, 'updater.getVersion')
     expect(call).toHaveBeenNthCalledWith(2, 'updater.getStatus')
+    expect(call).toHaveBeenNthCalledWith(3, 'updater.wait', {
+      afterRevision: 4,
+      timeoutMs: 25_000
+    })
   })
 
   it('maps check options and update actions', async () => {

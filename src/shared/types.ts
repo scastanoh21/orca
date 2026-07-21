@@ -2297,6 +2297,17 @@ export type UpdateStatus =
   | { state: 'downloaded'; version: string; releaseUrl?: string; activeNudgeId?: string }
   | { state: 'error'; message: string; userInitiated?: boolean; activeNudgeId?: string }
 
+/** An updater status paired with the monotonic revision that produced it. */
+export type UpdateStatusSnapshot = {
+  revision: number
+  status: UpdateStatus
+}
+
+/** The result of waiting for a newer updater status revision. */
+export type UpdateStatusWaitResult = UpdateStatusSnapshot & {
+  timedOut: boolean
+}
+
 // ─── Settings ────────────────────────────────────────────────────────
 export type NotificationSettings = {
   enabled: boolean

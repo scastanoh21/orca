@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { UpdateStatus } from '../../shared/types'
+import type { UpdateStatus, UpdateStatusSnapshot, UpdateStatusWaitResult } from '../../shared/types'
 import type { HandlerContext } from '../dispatch'
 import { RuntimeClientError, type RuntimeRpcSuccess } from '../runtime-client'
 import type { RuntimeClient } from '../runtime-client'
@@ -14,17 +14,28 @@ function success<T>(result: T): RuntimeRpcSuccess<T> {
   }
 }
 
+function snapshot(status: UpdateStatus, revision = 1): RuntimeRpcSuccess<UpdateStatusSnapshot> {
+  return success({ revision, status })
+}
+
+function changedStatus(
+  status: UpdateStatus,
+  revision = 2
+): RuntimeRpcSuccess<UpdateStatusWaitResult> {
+  return success({ revision, status, timedOut: false })
+}
+
 describe('updater CLI handlers', () => {
   const getAppVersion = vi.fn()
   const checkForUpdate = vi.fn()
   const downloadUpdate = vi.fn()
-  const getUpdateStatus = vi.fn()
+  const waitForUpdateStatus = vi.fn()
   const installUpdate = vi.fn()
   const client = {
     getAppVersion,
     checkForUpdate,
     downloadUpdate,
-    getUpdateStatus,
+    waitForUpdateStatus,
     installUpdate
   } as unknown as RuntimeClient
   let log: ReturnType<typeof vi.spyOn>
@@ -76,11 +87,9 @@ describe('updater CLI handlers', () => {
 
   it('downloads and installs an available update', async () => {
     checkForUpdate.mockResolvedValue(
-      success<UpdateStatus>({ state: 'available', version: '1.5.0', changelog: null })
+      snapshot({ state: 'available', version: '1.5.0', changelog: null })
     )
-    downloadUpdate.mockResolvedValue(
-      success<UpdateStatus>({ state: 'downloaded', version: '1.5.0' })
-    )
+    downloadUpdate.mockResolvedValue(snapshot({ state: 'downloaded', version: '1.5.0' }))
 
     await invokeUpdate()
 
@@ -96,7 +105,7 @@ describe('updater CLI handlers', () => {
 
   it('reports an available update without downloading for --check', async () => {
     checkForUpdate.mockResolvedValue(
-      success<UpdateStatus>({ state: 'available', version: '1.5.0', changelog: null })
+      snapshot({ state: 'available', version: '1.5.0', changelog: null })
     )
 
     await invokeUpdate(new Map([['check', true]]))
@@ -110,34 +119,26 @@ describe('updater CLI handlers', () => {
     })
   })
 
-  it('polls an event-driven check until availability is known', async () => {
-    vi.useFakeTimers()
-    checkForUpdate.mockResolvedValue(success<UpdateStatus>({ state: 'checking' }))
-    getUpdateStatus.mockResolvedValue(
-      success<UpdateStatus>({ state: 'available', version: '1.5.0', changelog: null })
+  it('waits for an event-driven check until availability is known', async () => {
+    checkForUpdate.mockResolvedValue(snapshot({ state: 'checking' }))
+    waitForUpdateStatus.mockResolvedValue(
+      changedStatus({ state: 'available', version: '1.5.0', changelog: null })
     )
 
-    const pending = invokeUpdate(new Map([['check', true]]))
-    await vi.runAllTimersAsync()
-    await pending
+    await invokeUpdate(new Map([['check', true]]))
 
-    expect(getUpdateStatus).toHaveBeenCalledOnce()
+    expect(waitForUpdateStatus).toHaveBeenCalledWith(1, 25_000)
     expect(downloadUpdate).not.toHaveBeenCalled()
     expect(JSON.parse(String(log.mock.calls.at(-1)?.[0])).result.status.state).toBe('available')
   })
 
   it('attaches to an in-progress download instead of starting a new one', async () => {
-    vi.useFakeTimers()
     checkForUpdate.mockResolvedValue(
-      success<UpdateStatus>({ state: 'downloading', version: '1.5.0', percent: 30 })
+      snapshot({ state: 'downloading', version: '1.5.0', percent: 30 })
     )
-    getUpdateStatus.mockResolvedValue(
-      success<UpdateStatus>({ state: 'downloaded', version: '1.5.0' })
-    )
+    waitForUpdateStatus.mockResolvedValue(changedStatus({ state: 'downloaded', version: '1.5.0' }))
 
-    const pending = invokeUpdate()
-    await vi.runAllTimersAsync()
-    await pending
+    await invokeUpdate()
 
     expect(downloadUpdate).not.toHaveBeenCalled()
     expect(installUpdate).toHaveBeenCalledOnce()
@@ -149,9 +150,7 @@ describe('updater CLI handlers', () => {
   })
 
   it('installs an already-downloaded update without re-downloading', async () => {
-    checkForUpdate.mockResolvedValue(
-      success<UpdateStatus>({ state: 'downloaded', version: '1.5.0' })
-    )
+    checkForUpdate.mockResolvedValue(snapshot({ state: 'downloaded', version: '1.5.0' }))
 
     await invokeUpdate()
 
@@ -166,14 +165,14 @@ describe('updater CLI handlers', () => {
 
   it('reports an in-progress download for --check without installing', async () => {
     checkForUpdate.mockResolvedValue(
-      success<UpdateStatus>({ state: 'downloading', version: '1.5.0', percent: 30 })
+      snapshot({ state: 'downloading', version: '1.5.0', percent: 30 })
     )
 
     await invokeUpdate(new Map([['check', true]]))
 
     expect(downloadUpdate).not.toHaveBeenCalled()
     expect(installUpdate).not.toHaveBeenCalled()
-    expect(getUpdateStatus).not.toHaveBeenCalled()
+    expect(waitForUpdateStatus).not.toHaveBeenCalled()
     expect(JSON.parse(String(log.mock.calls.at(-1)?.[0])).result).toMatchObject({
       operation: 'check',
       status: { state: 'downloading', version: '1.5.0', percent: 30 },
@@ -182,7 +181,7 @@ describe('updater CLI handlers', () => {
   })
 
   it('reports that Orca is up to date', async () => {
-    checkForUpdate.mockResolvedValue(success<UpdateStatus>({ state: 'not-available' }))
+    checkForUpdate.mockResolvedValue(snapshot({ state: 'not-available' }))
 
     await invokeUpdate()
 
@@ -194,9 +193,7 @@ describe('updater CLI handlers', () => {
   })
 
   it('reports updater errors and sets a failing exit code', async () => {
-    checkForUpdate.mockResolvedValue(
-      success<UpdateStatus>({ state: 'error', message: 'feed unavailable' })
-    )
+    checkForUpdate.mockResolvedValue(snapshot({ state: 'error', message: 'feed unavailable' }))
 
     await invokeUpdate(new Map([['check', true]]))
 
@@ -225,7 +222,7 @@ describe('updater CLI handlers', () => {
   })
 
   it('forwards the prerelease choice', async () => {
-    checkForUpdate.mockResolvedValue(success<UpdateStatus>({ state: 'not-available' }))
+    checkForUpdate.mockResolvedValue(snapshot({ state: 'not-available' }))
 
     await invokeUpdate(new Map([['prerelease', true]]))
 
@@ -233,24 +230,21 @@ describe('updater CLI handlers', () => {
   })
 
   it('updates download progress in place on a TTY and closes the line', async () => {
-    vi.useFakeTimers()
     Object.defineProperty(process.stdout, 'isTTY', { configurable: true, value: true })
     const write = vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
     checkForUpdate.mockResolvedValue(
-      success<UpdateStatus>({ state: 'available', version: '1.5.0', changelog: null })
+      snapshot({ state: 'available', version: '1.5.0', changelog: null })
     )
     downloadUpdate.mockResolvedValue(
-      success<UpdateStatus>({ state: 'downloading', version: '1.5.0', percent: 1 })
+      snapshot({ state: 'downloading', version: '1.5.0', percent: 1 }, 2)
     )
-    getUpdateStatus
+    waitForUpdateStatus
       .mockResolvedValueOnce(
-        success<UpdateStatus>({ state: 'downloading', version: '1.5.0', percent: 42 })
+        changedStatus({ state: 'downloading', version: '1.5.0', percent: 42 }, 3)
       )
-      .mockResolvedValueOnce(success<UpdateStatus>({ state: 'downloaded', version: '1.5.0' }))
+      .mockResolvedValueOnce(changedStatus({ state: 'downloaded', version: '1.5.0' }, 4))
 
-    const pending = invokeUpdate(new Map(), false)
-    await vi.runAllTimersAsync()
-    await pending
+    await invokeUpdate(new Map(), false)
 
     expect(write.mock.calls.map(([chunk]) => chunk)).toEqual([
       '\rDownloading Orca 1.5.0… 1%',
@@ -260,44 +254,38 @@ describe('updater CLI handlers', () => {
   })
 
   it('never emits carriage returns for non-TTY download progress', async () => {
-    vi.useFakeTimers()
     Object.defineProperty(process.stdout, 'isTTY', { configurable: true, value: false })
     const write = vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
     checkForUpdate.mockResolvedValue(
-      success<UpdateStatus>({ state: 'available', version: '1.5.0', changelog: null })
+      snapshot({ state: 'available', version: '1.5.0', changelog: null })
     )
     downloadUpdate.mockResolvedValue(
-      success<UpdateStatus>({ state: 'downloading', version: '1.5.0', percent: 1 })
+      snapshot({ state: 'downloading', version: '1.5.0', percent: 1 }, 2)
     )
-    getUpdateStatus.mockResolvedValue(
-      success<UpdateStatus>({ state: 'downloaded', version: '1.5.0' })
+    waitForUpdateStatus.mockResolvedValue(
+      changedStatus({ state: 'downloaded', version: '1.5.0' }, 3)
     )
 
-    const pending = invokeUpdate(new Map(), false)
-    await vi.runAllTimersAsync()
-    await pending
+    await invokeUpdate(new Map(), false)
 
     expect(write).not.toHaveBeenCalled()
     expect(log).toHaveBeenCalledWith('Downloading Orca 1.5.0… 1%')
   })
 
   it('keeps JSON output unchanged even when stdout is a TTY', async () => {
-    vi.useFakeTimers()
     Object.defineProperty(process.stdout, 'isTTY', { configurable: true, value: true })
     const write = vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
     checkForUpdate.mockResolvedValue(
-      success<UpdateStatus>({ state: 'available', version: '1.5.0', changelog: null })
+      snapshot({ state: 'available', version: '1.5.0', changelog: null })
     )
     downloadUpdate.mockResolvedValue(
-      success<UpdateStatus>({ state: 'downloading', version: '1.5.0', percent: 1 })
+      snapshot({ state: 'downloading', version: '1.5.0', percent: 1 }, 2)
     )
-    getUpdateStatus.mockResolvedValue(
-      success<UpdateStatus>({ state: 'downloaded', version: '1.5.0' })
+    waitForUpdateStatus.mockResolvedValue(
+      changedStatus({ state: 'downloaded', version: '1.5.0' }, 3)
     )
 
-    const pending = invokeUpdate()
-    await vi.runAllTimersAsync()
-    await pending
+    await invokeUpdate()
 
     expect(write).not.toHaveBeenCalled()
     expect(log).toHaveBeenCalledOnce()

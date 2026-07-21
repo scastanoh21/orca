@@ -1,8 +1,13 @@
 import { z } from 'zod'
-import { defineMethod, type RpcMethod } from '../core'
+import { defineMethod, InvalidArgumentError, type RpcMethod } from '../core'
 
 const UpdaterCheckParams = z.object({
   includePrerelease: z.boolean().optional()
+})
+
+const UpdaterWaitParams = z.object({
+  afterRevision: z.number().int().nonnegative(),
+  timeoutMs: z.number().int().min(1).max(30_000)
 })
 
 /**
@@ -23,34 +28,50 @@ export const UPDATER_METHODS: RpcMethod[] = [
     name: 'updater.getStatus',
     params: null,
     handler: async () => {
-      const { getUpdateStatus } = await loadUpdater()
-      return getUpdateStatus()
+      const { getUpdateStatusSnapshot } = await loadUpdater()
+      return getUpdateStatusSnapshot()
+    }
+  }),
+  defineMethod({
+    name: 'updater.wait',
+    params: UpdaterWaitParams,
+    handler: async (params, { signal }) => {
+      const { waitForUpdateStatusChange } = await loadUpdater()
+      return await waitForUpdateStatusChange(params.afterRevision, params.timeoutMs, signal)
     }
   }),
   defineMethod({
     name: 'updater.check',
     params: UpdaterCheckParams,
     handler: async (params) => {
-      const { checkForUpdatesFromMenu, getUpdateStatus } = await loadUpdater()
+      const { checkForUpdatesFromMenu, getUpdateStatusSnapshot } = await loadUpdater()
+      const current = getUpdateStatusSnapshot()
+      if (current.status.state === 'downloading' || current.status.state === 'downloaded') {
+        // Why: starting a check replaces the authoritative download state, so callers attach instead.
+        return current
+      }
       checkForUpdatesFromMenu(params)
-      // Why: electron-updater completes through events; callers poll the shared status.
-      return getUpdateStatus()
+      // Why: electron-updater completes through events; callers wait on the shared status.
+      return getUpdateStatusSnapshot()
     }
   }),
   defineMethod({
     name: 'updater.download',
     params: null,
     handler: async () => {
-      const { downloadUpdate, getUpdateStatus } = await loadUpdater()
+      const { downloadUpdate, getUpdateStatusSnapshot } = await loadUpdater()
       downloadUpdate()
-      return getUpdateStatus()
+      return getUpdateStatusSnapshot()
     }
   }),
   defineMethod({
     name: 'updater.install',
     params: null,
     handler: async () => {
-      const { quitAndInstall } = await loadUpdater()
+      const { getUpdateStatus, quitAndInstall } = await loadUpdater()
+      if (getUpdateStatus().state !== 'downloaded') {
+        throw new InvalidArgumentError('The update is not downloaded and ready to install.')
+      }
       quitAndInstall()
       return { ok: true }
     }

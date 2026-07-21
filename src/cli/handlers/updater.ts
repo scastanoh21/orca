@@ -1,4 +1,4 @@
-import type { UpdateStatus } from '../../shared/types'
+import type { UpdateStatus, UpdateStatusSnapshot } from '../../shared/types'
 import type { CommandHandler } from '../dispatch'
 import { printResult } from '../format'
 import { RuntimeClientError, type RuntimeRpcSuccess } from '../runtime-client'
@@ -10,12 +10,12 @@ import {
   type UpdateCommandResult
 } from '../update-format'
 
-const POLL_INTERVAL_MS = 500
-const CHECK_POLL_ATTEMPTS = 60
-const DOWNLOAD_POLL_ATTEMPTS = 1_200
+const CHECK_TIMEOUT_MS = 60_000
+const DOWNLOAD_TIMEOUT_MS = 10 * 60_000
+const STATUS_WAIT_SLICE_MS = 25_000
 
 type PollResult = {
-  response: RuntimeRpcSuccess<UpdateStatus>
+  response: RuntimeRpcSuccess<UpdateStatusSnapshot>
   timedOut: boolean
 }
 
@@ -42,22 +42,22 @@ export const UPDATER_HANDLERS: Record<string, CommandHandler> = {
     const initialCheck = await withUpdaterRecovery(() =>
       client.checkForUpdate(flags.get('prerelease') === true)
     )
-    const check = await pollForStatus(
+    const check = await waitForStatus(
       client,
       initialCheck,
       // Why: 'downloading'/'downloaded' are terminal for the check phase too — a
       // download may already be in flight (e.g. started from the desktop UI), so
-      // surface it immediately instead of polling until the check-phase timeout.
+      // surface it immediately instead of waiting until the check-phase timeout.
       (status) =>
         status.state === 'available' ||
         status.state === 'not-available' ||
         status.state === 'error' ||
         status.state === 'downloading' ||
         status.state === 'downloaded',
-      CHECK_POLL_ATTEMPTS
+      CHECK_TIMEOUT_MS
     )
 
-    const checkState = check.response.result.state
+    const checkState = check.response.result.status.state
     const downloadInProgress = checkState === 'downloading' || checkState === 'downloaded'
 
     if (checkOnly || check.timedOut || (checkState !== 'available' && !downloadInProgress)) {
@@ -70,7 +70,7 @@ export const UPDATER_HANDLERS: Record<string, CommandHandler> = {
     }
 
     if (!json && checkState === 'available') {
-      console.log(`Update available: Orca ${check.response.result.version}. Downloading...`)
+      console.log(`Update available: Orca ${check.response.result.status.version}. Downloading...`)
     }
     // Why: attach to an existing download rather than kicking off a redundant one.
     const initialDownload =
@@ -79,11 +79,11 @@ export const UPDATER_HANDLERS: Record<string, CommandHandler> = {
         : check.response
     let lastProgress = ''
     let ttyProgressLineActive = false
-    const download = await pollForStatus(
+    const download = await waitForStatus(
       client,
       initialDownload,
       (status) => status.state === 'downloaded' || status.state === 'error',
-      DOWNLOAD_POLL_ATTEMPTS,
+      DOWNLOAD_TIMEOUT_MS,
       (status) => {
         if (json) {
           return
@@ -105,13 +105,13 @@ export const UPDATER_HANDLERS: Record<string, CommandHandler> = {
         }
       }
     )
-    // Why: timeouts can end polling without a terminal updater state; close any
+    // Why: timeouts can end a wait without a terminal updater state; close any
     // in-place TTY line before final output.
     if (ttyProgressLineActive) {
       process.stdout.write('\n')
     }
 
-    if (download.timedOut || download.response.result.state !== 'downloaded') {
+    if (download.timedOut || download.response.result.status.state !== 'downloaded') {
       finishUpdateCommand(download.response, json, {
         operation: 'update',
         installRequested: false,
@@ -130,28 +130,40 @@ export const UPDATER_HANDLERS: Record<string, CommandHandler> = {
 }
 
 /**
- * Polls `updater.getStatus` until `isTerminal` matches or `maxAttempts` is
- * exhausted, invoking `onStatus` for the initial response and each poll.
- * Returns `timedOut: true` when the attempt budget runs out first.
+ * Waits for updater status events until `isTerminal` matches or the phase timeout
+ * expires, invoking `onStatus` for the initial response and each changed status.
  */
-async function pollForStatus(
+async function waitForStatus(
   client: RuntimeClient,
-  initialResponse: RuntimeRpcSuccess<UpdateStatus>,
+  initialResponse: RuntimeRpcSuccess<UpdateStatusSnapshot>,
   isTerminal: (status: UpdateStatus) => boolean,
-  maxAttempts: number,
+  timeoutMs: number,
   onStatus?: (status: UpdateStatus) => void
 ): Promise<PollResult> {
   let response = initialResponse
-  onStatus?.(response.result)
-  if (isTerminal(response.result)) {
+  onStatus?.(response.result.status)
+  if (isTerminal(response.result.status)) {
     return { response, timedOut: false }
   }
 
-  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-    await delay(POLL_INTERVAL_MS)
-    response = await withUpdaterRecovery(() => client.getUpdateStatus())
-    onStatus?.(response.result)
-    if (isTerminal(response.result)) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const remainingMs = deadline - Date.now()
+    const next = await withUpdaterRecovery(() =>
+      client.waitForUpdateStatus(
+        response.result.revision,
+        Math.min(STATUS_WAIT_SLICE_MS, remainingMs)
+      )
+    )
+    response = {
+      ...next,
+      result: { revision: next.result.revision, status: next.result.status }
+    }
+    if (next.result.timedOut) {
+      continue
+    }
+    onStatus?.(response.result.status)
+    if (isTerminal(response.result.status)) {
       return { response, timedOut: false }
     }
   }
@@ -163,15 +175,15 @@ async function pollForStatus(
  * the run timed out or ended in an updater error.
  */
 function finishUpdateCommand(
-  response: RuntimeRpcSuccess<UpdateStatus>,
+  response: RuntimeRpcSuccess<UpdateStatusSnapshot>,
   json: boolean,
   details: Omit<UpdateCommandResult, 'status'>
 ): void {
   const result: RuntimeRpcSuccess<UpdateCommandResult> = {
     ...response,
-    result: { ...details, status: response.result }
+    result: { ...details, status: response.result.status }
   }
-  if (details.timedOut || response.result.state === 'error') {
+  if (details.timedOut || response.result.status.state === 'error') {
     process.exitCode = 1
   }
   printResult(result, json, formatUpdateResult)
@@ -199,9 +211,4 @@ async function withUpdaterRecovery<T>(operation: () => Promise<T>): Promise<T> {
       nextSteps
     })
   }
-}
-
-/** Resolves after `ms` milliseconds; used to space out status polls. */
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms))
 }

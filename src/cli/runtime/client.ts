@@ -1,5 +1,5 @@
 import type { CliStatusResult, RuntimeStatus } from '../../shared/runtime-types'
-import type { UpdateStatus } from '../../shared/types'
+import type { UpdateStatusSnapshot, UpdateStatusWaitResult } from '../../shared/types'
 import { parsePairingCode, type PairingOffer } from '../../shared/pairing'
 import { launchOrcaApp } from './launch'
 import { getDefaultUserDataPath, readMetadata } from './metadata'
@@ -92,7 +92,8 @@ export class RuntimeClient {
   private resolveMethodTimeoutMs(method: string, params?: unknown): number {
     if (
       (method === 'orchestration.check' && isWaitingCheck(params)) ||
-      method === 'terminal.wait'
+      method === 'terminal.wait' ||
+      method === 'updater.wait'
     ) {
       const inner = Number(getTimeoutMsParam(params))
       if (Number.isFinite(inner) && inner > 0) {
@@ -145,17 +146,27 @@ export class RuntimeClient {
   }
 
   /** Reads the app's current updater status without triggering a new check. */
-  async getUpdateStatus(): Promise<RuntimeRpcSuccess<UpdateStatus>> {
+  async getUpdateStatus(): Promise<RuntimeRpcSuccess<UpdateStatusSnapshot>> {
     return await this.call('updater.getStatus')
   }
 
-  /** Asks the app to start an update check; the result is polled via {@link getUpdateStatus}. */
-  async checkForUpdate(includePrerelease = false): Promise<RuntimeRpcSuccess<UpdateStatus>> {
+  /** Waits until the updater status changes or the bounded server wait expires. */
+  async waitForUpdateStatus(
+    afterRevision: number,
+    timeoutMs: number
+  ): Promise<RuntimeRpcSuccess<UpdateStatusWaitResult>> {
+    return await this.call('updater.wait', { afterRevision, timeoutMs })
+  }
+
+  /** Asks the app to start an update check. */
+  async checkForUpdate(
+    includePrerelease = false
+  ): Promise<RuntimeRpcSuccess<UpdateStatusSnapshot>> {
     return await this.call('updater.check', { includePrerelease })
   }
 
   /** Asks the app to begin downloading the available update. */
-  async downloadUpdate(): Promise<RuntimeRpcSuccess<UpdateStatus>> {
+  async downloadUpdate(): Promise<RuntimeRpcSuccess<UpdateStatusSnapshot>> {
     return await this.call('updater.download')
   }
 

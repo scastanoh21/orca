@@ -179,6 +179,42 @@ describe('updater', () => {
     vi.useRealTimers()
   })
 
+  it('resolves a status wait when the updater revision changes', async () => {
+    const mainWindow = { webContents: { send: vi.fn() } }
+    const {
+      checkForUpdatesFromMenu,
+      getUpdateStatusSnapshot,
+      setupAutoUpdater,
+      waitForUpdateStatusChange
+    } = await import('./updater')
+    setupAutoUpdater(mainWindow as never, { getLastUpdateCheckAt: () => Date.now() })
+    const initial = getUpdateStatusSnapshot()
+
+    const pending = waitForUpdateStatusChange(initial.revision, 1_000)
+    checkForUpdatesFromMenu()
+
+    await expect(pending).resolves.toMatchObject({
+      revision: initial.revision + 1,
+      status: { state: 'checking' },
+      timedOut: false
+    })
+  })
+
+  it('releases a status wait when its transport is aborted', async () => {
+    const { getUpdateStatusSnapshot, waitForUpdateStatusChange } = await import('./updater')
+    const controller = new AbortController()
+    const initial = getUpdateStatusSnapshot()
+
+    const pending = waitForUpdateStatusChange(initial.revision, 10_000, controller.signal)
+    controller.abort()
+
+    await expect(pending).resolves.toMatchObject({
+      revision: initial.revision,
+      status: initial.status,
+      timedOut: true
+    })
+  })
+
   it('does not load or configure electron-updater during dev setup', async () => {
     isMock.dev = true
     const mainWindow = { webContents: { send: vi.fn() } }

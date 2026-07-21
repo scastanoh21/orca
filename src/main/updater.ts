@@ -1,7 +1,12 @@
 /* eslint-disable max-lines */
 import { app, BrowserWindow, powerMonitor } from 'electron'
 import { is } from '@electron-toolkit/utils'
-import type { UpdateCheckOptions, UpdateStatus } from '../shared/types'
+import type {
+  UpdateCheckOptions,
+  UpdateStatus,
+  UpdateStatusSnapshot,
+  UpdateStatusWaitResult
+} from '../shared/types'
 import { isWindowsSignatureCheckUnavailableFailure } from '../shared/updater-windows-signature-check'
 import { killAllPty } from './ipc/pty'
 import { withUpdaterSpan } from './observability/instrumentation'
@@ -57,6 +62,8 @@ const UPDATE_CHECK_STALL_TIMEOUT_MS = 45_000
 
 let mainWindowRef: BrowserWindow | null = null
 let currentStatus: UpdateStatus = { state: 'idle' }
+let updateStatusRevision = 0
+const updateStatusListeners = new Set<() => void>()
 let userInitiatedCheck = false
 let onBeforeQuitCleanup: (() => void | Promise<void>) | null = null
 let autoUpdaterInitialized = false
@@ -257,6 +264,10 @@ function sendStatus(status: UpdateStatus): void {
     return
   }
   currentStatus = decoratedStatus
+  updateStatusRevision += 1
+  for (const listener of updateStatusListeners) {
+    listener()
+  }
   mainWindowRef?.webContents.send('updater:status', decoratedStatus)
 }
 
@@ -833,6 +844,48 @@ async function sendCheckFailureStatus(
 
 export function getUpdateStatus(): UpdateStatus {
   return currentStatus
+}
+
+/** Returns the current updater status and its monotonic change revision. */
+export function getUpdateStatusSnapshot(): UpdateStatusSnapshot {
+  return { revision: updateStatusRevision, status: currentStatus }
+}
+
+/** Waits for a newer updater status revision, timeout, or caller cancellation. */
+export function waitForUpdateStatusChange(
+  afterRevision: number,
+  timeoutMs: number,
+  signal?: AbortSignal
+): Promise<UpdateStatusWaitResult> {
+  const snapshot = getUpdateStatusSnapshot()
+  if (snapshot.revision !== afterRevision) {
+    return Promise.resolve({ ...snapshot, timedOut: false })
+  }
+
+  return new Promise((resolve) => {
+    let settled = false
+    const finish = (timedOut: boolean): void => {
+      if (settled) {
+        return
+      }
+      settled = true
+      clearTimeout(timeout)
+      updateStatusListeners.delete(onChange)
+      signal?.removeEventListener('abort', onAbort)
+      resolve({ ...getUpdateStatusSnapshot(), timedOut })
+    }
+    const onChange = (): void => finish(false)
+    const onAbort = (): void => finish(true)
+    const timeout = setTimeout(() => finish(true), timeoutMs)
+    timeout.unref?.()
+    updateStatusListeners.add(onChange)
+    signal?.addEventListener('abort', onAbort, { once: true })
+
+    // Why: a pre-aborted transport must not leave a waiter registered until timeout.
+    if (signal?.aborted) {
+      finish(true)
+    }
+  })
 }
 
 let consecutiveAutomaticRetrySchedules = 0
